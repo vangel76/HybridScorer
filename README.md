@@ -17,62 +17,25 @@ This repository contains two interactive Gradio applications for rating and sort
 | `promptmatch.py` | Finding specific subjects, concepts, or visual attributes | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
 | `imagereward.py` | Ranking by taste, mood, style, and overall visual appeal | Aesthetic preference scoring with ImageReward | `best` / `normal` |
 
-## Install
+## Install With Setup Scripts
 
 Set up the Python virtual environment first. You need to do this before trying to run either app.
 
-### Linux
+### Linux Setup Script
 
-Recommended: use one of the included setup scripts:
+Use [setup-venv312.sh](/home/vangel/apps/RATEImagesCLIP/setup-venv312.sh) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
 
 ```bash
 ./setup-venv312.sh
 ```
 
-Manual setup:
+### Windows Setup Script
 
-```bash
-python3.12 -m venv venv312
-source venv312/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-python -m pip install -r requirements.txt
-```
-
-### Windows
-
-On Windows, set up the virtual environment first:
-
-1. Install Python 3.12.
-2. Open `cmd.exe` in the project folder.
-3. Create the virtual environment:
-   ```bat
-   py -3.12 -m venv venv312
-   ```
-4. Activate it:
-   ```bat
-   venv312\Scripts\activate.bat
-   ```
-5. Upgrade packaging tools:
-   ```bat
-   python -m pip install --upgrade pip setuptools wheel
-   ```
-6. Install CUDA-enabled PyTorch:
-   ```bat
-   python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-   ```
-7. Install the app dependencies:
-   ```bat
-   python -m pip install -r requirements.txt
-   ```
-
-You can also let the helper script handle the Windows setup:
+Use [setup-venv312-windows.bat](/home/vangel/apps/RATEImagesCLIP/setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
 
 ```bat
 setup-venv312-windows.bat
 ```
-
-Script file: [setup-venv312-windows.bat](/home/vangel/apps/RATEImagesCLIP/setup-venv312-windows.bat)
 
 ## Run
 
@@ -110,6 +73,45 @@ or
 venv312\Scripts\activate.bat
 run-imagereward-windows.bat
 ```
+
+## Manual Install
+
+If you do not want to use the setup scripts, you can set up the environment manually.
+
+### Linux Manual Install
+
+```bash
+python3.12 -m venv venv312
+source venv312/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -r requirements.txt
+```
+
+### Windows Manual Install
+
+1. Install Python 3.12.
+2. Open `cmd.exe` in the project folder.
+3. Create the virtual environment:
+   ```bat
+   py -3.12 -m venv venv312
+   ```
+4. Activate it:
+   ```bat
+   venv312\Scripts\activate.bat
+   ```
+5. Upgrade packaging tools:
+   ```bat
+   python -m pip install --upgrade pip setuptools wheel
+   ```
+6. Install CUDA-enabled PyTorch:
+   ```bat
+   python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+   ```
+7. Install the app dependencies:
+   ```bat
+   python -m pip install -r requirements.txt
+   ```
 
 ## CUDA Requirement
 
