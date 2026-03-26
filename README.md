@@ -23,25 +23,17 @@ Set up the Python virtual environment first. You need to do this before trying t
 
 ### Linux
 
-This repository does not include a committed virtual environment. Set up `venv312` first.
-
 Recommended: use one of the included setup scripts:
 
 ```bash
 ./setup-venv312.sh
 ```
 
-or, if you use Fish:
-
-```bash
-./setup-venv312.fish
-```
-
 Manual setup:
 
 ```bash
 python3.12 -m venv venv312
-source venv312/bin/activate.fish
+source venv312/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 python -m pip install -r requirements.txt
@@ -80,6 +72,8 @@ You can also let the helper script handle the Windows setup:
 setup-venv312-windows.bat
 ```
 
+Script file: [setup-venv312-windows.bat](/home/vangel/apps/RATEImagesCLIP/setup-venv312-windows.bat)
+
 ## Run
 
 After the virtual environment is set up, run either app.
@@ -87,14 +81,14 @@ After the virtual environment is set up, run either app.
 ### Linux
 
 ```bash
-source venv312/bin/activate.fish
+source venv312/bin/activate
 ./run-promptmatch.fish
 ```
 
 or
 
 ```bash
-source venv312/bin/activate.fish
+source venv312/bin/activate
 ./run-imagereward.fish
 ```
 
