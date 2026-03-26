@@ -1,6 +1,90 @@
 # RATEImagesCLIP
 
-This repository contains two interactive Gradio applications for rating and sorting images using different AI models.
+This repository contains two interactive Gradio applications for rating and sorting images with GPU-accelerated AI models.
+
+## What This Is
+
+`RATEImagesCLIP` is built for quick human-in-the-loop image triage.
+
+- `promptmatch.py` finds images that match a subject, concept, or prompt.
+- `imagereward.py` ranks images by aesthetic fit to a style prompt.
+- CUDA is required so scoring stays fast enough to be practical on large folders.
+
+## Choose The App
+
+| App | Best for | How it scores | Output buckets |
+| --- | --- | --- | --- |
+| `promptmatch.py` | Finding specific subjects, concepts, or visual attributes | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
+| `imagereward.py` | Ranking by taste, mood, style, and overall visual appeal | Aesthetic preference scoring with ImageReward | `best` / `normal` |
+
+## Quick Start
+
+### Linux
+
+1. Activate the Python 3.12 virtual environment:
+   ```bash
+   source venv312/bin/activate.fish
+   ```
+2. Run the app you want:
+   ```bash
+   ./run-promptmatch.fish
+   ```
+   or
+   ```bash
+   ./run-imagereward.fish
+   ```
+3. Open:
+   - `http://localhost:7861` for PromptMatch
+   - `http://localhost:7860` for ImageReward
+
+### Windows
+
+Recommended setup:
+
+1. Install Python 3.12.
+2. Open `cmd.exe` in the project folder.
+3. Create the virtual environment:
+   ```bat
+   py -3.12 -m venv venv312
+   ```
+4. Activate it:
+   ```bat
+   venv312\Scripts\activate.bat
+   ```
+5. Upgrade packaging tools:
+   ```bat
+   python -m pip install --upgrade pip setuptools wheel
+   ```
+6. Install CUDA-enabled PyTorch:
+   ```bat
+   python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+   ```
+7. Install the app dependencies:
+   ```bat
+   python -m pip install -r requirements.txt
+   ```
+8. Start either app:
+   ```bat
+   run-promptmatch-windows.bat
+   ```
+   or
+   ```bat
+   run-imagereward-windows.bat
+   ```
+
+You can also use:
+
+```bat
+setup-venv312-windows.bat
+```
+
+## CUDA Requirement
+
+CUDA is mandatory for this project. These apps are meant to rate and sort many images quickly, and that speed depends on GPU inference.
+
+- If PyTorch cannot see a CUDA device, the app exits immediately.
+- The setup scripts install CUDA 12.6 PyTorch wheels by default.
+- If your machine needs a different supported PyTorch CUDA wheel, set `PYTORCH_CUDA_INDEX_URL` before setup.
 
 ## Screenshots
 
@@ -23,8 +107,6 @@ The repository consists of two main Python scripts, each providing a web-based U
 
 Both applications are built with [Gradio](https://www.gradio.app/) and use PyTorch for model inference. They are designed to be run as standalone scripts. A Python 3.12 virtual environment (`venv312`) is included with the necessary dependencies.
 
----
-
 ### `imagereward.py` - Aesthetic Scorer
 
 This tool uses the [ImageReward](https://github.com/THUDM/ImageReward) model (`ImageReward-v1.0`) to score images based on their aesthetic quality, guided by a text prompt.
@@ -38,50 +120,28 @@ This tool uses the [ImageReward](https://github.com/THUDM/ImageReward) model (`I
 *   **Re-scoring**: Change the prompt to re-evaluate all images based on a new aesthetic.
 *   **Export**: Save the sorted images into `best` and `normal` subdirectories.
 
----
-
 ### `promptmatch.py` - Semantic Sorter
 
 This tool uses various CLIP-style models to find images that match a specific textual description (semantic content).
 
+PromptMatch supports multiple model families so you can trade speed, memory use, and matching quality:
+
+- **OpenAI CLIP**: the original CLIP models.
+- **OpenCLIP**: strong open-source CLIP variants, including larger high-quality models.
+- **SigLIP**: newer Google models that are often very strong for text-image matching.
+
 **Key Features:**
 
-*   **Flexible Model Backend**: Supports multiple CLIP models through a unified `ModelBackend` class:
-    *   **OpenAI CLIP**: The original models (e.g., `ViT-L/14`).
-    *   **OpenCLIP**: High-performance open-source models (e.g., `ViT-bigG-14`).
-    *   **Google SigLIP**: State-of-the-art models from Google.
+*   **Flexible Model Backend**: Switch between OpenAI CLIP, OpenCLIP, and SigLIP in the UI.
 *   **Positive & Negative Prompts**: Sort images based on a **positive prompt** (what you want to find) and an optional **negative prompt** (what you want to exclude).
 *   **Found/Not Found Galleries**: The UI is split into "FOUND" and "NOT FOUND" galleries.
 *   **Dual Thresholds**: Independent sliders for positive and negative similarity scores provide fine-grained control.
 *   **On-the-Fly Model Switching**: Load and switch between different CLIP models directly from the UI.
 *   **Export**: Save the sorted images into `found` and `notfound` subdirectories.
 
----
+## Files Included
 
-## How to Run
-
-The repository includes Fish shell scripts for running the applications.
-
-1.  Activate the Python virtual environment:
-    ```bash
-    source venv312/bin/activate.fish
-    ```
-
-2.  To run the aesthetic scorer:
-    ```bash
-    ./run-imagereward.fish
-    ```
-    The UI will be available at `http://localhost:7860`.
-
-3.  To run the semantic sorter:
-    ```bash
-    ./run-promptmatch.fish
-    ```
-    The UI will be available at `http://localhost:7861`.
-
-### Windows Setup
-
-Windows-ready entrypoints are included:
+Windows-ready entrypoints:
 
 *   `imagereward_windows.py`
 *   `promptmatch_windows.py`
@@ -89,57 +149,10 @@ Windows-ready entrypoints are included:
 *   `run-imagereward-windows.bat`
 *   `run-promptmatch-windows.bat`
 
-Recommended setup on Windows:
+Dependency notes:
 
-1.  Install Python 3.12.
-2.  Open `cmd.exe` in the project folder.
-3.  Create the virtual environment:
-    ```bat
-    py -3.12 -m venv venv312
-    ```
-4.  Activate it:
-    ```bat
-    venv312\Scripts\activate.bat
-    ```
-5.  Upgrade packaging tools:
-    ```bat
-    python -m pip install --upgrade pip setuptools wheel
-    ```
-6.  Install PyTorch:
-    ```bat
-    python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-    ```
-7.  Install the application packages:
-    ```bat
-    python -m pip install -r requirements.txt
-    ```
-8.  Start either app with:
-    ```bat
-    run-imagereward-windows.bat
-    ```
-    or
-    ```bat
-    run-promptmatch-windows.bat
-    ```
-
-You can also let the helper script do the setup for you:
-
-```bat
-setup-venv312-windows.bat
-```
-
-The Windows scripts use `venv312\Scripts\activate.bat` and accept Windows image paths like `C:\images`.
-
-Dependency files:
-
-*   `requirements.txt` contains the application dependencies used by both tools, including OpenAI CLIP support for PromptMatch.
-
-Notes:
-
-*   CUDA is mandatory for this project. The app scripts now exit immediately if PyTorch cannot see a CUDA device.
-*   The setup scripts install the CUDA 12.6 PyTorch wheels by default from `https://download.pytorch.org/whl/cu126`.
-*   If your machine needs a different supported CUDA wheel, set `PYTORCH_CUDA_INDEX_URL` before running the setup script.
-*   Because `requirements.txt` now includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
-*   The model weights themselves are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their respective libraries.
+- `requirements.txt` contains the shared application dependencies.
+- Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
+- Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries.
 
 Place your images in a folder named `images` in the root of the repository to have them loaded at startup. You can also load images from any other folder using the UI.
