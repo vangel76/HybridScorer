@@ -23,13 +23,21 @@ Set up the Python virtual environment first. You need to do this before trying t
 
 ### Linux
 
-This repository already includes a `venv312` environment. Activate it first:
+This repository does not include a committed virtual environment. Set up `venv312` first.
+
+Recommended: use one of the included setup scripts:
 
 ```bash
-source venv312/bin/activate.fish
+./setup-venv312.sh
 ```
 
-If you are creating your own environment instead:
+or, if you use Fish:
+
+```bash
+./setup-venv312.fish
+```
+
+Manual setup:
 
 ```bash
 python3.12 -m venv venv312
@@ -136,7 +144,7 @@ The repository consists of two main Python scripts, each providing a web-based U
 1.  **`imagereward.py`**: An interactive tool for **aesthetic scoring** of images.
 2.  **`promptmatch.py`**: An interactive tool for **semantic content matching** using CLIP models.
 
-Both applications are built with [Gradio](https://www.gradio.app/) and use PyTorch for model inference. They are designed to be run as standalone scripts. A Python 3.12 virtual environment (`venv312`) is included with the necessary dependencies.
+Both applications are built with [Gradio](https://www.gradio.app/) and use PyTorch for model inference. They are designed to be run as standalone scripts. Set up a local Python 3.12 virtual environment named `venv312` before running them.
 
 ### `imagereward.py` - Aesthetic Scorer
 
