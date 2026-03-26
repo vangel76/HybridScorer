@@ -44,13 +44,13 @@ After the virtual environment is set up, just run the script you want. The run s
 ### Linux
 
 ```bash
-./run-promptmatch.fish
+./run-promptmatch.sh
 ```
 
 or
 
 ```bash
-./run-imagereward.fish
+./run-imagereward.sh
 ```
 
 Open:

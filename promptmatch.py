@@ -373,6 +373,31 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
     import shutil, statistics
     device = backend.device
 
+    def tooltip_script(pairs):
+        mapping = json.dumps(pairs)
+        return f"""
+<script>
+(() => {{
+  const tooltips = {mapping};
+  const applyTooltips = () => {{
+    for (const [id, text] of Object.entries(tooltips)) {{
+      const root = document.getElementById(id);
+      if (!root) continue;
+      root.title = text;
+      root.setAttribute("aria-label", text);
+      const targets = root.querySelectorAll("button, input, textarea, select, img");
+      for (const el of targets) {{
+        el.title = text;
+        el.setAttribute("aria-label", text);
+      }}
+    }}
+  }};
+  applyTooltips();
+  new MutationObserver(applyTooltips).observe(document.body, {{ childList: true, subtree: true }});
+}})();
+</script>
+"""
+
     # ── shared mutable state ────────────────────────────────────────────────
     def scan_image_paths():
         """Re-scan state["source_dir"] — always reads current folder from state."""
@@ -1106,9 +1131,11 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                         value=source_dir, label="", show_label=False,
                         placeholder="/path/to/images", lines=1,
                         elem_classes=["folder-input"],
+                        elem_id="pm-folder-input",
                     )
                     folder_btn = gr.Button("📂  Load folder & re-score",
-                                           elem_classes=["folder-btn"])
+                                           elem_classes=["folder-btn"],
+                                           elem_id="pm-folder-btn")
 
                 with gr.Group(elem_classes=["model-box"]):
                     gr.Markdown("#### 🧠 Model")
@@ -1118,19 +1145,24 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                         label="",
                         show_label=False,
                         interactive=True,
+                        elem_id="pm-model-dd",
                     )
                     reload_btn = gr.Button("🔄  Load model & re-score",
-                                           elem_classes=["reload-btn"])
+                                           elem_classes=["reload-btn"],
+                                           elem_id="pm-reload-btn")
 
                 with gr.Group(elem_classes=["reprompt-box"]):
                     gr.Markdown("#### 🔄 Re-score with new prompts")
                     new_pos = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt",
-                                         lines=1, placeholder="e.g. woman in red dress")
+                                         lines=1, placeholder="e.g. woman in red dress",
+                                         elem_id="pm-new-pos")
                     new_neg = gr.Textbox(value=NEGATIVE_PROMPT,
                                          label="Negative prompt (empty = disabled)",
-                                         lines=1, placeholder="e.g. man, cartoon")
+                                         lines=1, placeholder="e.g. man, cartoon",
+                                         elem_id="pm-new-neg")
                     rescore_btn = gr.Button("⚡  Re-score images",
-                                            elem_classes=["rescore-btn"])
+                                            elem_classes=["rescore-btn"],
+                                            elem_id="pm-rescore-btn")
 
                 stats_box = gr.Markdown(value=init_stats)
 
@@ -1140,6 +1172,7 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                     show_label=False,
                     interactive=False,
                     elem_classes=["hist-img"],
+                    elem_id="pm-hist-plot",
                 )
 
                 progress_html = gr.HTML(value=state["progress_html"])
@@ -1147,24 +1180,29 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                 pos_slider = gr.Slider(minimum=pos_min, maximum=pos_max,
                                        value=pos_mid, step=0.001,
                                        label="Positive threshold  (≥ → FOUND)",
-                                       interactive=True)
+                                       interactive=True,
+                                       elem_id="pm-pos-slider")
                 percentile_slider = gr.Slider(minimum=0, maximum=100,
                                               value=50, step=1,
                                               label="Or select top N%",
-                                              interactive=True)
+                                              interactive=True,
+                                              elem_id="pm-percentile-slider")
                 neg_slider = gr.Slider(minimum=neg_min if has_neg else 0,
                                        maximum=neg_max if has_neg else 1,
                                        value=NEGATIVE_THRESHOLD, step=0.001,
                                        label="Negative threshold  (< → passes)",
-                                       interactive=has_neg)
+                                       interactive=has_neg,
+                                       elem_id="pm-neg-slider")
 
                 status = gr.Markdown(value="", elem_classes=["status-md"])
 
                 export_btn    = gr.Button("💾  Export folders",
-                                          elem_classes=["export-btn"])
+                                          elem_classes=["export-btn"],
+                                          elem_id="pm-export-btn")
                 export_result = gr.Textbox(label="Export result", lines=3,
                                            interactive=False,
-                                           elem_classes=["export-box"])
+                                           elem_classes=["export-box"],
+                                           elem_id="pm-export-result")
 
             # ── gallery columns ───────────────────────────────────────────────
             with gr.Column(scale=5):
@@ -1183,6 +1221,7 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                         allow_preview=True,
                         preview=True,
                         elem_classes=["grid-wrap"],
+                        elem_id="pm-found-gallery",
                     )
 
                     # ── centre move column ────────────────────────────────
@@ -1190,8 +1229,8 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                                    elem_classes=["move-col"]):
                         gr.HTML("<div class='move-col-label'>MOVE</div>")
                         sel_info     = gr.Markdown("", elem_classes=["sel-info"])
-                        move_nf_btn  = gr.Button("→ NF", elem_classes=["move-btn","move-to-nf"])
-                        move_f_btn   = gr.Button("F ←",  elem_classes=["move-btn","move-to-f"])
+                        move_nf_btn  = gr.Button("→ NF", elem_classes=["move-btn","move-to-nf"], elem_id="pm-move-nf-btn")
+                        move_f_btn   = gr.Button("F ←",  elem_classes=["move-btn","move-to-f"], elem_id="pm-move-f-btn")
                         gr.HTML("<div class='move-hint'>click image<br>then button</div>")
 
                     notfound_gallery = gr.Gallery(
@@ -1201,7 +1240,28 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                         allow_preview=True,
                         preview=True,
                         elem_classes=["grid-wrap"],
+                        elem_id="pm-notfound-gallery",
                     )
+
+                gr.HTML(tooltip_script({
+                    "pm-folder-input": "Path to the image folder you want to score.",
+                    "pm-folder-btn": "Scan the folder above and re-score every image in it.",
+                    "pm-model-dd": "Choose which CLIP-family model PromptMatch should use.",
+                    "pm-reload-btn": "Load the selected model and re-score all images with it.",
+                    "pm-new-pos": "Describe what you want the app to find.",
+                    "pm-new-neg": "Optional: describe content that should count against a match.",
+                    "pm-rescore-btn": "Score all images again using the current prompts.",
+                    "pm-hist-plot": "Click in the histogram to set thresholds directly.",
+                    "pm-pos-slider": "Images at or above this positive score go to FOUND.",
+                    "pm-percentile-slider": "Automatically keep roughly the top N percent by positive score.",
+                    "pm-neg-slider": "If a negative prompt is active, lower values pass this filter.",
+                    "pm-export-btn": "Copy the current split into found and notfound folders.",
+                    "pm-export-result": "Shows where the exported files were written.",
+                    "pm-found-gallery": "Images currently classified as FOUND. Click one to select it.",
+                    "pm-move-nf-btn": "Move the selected FOUND image into NOT FOUND as a manual override.",
+                    "pm-move-f-btn": "Move the selected NOT FOUND image back into FOUND as a manual override.",
+                    "pm-notfound-gallery": "Images currently classified as NOT FOUND. Click one to select it."
+                }))
 
         # ── wiring ───────────────────────────────────────────────────────────
         slider_in = [pos_slider, neg_slider]
