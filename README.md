@@ -2,6 +2,18 @@
 
 This repository contains two interactive Gradio applications for rating and sorting images using different AI models.
 
+## Screenshots
+
+### PromptMatch
+Finds images that match a subject or concept you describe in text, with optional negative prompting to exclude unwanted content.
+
+![PromptMatch UI](screenshots/Promptmatch.jpg)
+
+### ImageReward
+Ranks images by overall aesthetic fit to a style prompt, so it is better for taste, mood, and visual quality than literal content matching.
+
+![ImageReward UI](screenshots/Imagereward.jpg)
+
 ## Architecture
 
 The repository consists of two main Python scripts, each providing a web-based UI for image evaluation:
