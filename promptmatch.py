@@ -373,7 +373,7 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
     import shutil, statistics
     device = backend.device
 
-    def tooltip_script(pairs):
+    def tooltip_head(pairs):
         mapping = json.dumps(pairs)
         return f"""
 <script>
@@ -397,6 +397,26 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
 }})();
 </script>
 """
+
+    tooltips = {
+        "pm-folder-input": "Path to the image folder you want to score.",
+        "pm-folder-btn": "Scan the folder above and re-score every image in it.",
+        "pm-model-dd": "Choose which CLIP-family model PromptMatch should use.",
+        "pm-reload-btn": "Load the selected model and re-score all images with it.",
+        "pm-new-pos": "Describe what you want the app to find.",
+        "pm-new-neg": "Optional: describe content that should count against a match.",
+        "pm-rescore-btn": "Score all images again using the current prompts.",
+        "pm-hist-plot": "Click in the histogram to set thresholds directly.",
+        "pm-pos-slider": "Images at or above this positive score go to FOUND.",
+        "pm-percentile-slider": "Automatically keep roughly the top N percent by positive score.",
+        "pm-neg-slider": "If a negative prompt is active, lower values pass this filter.",
+        "pm-export-btn": "Copy the current split into found and notfound folders.",
+        "pm-export-result": "Shows where the exported files were written.",
+        "pm-found-gallery": "Images currently classified as FOUND. Click one to select it.",
+        "pm-move-nf-btn": "Move the selected FOUND image into NOT FOUND as a manual override.",
+        "pm-move-f-btn": "Move the selected NOT FOUND image back into FOUND as a manual override.",
+        "pm-notfound-gallery": "Images currently classified as NOT FOUND. Click one to select it."
+    }
 
     # ── shared mutable state ────────────────────────────────────────────────
     def scan_image_paths():
@@ -1243,26 +1263,6 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                         elem_id="pm-notfound-gallery",
                     )
 
-                gr.HTML(tooltip_script({
-                    "pm-folder-input": "Path to the image folder you want to score.",
-                    "pm-folder-btn": "Scan the folder above and re-score every image in it.",
-                    "pm-model-dd": "Choose which CLIP-family model PromptMatch should use.",
-                    "pm-reload-btn": "Load the selected model and re-score all images with it.",
-                    "pm-new-pos": "Describe what you want the app to find.",
-                    "pm-new-neg": "Optional: describe content that should count against a match.",
-                    "pm-rescore-btn": "Score all images again using the current prompts.",
-                    "pm-hist-plot": "Click in the histogram to set thresholds directly.",
-                    "pm-pos-slider": "Images at or above this positive score go to FOUND.",
-                    "pm-percentile-slider": "Automatically keep roughly the top N percent by positive score.",
-                    "pm-neg-slider": "If a negative prompt is active, lower values pass this filter.",
-                    "pm-export-btn": "Copy the current split into found and notfound folders.",
-                    "pm-export-result": "Shows where the exported files were written.",
-                    "pm-found-gallery": "Images currently classified as FOUND. Click one to select it.",
-                    "pm-move-nf-btn": "Move the selected FOUND image into NOT FOUND as a manual override.",
-                    "pm-move-f-btn": "Move the selected NOT FOUND image back into FOUND as a manual override.",
-                    "pm-notfound-gallery": "Images currently classified as NOT FOUND. Click one to select it."
-                }))
-
         # ── wiring ───────────────────────────────────────────────────────────
         slider_in = [pos_slider, neg_slider]
         all_out   = [found_head, found_gallery,
@@ -1334,6 +1334,7 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
     demo.launch(server_name="0.0.0.0", server_port=server_port,
                 inbrowser=True, share=False,
                 css=css, theme=gr.themes.Base(),
+                head=tooltip_head(tooltips),
                 allowed_paths=["/"])  # allow serving images from any path
 
 

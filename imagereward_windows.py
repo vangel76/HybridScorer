@@ -26,11 +26,9 @@ import ImageReward as RM
 # ---------------------------------------------------------------------------
 
 IR_PROMPT = (
-    "masterpiece, best quality, ultra-detailed, cinematic, high fashion photography, "
-    "extremely beautiful woman, 25-35 years old, sharp elegant features, "
-    "flawless skin, dramatic lighting, rim light, chiaroscuro, "
-    "moody atmosphere, volumetric god rays, professional studio portrait, vogue style, "
-    "highly detailed face and eyes, 8k, award-winning"
+    "masterpiece, best quality, ultra-detailed, cinematic, "
+    "extremely beautiful woman, dramatic lighting, rim light, chiaroscuro, "
+    "professional studio portrait, 8k, award-winning"
 )
 
 THRESHOLD = 0.5  # ImageReward typically ranges around -1 to +2
@@ -226,6 +224,47 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
         sys.exit("Gradio not installed.\nRun: pip install gradio")
 
     import shutil, statistics
+
+    def tooltip_head(pairs):
+        mapping = json.dumps(pairs)
+        return f"""
+<script>
+(() => {{
+  const tooltips = {mapping};
+  const applyTooltips = () => {{
+    for (const [id, text] of Object.entries(tooltips)) {{
+      const root = document.getElementById(id);
+      if (!root) continue;
+      root.title = text;
+      root.setAttribute("aria-label", text);
+      const targets = root.querySelectorAll("button, input, textarea, select, img");
+      for (const el of targets) {{
+        el.title = text;
+        el.setAttribute("aria-label", text);
+      }}
+    }}
+  }};
+  applyTooltips();
+  new MutationObserver(applyTooltips).observe(document.body, {{ childList: true, subtree: true }});
+}})();
+</script>
+"""
+
+    tooltips = {
+        "ir-folder-input": "Path to the image folder you want to score.",
+        "ir-folder-btn": "Scan the folder above and re-score every image in it.",
+        "ir-new-prompt": "Describe the style, taste, or mood you want the model to reward.",
+        "ir-rescore-btn": "Score all images again using the current aesthetic prompt.",
+        "ir-threshold-slider": "Images at or above this score go to BEST.",
+        "ir-percentile-slider": "Automatically keep roughly the top N percent by score.",
+        "ir-hist-plot": "Click in the histogram to set the threshold directly.",
+        "ir-export-btn": "Copy the current split into best and normal folders.",
+        "ir-export-result": "Shows where the exported files were written.",
+        "ir-best-gallery": "Images currently classified as BEST. Click one to select it.",
+        "ir-move-normal-btn": "Move the selected BEST image into NORMAL as a manual override.",
+        "ir-move-best-btn": "Move the selected NORMAL image back into BEST as a manual override.",
+        "ir-normal-gallery": "Images currently classified as NORMAL. Click one to select it."
+    }
 
     # ── shared mutable state ────────────────────────────────────────────────
     def scan_image_paths():
@@ -866,31 +905,37 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                         value=source_dir, label="", show_label=False,
                         placeholder=get_windows_folder_placeholder(), lines=1,
                         elem_classes=["folder-input"],
+                        elem_id="ir-folder-input",
                     )
                     folder_btn = gr.Button("📂  Load folder & re-score",
-                                           elem_classes=["folder-btn"])
+                                           elem_classes=["folder-btn"],
+                                           elem_id="ir-folder-btn")
 
                 with gr.Group(elem_classes=["reprompt-box"]):
                     gr.Markdown("#### ⚡ Re-score with new prompt")
                     new_prompt = gr.Textbox(value=IR_PROMPT,
                                             label="Prompt",
                                             lines=3,
-                                            placeholder="Describe the aesthetic you want to score...")
+                                            placeholder="Describe the aesthetic you want to score...",
+                                            elem_id="ir-new-prompt")
                     rescore_btn = gr.Button("⚡  Re-score images",
-                                            elem_classes=["rescore-btn"])
+                                            elem_classes=["rescore-btn"],
+                                            elem_id="ir-rescore-btn")
 
                 threshold_slider = gr.Slider(
                     minimum=lo, maximum=hi,
                     value=mid, step=0.01,
                     label="Score threshold  (≥ → BEST)",
-                    interactive=True
+                    interactive=True,
+                    elem_id="ir-threshold-slider"
                 )
 
                 percentile_slider = gr.Slider(
                     minimum=0, maximum=100,
                     value=50, step=1,
                     label="Or select top N%",
-                    interactive=True
+                    interactive=True,
+                    elem_id="ir-percentile-slider"
                 )
 
                 hist_plot = gr.Image(
@@ -898,6 +943,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                     show_label=False,
                     interactive=False,
                     elem_classes=["hist-img"],
+                    elem_id="ir-hist-plot",
                 )
 
                 progress_html = gr.HTML(value=state["progress_html"])
@@ -905,10 +951,12 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                 status = gr.Markdown(value="", elem_classes=["status-md"])
 
                 export_btn = gr.Button("💾  Export folders",
-                                       elem_classes=["export-btn"])
+                                       elem_classes=["export-btn"],
+                                       elem_id="ir-export-btn")
                 export_result = gr.Textbox(label="Export result", lines=3,
                                            interactive=False,
-                                           elem_classes=["export-box"])
+                                           elem_classes=["export-box"],
+                                           elem_id="ir-export-result")
 
             # ── gallery columns ───────────────────────────────────────────────
             with gr.Column(scale=5):
@@ -927,6 +975,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                         allow_preview=True,
                         preview=True,
                         elem_classes=["grid-wrap"],
+                        elem_id="ir-best-gallery",
                     )
 
                     # ── centre move column ────────────────────────────────
@@ -934,8 +983,8 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                                    elem_classes=["move-col"]):
                         gr.HTML("<div class='move-col-label'>MOVE</div>")
                         sel_info     = gr.Markdown("", elem_classes=["sel-info"])
-                        move_norm_btn = gr.Button("→ NM", elem_classes=["move-btn","move-to-normal"])
-                        move_best_btn = gr.Button("B ←",  elem_classes=["move-btn","move-to-best"])
+                        move_norm_btn = gr.Button("→ NM", elem_classes=["move-btn","move-to-normal"], elem_id="ir-move-normal-btn")
+                        move_best_btn = gr.Button("B ←",  elem_classes=["move-btn","move-to-best"], elem_id="ir-move-best-btn")
                         gr.HTML("<div class='move-hint'>click image<br>then button</div>")
 
                     normal_gallery = gr.Gallery(
@@ -945,6 +994,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                         allow_preview=True,
                         preview=True,
                         elem_classes=["grid-wrap"],
+                        elem_id="ir-normal-gallery",
                     )
 
         # ── wiring ───────────────────────────────────────────────────────────
@@ -996,6 +1046,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
     demo.launch(server_name="0.0.0.0", server_port=server_port,
                 inbrowser=True, share=False,
                 css=css,
+                head=tooltip_head(tooltips),
                 allowed_paths=get_windows_allowed_paths(script_dir, source_dir))
 
 

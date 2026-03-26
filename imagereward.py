@@ -202,7 +202,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
 
     import shutil, statistics
 
-    def tooltip_script(pairs):
+    def tooltip_head(pairs):
         mapping = json.dumps(pairs)
         return f"""
 <script>
@@ -226,6 +226,22 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
 }})();
 </script>
 """
+
+    tooltips = {
+        "ir-folder-input": "Path to the image folder you want to score.",
+        "ir-folder-btn": "Scan the folder above and re-score every image in it.",
+        "ir-new-prompt": "Describe the style, taste, or mood you want the model to reward.",
+        "ir-rescore-btn": "Score all images again using the current aesthetic prompt.",
+        "ir-threshold-slider": "Images at or above this score go to BEST.",
+        "ir-percentile-slider": "Automatically keep roughly the top N percent by score.",
+        "ir-hist-plot": "Click in the histogram to set the threshold directly.",
+        "ir-export-btn": "Copy the current split into best and normal folders.",
+        "ir-export-result": "Shows where the exported files were written.",
+        "ir-best-gallery": "Images currently classified as BEST. Click one to select it.",
+        "ir-move-normal-btn": "Move the selected BEST image into NORMAL as a manual override.",
+        "ir-move-best-btn": "Move the selected NORMAL image back into BEST as a manual override.",
+        "ir-normal-gallery": "Images currently classified as NORMAL. Click one to select it."
+    }
 
     # ── shared mutable state ────────────────────────────────────────────────
     def scan_image_paths():
@@ -958,22 +974,6 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
                         elem_id="ir-normal-gallery",
                     )
 
-                gr.HTML(tooltip_script({
-                    "ir-folder-input": "Path to the image folder you want to score.",
-                    "ir-folder-btn": "Scan the folder above and re-score every image in it.",
-                    "ir-new-prompt": "Describe the style, taste, or mood you want the model to reward.",
-                    "ir-rescore-btn": "Score all images again using the current aesthetic prompt.",
-                    "ir-threshold-slider": "Images at or above this score go to BEST.",
-                    "ir-percentile-slider": "Automatically keep roughly the top N percent by score.",
-                    "ir-hist-plot": "Click in the histogram to set the threshold directly.",
-                    "ir-export-btn": "Copy the current split into best and normal folders.",
-                    "ir-export-result": "Shows where the exported files were written.",
-                    "ir-best-gallery": "Images currently classified as BEST. Click one to select it.",
-                    "ir-move-normal-btn": "Move the selected BEST image into NORMAL as a manual override.",
-                    "ir-move-best-btn": "Move the selected NORMAL image back into BEST as a manual override.",
-                    "ir-normal-gallery": "Images currently classified as NORMAL. Click one to select it."
-                }))
-
         # ── wiring ───────────────────────────────────────────────────────────
         all_out = [best_head, best_gallery, normal_head, normal_gallery, progress_html, status, hist_plot]
         move_out = all_out + [sel_info]
@@ -1023,6 +1023,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
     demo.launch(server_name="0.0.0.0", server_port=server_port,
                 inbrowser=True, share=False,
                 css=css,
+                head=tooltip_head(tooltips),
                 allowed_paths=["/"])
 
 
