@@ -1,9 +1,10 @@
 venv312/
 __pycache__/
+old/
 *.pyc
 *.pyo
 *.pyd
 .Python
 .DS_Store
 Thumbs.db
-old/
+
