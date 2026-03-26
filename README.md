@@ -39,19 +39,17 @@ setup-venv312-windows.bat
 
 ## Run
 
-After the virtual environment is set up, run either app.
+After the virtual environment is set up, just run the script you want. The run scripts activate `venv312` automatically.
 
 ### Linux
 
 ```bash
-source venv312/bin/activate
 ./run-promptmatch.fish
 ```
 
 or
 
 ```bash
-source venv312/bin/activate
 ./run-imagereward.fish
 ```
 
@@ -63,14 +61,12 @@ Open:
 ### Windows
 
 ```bat
-venv312\Scripts\activate.bat
 run-promptmatch-windows.bat
 ```
 
 or
 
 ```bat
-venv312\Scripts\activate.bat
 run-imagereward-windows.bat
 ```
 
