@@ -9,6 +9,8 @@ This repository contains two interactive Gradio applications for rating and sort
 - `promptmatch.py` finds images that match a subject, concept, or prompt.
 - `imagereward.py` ranks images by aesthetic fit to a style prompt.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
+- In the end, the apps losslessly copy the original image files into two output folders based on your final split.
+- The source images are not recompressed or edited.
 
 ## Choose The App
 
