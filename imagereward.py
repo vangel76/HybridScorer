@@ -7,6 +7,7 @@ ImageReward Aesthetic Scorer — Interactive Gallery Sorter
 • Threshold slider → live re-sort
 • Manual move: select an image in a gallery, then click ← Move or Move →
   Manual overrides persist through slider changes, re-scoring, and folder changes
+• Created by vangel
 """
 
 import os, sys, json, socket, warnings
@@ -868,6 +869,7 @@ def launch_ui(initial_scores, image_paths, model, device, script_dir, source_dir
 <h1>⬡ ImageReward</h1>
 <div class='subhead'>Aesthetic preference scorer — interactive gallery
  &middot; click image to select, then use ← → buttons to move &middot; ✋ = manual override
+ &middot; created by vangel
 </div>
 """)
 

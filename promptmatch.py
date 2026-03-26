@@ -8,6 +8,7 @@ PromptMatch — Interactive Image Sorter
 • Re-score panel — new prompts without restart
 • Manual move: select an image in a gallery, then click ← Move or Move →
   Manual overrides persist through slider changes, re-scoring, and folder changes
+• Created by vangel
 """
 
 import os, sys, json, socket, warnings
@@ -1136,7 +1137,8 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
 <h1>⬡ PromptMatch</h1>
 <div class='subhead'>CLIP-powered interactive image sorter
  &middot; click image to select, then use &larr; &rarr; buttons to move &middot; ✋ = manual override
- &middot; <span style='color:#aadd66'>click histogram to set threshold</span></div>
+ &middot; <span style='color:#aadd66'>click histogram to set threshold</span>
+ &middot; created by vangel</div>
 """)
 
 
