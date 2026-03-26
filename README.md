@@ -17,29 +17,31 @@ This repository contains two interactive Gradio applications for rating and sort
 | `promptmatch.py` | Finding specific subjects, concepts, or visual attributes | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
 | `imagereward.py` | Ranking by taste, mood, style, and overall visual appeal | Aesthetic preference scoring with ImageReward | `best` / `normal` |
 
-## Quick Start
+## Install
+
+Set up the Python virtual environment first. You need to do this before trying to run either app.
 
 ### Linux
 
-1. Activate the Python 3.12 virtual environment:
-   ```bash
-   source venv312/bin/activate.fish
-   ```
-2. Run the app you want:
-   ```bash
-   ./run-promptmatch.fish
-   ```
-   or
-   ```bash
-   ./run-imagereward.fish
-   ```
-3. Open:
-   - `http://localhost:7861` for PromptMatch
-   - `http://localhost:7860` for ImageReward
+This repository already includes a `venv312` environment. Activate it first:
+
+```bash
+source venv312/bin/activate.fish
+```
+
+If you are creating your own environment instead:
+
+```bash
+python3.12 -m venv venv312
+source venv312/bin/activate.fish
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -r requirements.txt
+```
 
 ### Windows
 
-Recommended setup:
+On Windows, set up the virtual environment first:
 
 1. Install Python 3.12.
 2. Open `cmd.exe` in the project folder.
@@ -63,19 +65,48 @@ Recommended setup:
    ```bat
    python -m pip install -r requirements.txt
    ```
-8. Start either app:
-   ```bat
-   run-promptmatch-windows.bat
-   ```
-   or
-   ```bat
-   run-imagereward-windows.bat
-   ```
 
-You can also use:
+You can also let the helper script handle the Windows setup:
 
 ```bat
 setup-venv312-windows.bat
+```
+
+## Run
+
+After the virtual environment is set up, run either app.
+
+### Linux
+
+```bash
+source venv312/bin/activate.fish
+./run-promptmatch.fish
+```
+
+or
+
+```bash
+source venv312/bin/activate.fish
+./run-imagereward.fish
+```
+
+Open:
+
+- `http://localhost:7861` for PromptMatch
+- `http://localhost:7860` for ImageReward
+
+### Windows
+
+```bat
+venv312\Scripts\activate.bat
+run-promptmatch-windows.bat
+```
+
+or
+
+```bat
+venv312\Scripts\activate.bat
+run-imagereward-windows.bat
 ```
 
 ## CUDA Requirement
