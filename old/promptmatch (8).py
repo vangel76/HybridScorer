@@ -1,0 +1,660 @@
+"""
+PromptMatch — Interactive Image Sorter
+---------------------------------------
+• CLIP scoring with positive + optional negative prompt
+• Native Gradio galleries — proven to work
+• object_fit="contain" — full image always visible, never cropped
+• Threshold sliders → live re-sort
+• Re-score panel — new prompts without restart
+• Manual move: select an image in a gallery, then click ← Move or Move →
+  Manual overrides survive slider changes; cleared on re-score
+"""
+
+import os, sys, json
+import torch
+import torch.nn.functional as F
+from PIL import Image
+from tqdm import tqdm
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+SEARCH_PROMPT      = "woman"
+NEGATIVE_PROMPT    = ""
+
+POSITIVE_THRESHOLD = 0.22
+NEGATIVE_THRESHOLD = 0.22
+
+INPUT_FOLDER_NAME  = "images"
+ALLOWED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
+BATCH_SIZE         = 32   # SigLIP/BigG are large — 32 is safe on 32 GB VRAM
+
+# ── Model selection ──────────────────────────────────────────────────────────
+# Pick ONE backend:
+#
+#  "openai"     — original OpenAI CLIP via the `clip` package
+#                 Models: "ViT-L/14"  "ViT-L/14@336px"  "ViT-B/32"
+#
+#  "openclip"   — open_clip community models (much better, same API feel)
+#                 Models: "ViT-H-14"        pretrained="laion2b_s32b_b79k"
+#                         "ViT-bigG-14"     pretrained="laion2b_s39b_b160k"  ← best CLIP-class
+#                 Install: pip install open_clip_torch
+#
+#  "siglip"     — Google SigLIP via HuggingFace transformers (best overall)
+#                 Models: "google/siglip-so400m-patch14-384"   ← recommended
+#                         "google/siglip-large-patch16-384"
+#                 Install: pip install transformers
+#
+MODEL_BACKEND   = "siglip"
+CLIP_MODEL      = "ViT-L/14"               # used when backend = "openai"
+OPENCLIP_MODEL  = "ViT-bigG-14"            # used when backend = "openclip"
+OPENCLIP_PRETRAINED = "laion2b_s39b_b160k" # used when backend = "openclip"
+SIGLIP_MODEL    = "google/siglip-so400m-patch14-384"  # used when backend = "siglip"
+
+# ---------------------------------------------------------------------------
+# Model backend — unified loader / encoder / scorer
+# ---------------------------------------------------------------------------
+
+class ModelBackend:
+    """Wraps OpenAI CLIP, OpenCLIP, and SigLIP behind one interface."""
+
+    def __init__(self, device):
+        self.device  = device
+        self.backend = MODEL_BACKEND
+        self._load()
+
+    # ── loaders ──────────────────────────────────────────────────────────────
+    def _load(self):
+        if self.backend == "openai":
+            self._load_openai()
+        elif self.backend == "openclip":
+            self._load_openclip()
+        elif self.backend == "siglip":
+            self._load_siglip()
+        else:
+            sys.exit(f"Unknown MODEL_BACKEND: {self.backend!r}")
+
+    def _load_openai(self):
+        try:
+            import clip as _clip
+        except ImportError:
+            sys.exit("OpenAI CLIP not installed.\nRun: pip install git+https://github.com/openai/CLIP.git")
+        print(f"[OpenAI CLIP] Loading {CLIP_MODEL} …")
+        self._model, self._preprocess = _clip.load(CLIP_MODEL, device=self.device)
+        self._model.eval()
+        self._clip_mod = _clip
+        print("[OpenAI CLIP] Ready.")
+
+    def _load_openclip(self):
+        try:
+            import open_clip
+        except ImportError:
+            sys.exit("OpenCLIP not installed.\nRun: pip install open_clip_torch")
+        print(f"[OpenCLIP] Loading {OPENCLIP_MODEL} / {OPENCLIP_PRETRAINED} …")
+        self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+            OPENCLIP_MODEL, pretrained=OPENCLIP_PRETRAINED, device=self.device)
+        self._model.eval()
+        self._tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL)
+        print("[OpenCLIP] Ready.")
+
+    def _load_siglip(self):
+        try:
+            from transformers import AutoProcessor, AutoModel
+        except ImportError:
+            sys.exit("transformers not installed.\nRun: pip install transformers")
+        print(f"[SigLIP] Loading {SIGLIP_MODEL} …")
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        self._processor = AutoProcessor.from_pretrained(SIGLIP_MODEL)
+        self._model     = AutoModel.from_pretrained(SIGLIP_MODEL, torch_dtype=dtype).to(self.device)
+        self._model.eval()
+        print("[SigLIP] Ready.")
+
+    # ── text encoding ─────────────────────────────────────────────────────────
+    def encode_text(self, prompt):
+        """Returns normalised mean embedding (1, D) for a prompt string."""
+        phrases = [
+            f"a photo of a {prompt}",
+            f"a photo of {prompt}",
+            prompt,
+        ]
+        with torch.no_grad():
+            if self.backend == "openai":
+                toks = self._clip_mod.tokenize(phrases).to(self.device)
+                feat = self._model.encode_text(toks)
+            elif self.backend == "openclip":
+                toks = self._tokenizer(phrases).to(self.device)
+                feat = self._model.encode_text(toks)
+            elif self.backend == "siglip":
+                # SigLIP uses a HF processor for text
+                inputs = self._processor(
+                    text=phrases, return_tensors="pt", padding="max_length", truncation=True
+                ).to(self.device)
+                feat = self._model.get_text_features(**inputs)
+            feat = F.normalize(feat.float(), dim=-1)
+            mean = F.normalize(feat.mean(dim=0, keepdim=True), dim=-1)
+        return mean   # (1, D)
+
+    # ── image batch scoring ───────────────────────────────────────────────────
+    def encode_images_batch(self, pil_images):
+        """Returns normalised image embeddings (N, D)."""
+        with torch.no_grad():
+            if self.backend in ("openai", "openclip"):
+                tensors = torch.stack([self._preprocess(img) for img in pil_images]).to(self.device)
+                feat    = self._model.encode_image(tensors)
+            elif self.backend == "siglip":
+                inputs = self._processor(
+                    images=pil_images, return_tensors="pt"
+                ).to(self.device)
+                # Cast pixel_values to match model dtype (float16 on CUDA)
+                model_dtype = next(self._model.parameters()).dtype
+                inputs["pixel_values"] = inputs["pixel_values"].to(model_dtype)
+                feat   = self._model.get_image_features(**inputs)
+            feat = F.normalize(feat.float(), dim=-1)
+        return feat   # (N, D)
+
+    @property
+    def name(self):
+        if self.backend == "openai":    return f"OpenAI CLIP {CLIP_MODEL}"
+        if self.backend == "openclip":  return f"OpenCLIP {OPENCLIP_MODEL}/{OPENCLIP_PRETRAINED}"
+        if self.backend == "siglip":    return f"SigLIP {SIGLIP_MODEL}"
+        return self.backend
+
+
+def score_all(image_paths, backend: ModelBackend, pos_emb, neg_emb,
+              progress_cb=None):
+    """Score images. progress_cb(done, total) called after each batch."""
+    results = {}
+    total   = len(image_paths)
+    done    = 0
+    for i in range(0, total, BATCH_SIZE):
+        batch = image_paths[i:i + BATCH_SIZE]
+        pil_imgs, valid = [], []
+        for p in batch:
+            try:
+                pil_imgs.append(Image.open(p).convert("RGB"))
+                valid.append(p)
+            except Exception as e:
+                print(f"  [WARN] {p}: {e}")
+                results[os.path.basename(p)] = {"pos": -1.0, "neg": None, "path": p}
+        if pil_imgs:
+            try:
+                feat = backend.encode_images_batch(pil_imgs)
+                pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
+                neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(valid)
+                for path, ps, ns in zip(valid, pos_sims, neg_sims):
+                    fname = os.path.basename(path)
+                    results[fname] = {
+                        "pos":  float(ps),
+                        "neg":  float(ns) if ns is not None else None,
+                        "path": path,
+                    }
+            except Exception as e:
+                print(f"  [WARN] batch error: {e}")
+                for p in valid:
+                    results[os.path.basename(p)] = {"pos": -1.0, "neg": None, "path": p}
+            if backend.device == "cuda":
+                torch.cuda.empty_cache()
+        done += len(batch)
+        if progress_cb:
+            progress_cb(done, total)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
+def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir):
+    try:
+        import gradio as gr
+    except ImportError:
+        sys.exit("Gradio not installed.\nRun: pip install gradio")
+
+    import shutil, statistics
+    device = backend.device
+
+    # ── shared mutable state ────────────────────────────────────────────────
+    state = {
+        "scores":    initial_scores,
+        "overrides": {},   # fname → "found" | "notfound"
+        "found_sel": None,
+        "nf_sel":    None,
+    }
+
+    # ── core logic ──────────────────────────────────────────────────────────
+    def clip_side(v, pos_t, neg_t):
+        pos_ok = v["pos"] >= pos_t
+        neg_ok = (v["neg"] is None) or (v["neg"] < neg_t)
+        return "found" if (pos_ok and neg_ok) else "notfound"
+
+    def build_split(scores, overrides, pos_t, neg_t):
+        """Returns (found_list, notfound_list) sorted by score desc.
+        Each item is (image_path, caption_string).
+        Caption = score value only (shown under tile).
+        Manual images get ✋ PREFIX so CSS [alt^="✋"] can add red border.
+        Full filename shown in Gradio's zoom/preview caption.
+        """
+        found, notfound = [], []
+        for fname, v in sorted(scores.items(), key=lambda x: -x[1]["pos"]):
+            if v["pos"] < 0:
+                continue
+            manual = fname in overrides
+            side   = overrides[fname] if manual else clip_side(v, pos_t, neg_t)
+            # Caption used as alt= text by Gradio — prefix drives CSS red-border
+            # Score shown under tile; filename visible only in zoom preview
+            if manual:
+                caption = f"✋ {v['pos']:.3f} | {fname}"
+            else:
+                caption = f"{v['pos']:.3f} | {fname}"
+            entry = (v["path"], caption)
+            if side == "found":
+                found.append(entry)
+            else:
+                notfound.append(entry)
+        return found, notfound
+
+    def status_line(found, notfound, scores, overrides):
+        n_manual = len(overrides)
+        n_failed = sum(1 for v in scores.values() if v["pos"] < 0)
+        s = f"⬡  {len(found)} found  /  {len(notfound)} not found"
+        if n_manual:
+            s += f"  ✋ {n_manual} manual override{'s' if n_manual != 1 else ''}"
+        if n_failed:
+            s += f"  ⚠ {n_failed} failed"
+        return s
+
+    def stat_line(label, vals):
+        if not vals:
+            return ""
+        m = statistics.mean(vals)
+        s = statistics.stdev(vals) if len(vals) > 1 else 0.0
+        return f"**{label}** — mean `{m:.4f}` stdev `{s:.4f}` range `{min(vals):.4f}`–`{max(vals):.4f}`"
+
+    def make_stats(pos_prompt, neg_prompt, scores):
+        pos_vals = [v["pos"] for v in scores.values() if v["pos"] >= 0]
+        neg_vals = [v["neg"] for v in scores.values()
+                    if v.get("neg") is not None and v["neg"] >= 0]
+        lines = [stat_line(f"🟢 `{pos_prompt}`", pos_vals)]
+        if neg_prompt and neg_vals:
+            lines.append(stat_line(f"🔴 `{neg_prompt}`", neg_vals))
+        return "\n\n".join(filter(None, lines)) or "*No stats available*"
+
+    def slider_range(scores):
+        pos_vals = [v["pos"] for v in scores.values() if v["pos"] >= 0]
+        neg_vals = [v["neg"] for v in scores.values()
+                    if v.get("neg") is not None and v["neg"] >= 0]
+        pos_min = round(min(pos_vals) - 0.01, 3) if pos_vals else 0.0
+        pos_max = round(max(pos_vals) + 0.01, 3) if pos_vals else 1.0
+        # Default threshold = midpoint of the found (upper) half of score range
+        pos_mid = round((pos_min + pos_max) / 2.0, 3)
+        return (
+            pos_min,
+            pos_max,
+            round(min(neg_vals) - 0.01, 3) if neg_vals else 0.0,
+            round(max(neg_vals) + 0.01, 3) if neg_vals else 1.0,
+            bool(neg_vals),
+            pos_mid,
+        )
+
+    # ── Gradio event handlers ───────────────────────────────────────────────
+    def update(pos_t, neg_t):
+        found, notfound = build_split(state["scores"], state["overrides"], pos_t, neg_t)
+        return (
+            f"### ✅ FOUND — {len(found)} images",
+            found,
+            f"### ❌ NOT FOUND — {len(notfound)} images",
+            notfound,
+            status_line(found, notfound, state["scores"], state["overrides"]),
+        )
+
+    def on_found_select(sel: gr.SelectData, pos_t, neg_t):
+        """Track which image is selected in FOUND gallery."""
+        state["found_sel"] = sel.index
+        state["nf_sel"]    = None
+        found, notfound = build_split(state["scores"], state["overrides"], pos_t, neg_t)
+        fname = os.path.basename(found[sel.index][0]) if sel.index < len(found) else "?"
+        return gr.update(value=f"Selected in FOUND: **{fname}**")
+
+    def on_nf_select(sel: gr.SelectData, pos_t, neg_t):
+        """Track which image is selected in NOT FOUND gallery."""
+        state["nf_sel"]    = sel.index
+        state["found_sel"] = None
+        found, notfound = build_split(state["scores"], state["overrides"], pos_t, neg_t)
+        fname = os.path.basename(notfound[sel.index][0]) if sel.index < len(notfound) else "?"
+        return gr.update(value=f"Selected in NOT FOUND: **{fname}**")
+
+    def move_selected_to_notfound(pos_t, neg_t):
+        """Move currently selected FOUND image → NOT FOUND."""
+        idx = state.get("found_sel")
+        if idx is not None:
+            found, _ = build_split(state["scores"], state["overrides"], pos_t, neg_t)
+            if idx < len(found):
+                fname = os.path.basename(found[idx][0])
+                state["overrides"][fname] = "notfound"
+        state["found_sel"] = None
+        return update(pos_t, neg_t) + (gr.update(value=""),)
+
+    def move_selected_to_found(pos_t, neg_t):
+        """Move currently selected NOT FOUND image → FOUND."""
+        idx = state.get("nf_sel")
+        if idx is not None:
+            _, notfound = build_split(state["scores"], state["overrides"], pos_t, neg_t)
+            if idx < len(notfound):
+                fname = os.path.basename(notfound[idx][0])
+                state["overrides"][fname] = "found"
+        state["nf_sel"] = None
+        return update(pos_t, neg_t) + (gr.update(value=""),)
+
+    def rescore(new_pos, new_neg, pos_t, neg_t, progress=gr.Progress()):
+        new_pos = new_pos.strip()
+        new_neg = new_neg.strip()
+        if not new_pos:
+            yield (gr.update(),) * 7 + ("⚠️ Positive prompt cannot be empty.",)
+            return
+
+        yield (gr.update(),) * 7 + ("⏳ Encoding & scoring — please wait…",)
+
+        try:
+            pos_emb = backend.encode_text(new_pos)
+            neg_emb = backend.encode_text(new_neg) if new_neg else None
+            progress(0, desc="Scoring…")
+            def _cb(done, total):
+                progress(done / total, desc=f"Scoring… {done}/{total}")
+            new_scores = score_all(image_paths, backend, pos_emb, neg_emb,
+                                   progress_cb=_cb)
+            progress(1, desc="Done")
+        except Exception as e:
+            yield (gr.update(),) * 7 + (f"❌ Error: {e}",)
+            return
+
+        state["scores"]    = new_scores
+        state["overrides"] = {}   # clear manual overrides on new prompt
+
+        pos_min, pos_max, neg_min, neg_max, has_neg, pos_mid = slider_range(new_scores)
+        stats = make_stats(new_pos, new_neg, new_scores)
+        found, notfound = build_split(new_scores, {}, pos_t, neg_t)
+
+        yield (
+            f"### ✅ FOUND — {len(found)} images",
+            found,
+            f"### ❌ NOT FOUND — {len(notfound)} images",
+            notfound,
+            stats,
+            gr.update(minimum=pos_min, maximum=pos_max, value=pos_mid),
+            gr.update(minimum=neg_min if has_neg else 0,
+                      maximum=neg_max if has_neg else 1,
+                      value=neg_t, interactive=has_neg),
+            status_line(found, notfound, new_scores, {}),
+        )
+
+    def export_files(pos_t, neg_t):
+        found, notfound = build_split(state["scores"], state["overrides"], pos_t, neg_t)
+        failed = [f for f, v in state["scores"].items() if v["pos"] < 0]
+        found_dir    = os.path.join(script_dir, "found")
+        notfound_dir = os.path.join(script_dir, "notfound")
+        for d in (found_dir, notfound_dir):
+            os.makedirs(d, exist_ok=True)
+            for f in os.listdir(d):
+                fp = os.path.join(d, f)
+                if os.path.isfile(fp):
+                    os.remove(fp)
+        for path, _ in found:
+            shutil.copy2(path, os.path.join(found_dir, os.path.basename(path)))
+        for path, _ in notfound:
+            shutil.copy2(path, os.path.join(notfound_dir, os.path.basename(path)))
+        for fname in failed:
+            src = state["scores"][fname]["path"]
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(notfound_dir, fname))
+        return (f"✅ {len(found)} → found/   {len(notfound) + len(failed)} → notfound/\n"
+                f"Path: {script_dir}")
+
+    # ── initial values ──────────────────────────────────────────────────────
+    pos_min, pos_max, neg_min, neg_max, has_neg, pos_mid = slider_range(initial_scores)
+    init_stats = make_stats(SEARCH_PROMPT, NEGATIVE_PROMPT, initial_scores)
+
+    # ── CSS ─────────────────────────────────────────────────────────────────
+    css = """
+    body, .gradio-container { background:#0d0d11 !important; color:#ddd8cc !important; }
+    .gr-block,.gr-box,.panel { background:#14141c !important; border-color:#252530 !important; }
+
+    /* Full browser width — remove Gradio's default max-width cap */
+    .gradio-container { max-width: 100% !important; padding: 8px 12px !important; }
+    .main { max-width: 100% !important; }
+    footer { display: none !important; }
+
+    h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66;
+         text-transform:uppercase; margin:0; font-size:1.4rem; }
+    .subhead { color:#667755; font-family:monospace; font-size:.78em; margin-top:3px; }
+
+    .reprompt-box { background:#1a1a26 !important; border:1px solid #2e2e44 !important;
+                    border-radius:8px; padding:12px 14px; margin-bottom:8px; }
+    .reprompt-box label { color:#aadd66 !important; font-family:monospace !important;
+                          font-size:.82em !important; text-transform:uppercase; }
+    .rescore-btn { background:#1e3a12 !important; color:#aadd66 !important;
+                   border:1px solid #4a8820 !important; font-family:monospace !important; }
+    .rescore-btn:hover { background:#2a5018 !important; }
+
+    .status-md  { font-family:monospace; font-size:.82em; color:#88bb55;
+                  background:#181820; border-radius:4px; padding:5px 10px; margin-top:6px; }
+    .export-btn { background:#0e2a30 !important; color:#55ccdd !important;
+                  border:1px solid #227788 !important; }
+    .export-box textarea { font-family:monospace !important; font-size:.78em !important;
+                           color:#55ddaa !important; background:#0d1a1c !important; }
+
+    input[type=range] { accent-color:#aadd66; }
+
+    /* move buttons */
+    .move-btn {
+        font-family: monospace !important; font-size: .8em !important;
+        padding: 4px 10px !important; border-radius: 4px !important;
+    }
+    .move-to-nf { background:#2a1010 !important; color:#ee8866 !important;
+                  border:1px solid #663322 !important; }
+    .move-to-f  { background:#102a10 !important; color:#88ee66 !important;
+                  border:1px solid #226633 !important; }
+
+    /* gallery column headers */
+    .found-head    { color:#88ee66 !important; font-family:monospace !important; }
+    .notfound-head { color:#ee6655 !important; font-family:monospace !important; }
+
+    /* make gallery images show full / uncropped */
+    .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
+
+    /* Caption text under each tile: show score, hide the " | filename" part */
+    .grid-wrap .caption-label span,
+    .grid-wrap span.svelte-1dv1zt9,
+    .grid-wrap [class*="caption"] {
+        font-family: monospace !important;
+        font-size: .72em !important;
+        color: #8899aa !important;
+    }
+
+    /* Red border on manually-moved images (alt text starts with ✋) */
+    .grid-wrap img[alt^="✋"] {
+        outline: 3px solid #dd3322 !important;
+        outline-offset: -3px;
+    }
+
+    /* centre move column */
+    .move-col { display:flex; flex-direction:column; align-items:center;
+                justify-content:center; gap:8px; padding:8px 4px;
+                background:#0f0f16; border-radius:8px;
+                border:1px solid #252535; }
+    .move-col-label { font-family:monospace; font-size:.7em; color:#556644;
+                      text-transform:uppercase; letter-spacing:.1em; }
+    .move-hint { font-family:monospace; font-size:.65em; color:#445533;
+                 text-align:center; line-height:1.4; }
+    .sel-info p { font-family:monospace !important; font-size:.72em !important;
+                  color:#aabb88 !important; text-align:center;
+                  word-break:break-all; }
+    .move-to-nf { background:#2a1010 !important; color:#ee8866 !important;
+                  border:1px solid #663322 !important;
+                  font-family:monospace !important; width:100% !important; }
+    .move-to-f  { background:#102a10 !important; color:#88ee66 !important;
+                  border:1px solid #226633 !important;
+                  font-family:monospace !important; width:100% !important; }
+    .move-to-nf:hover { background:#3a1a10 !important; }
+    .move-to-f:hover  { background:#1a3a10 !important; }
+    """
+
+    # ── layout ──────────────────────────────────────────────────────────────
+    with gr.Blocks(title="PromptMatch") as demo:
+
+        gr.HTML("<h1>⬡ PromptMatch</h1>"
+                "<div class='subhead'>CLIP-powered interactive image sorter"
+                " · click image to select, then use ← → buttons to move · ✋ = manual override</div>")
+
+        with gr.Row(equal_height=False):
+
+            # ── sidebar ──────────────────────────────────────────────────────
+            with gr.Column(scale=1, min_width=290):
+
+                with gr.Group(elem_classes=["reprompt-box"]):
+                    gr.Markdown("#### 🔄 Re-score with new prompts")
+                    new_pos = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt",
+                                         lines=1, placeholder="e.g. woman in red dress")
+                    new_neg = gr.Textbox(value=NEGATIVE_PROMPT,
+                                         label="Negative prompt (empty = disabled)",
+                                         lines=1, placeholder="e.g. man, cartoon")
+                    rescore_btn = gr.Button("⚡  Re-score images",
+                                            elem_classes=["rescore-btn"])
+
+                stats_box = gr.Markdown(value=init_stats)
+
+                pos_slider = gr.Slider(minimum=pos_min, maximum=pos_max,
+                                       value=pos_mid, step=0.001,
+                                       label="Positive threshold  (≥ → FOUND)",
+                                       interactive=True)
+                neg_slider = gr.Slider(minimum=neg_min if has_neg else 0,
+                                       maximum=neg_max if has_neg else 1,
+                                       value=NEGATIVE_THRESHOLD, step=0.001,
+                                       label="Negative threshold  (< → passes)",
+                                       interactive=has_neg)
+
+                status = gr.Markdown(value="", elem_classes=["status-md"])
+
+                export_btn    = gr.Button("💾  Export folders",
+                                          elem_classes=["export-btn"])
+                export_result = gr.Textbox(label="Export result", lines=3,
+                                           interactive=False,
+                                           elem_classes=["export-box"])
+
+            # ── gallery columns ───────────────────────────────────────────────
+            with gr.Column(scale=5):
+
+                with gr.Row():
+                    found_head    = gr.Markdown("### ✅ FOUND",
+                                                elem_classes=["found-head"])
+                    notfound_head = gr.Markdown("### ❌ NOT FOUND",
+                                                elem_classes=["notfound-head"])
+
+                with gr.Row(equal_height=True):
+                    found_gallery = gr.Gallery(
+                        label="Found", show_label=False,
+                        columns=5, height="80vh",
+                        object_fit="contain",
+                        allow_preview=True,
+                        preview=True,
+                        elem_classes=["grid-wrap"],
+                    )
+
+                    # ── centre move column ────────────────────────────────
+                    with gr.Column(scale=0, min_width=90,
+                                   elem_classes=["move-col"]):
+                        gr.HTML("<div class='move-col-label'>MOVE</div>")
+                        sel_info     = gr.Markdown("", elem_classes=["sel-info"])
+                        move_nf_btn  = gr.Button("→ NF", elem_classes=["move-btn","move-to-nf"])
+                        move_f_btn   = gr.Button("F ←",  elem_classes=["move-btn","move-to-f"])
+                        gr.HTML("<div class='move-hint'>click image<br>then button</div>")
+
+                    notfound_gallery = gr.Gallery(
+                        label="Not Found", show_label=False,
+                        columns=5, height="80vh",
+                        object_fit="contain",
+                        allow_preview=True,
+                        preview=True,
+                        elem_classes=["grid-wrap"],
+                    )
+
+        # ── wiring ───────────────────────────────────────────────────────────
+        slider_in = [pos_slider, neg_slider]
+        all_out   = [found_head, found_gallery,
+                     notfound_head, notfound_gallery, status]
+        move_out  = all_out + [sel_info]   # move buttons also clear sel_info
+
+        pos_slider.change(fn=update, inputs=slider_in, outputs=all_out)
+        neg_slider.change(fn=update, inputs=slider_in, outputs=all_out)
+
+        # select handlers — just track which image is active, don't move yet
+        found_gallery.select(
+            fn=on_found_select, inputs=slider_in, outputs=[sel_info])
+        notfound_gallery.select(
+            fn=on_nf_select,    inputs=slider_in, outputs=[sel_info])
+
+        # move buttons
+        move_nf_btn.click(fn=move_selected_to_notfound,
+                          inputs=slider_in, outputs=move_out)
+        move_f_btn.click( fn=move_selected_to_found,
+                          inputs=slider_in, outputs=move_out)
+
+        rescore_out = [found_head, found_gallery,
+                       notfound_head, notfound_gallery,
+                       stats_box, pos_slider, neg_slider, status]
+        rescore_btn.click(
+            fn=rescore,
+            inputs=[new_pos, new_neg, pos_slider, neg_slider],
+            outputs=rescore_out,
+        )
+
+        export_btn.click(fn=export_files, inputs=slider_in, outputs=export_result)
+
+        demo.load(fn=update, inputs=slider_in, outputs=all_out)
+
+    demo.launch(server_name="0.0.0.0", server_port=7860,
+                inbrowser=True, share=False,
+                css=css, theme=gr.themes.Base())
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    print("=== PromptMatch — Interactive Sorter ===")
+    print(f"  Positive : {SEARCH_PROMPT!r}")
+    neg_display = repr(NEGATIVE_PROMPT) if NEGATIVE_PROMPT else "(disabled)"
+    print(f"  Negative : {neg_display}")
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)
+
+    if not os.path.isdir(source_dir):
+        sys.exit(f"Input folder not found: {source_dir}")
+
+    image_paths = [
+        os.path.join(source_dir, f)
+        for f in sorted(os.listdir(source_dir))
+        if f.lower().endswith(ALLOWED_EXTENSIONS)
+        and os.path.isfile(os.path.join(source_dir, f))
+    ]
+    if not image_paths:
+        sys.exit("No images found.")
+    print(f"\nFound {len(image_paths)} images. Scoring…")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device.upper()}")
+
+    backend = ModelBackend(device)
+    print(f"  Model    : {backend.name}")
+
+    pos_emb = backend.encode_text(SEARCH_PROMPT)
+    neg_emb = backend.encode_text(NEGATIVE_PROMPT) if NEGATIVE_PROMPT else None
+
+    from tqdm import tqdm as _tqdm
+    _pbar = _tqdm(total=len(image_paths), desc="Scoring")
+    def _main_cb(done, total):
+        _pbar.n = done; _pbar.refresh()
+    scores = score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=_main_cb)
+    _pbar.close()
+
+    print(f"\nScoring done. Launching browser UI on http://localhost:7860 …\n")
+    launch_ui(scores, image_paths, backend, script_dir, source_dir)
