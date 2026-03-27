@@ -38,6 +38,7 @@ PROMPTMATCH_SLIDER_MIN = -1.0
 PROMPTMATCH_SLIDER_MAX = 1.0
 IMAGEREWARD_SLIDER_MIN = -5.0
 IMAGEREWARD_SLIDER_MAX = 5.0
+HIST_HEIGHT_SCALE = 0.7
 
 SEARCH_PROMPT = "woman"
 NEGATIVE_PROMPT = ""
@@ -501,8 +502,9 @@ def create_app():
         "source_dir": source_dir,
         "scores": {},
         "overrides": {},
-        "left_sel": None,
-        "right_sel": None,
+        "left_marked": [],
+        "right_marked": [],
+        "preview_fname": None,
         "backend": prompt_backend,
         "ir_model": None,
         "hist_geom": None,
@@ -514,6 +516,148 @@ def create_app():
 <script>
 (() => {{
   const tooltips = {mapping};
+  const pushThumbAction = (value) => {{
+    const root = document.getElementById("hy-thumb-action");
+    if (!root) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    input.value = value;
+    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const pushZoomValue = (value) => {{
+    const root = document.getElementById("hy-zoom-signal");
+    if (!root) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    input.value = String(value);
+    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const readMarkedState = () => {{
+    const root = document.getElementById("hy-mark-state");
+    if (!root) return {{ left: [], right: [] }};
+    const input = root.querySelector("input, textarea");
+    if (!input || !input.value) return {{ left: [], right: [] }};
+    try {{
+      return JSON.parse(input.value);
+    }} catch {{
+      return {{ left: [], right: [] }};
+    }}
+  }};
+  let repaintTimers = [];
+  const scheduleRepaint = () => {{
+    ensureThumbBehavior();
+    for (const timer of repaintTimers) clearTimeout(timer);
+    repaintTimers = [
+      setTimeout(ensureThumbBehavior, 40),
+      setTimeout(ensureThumbBehavior, 140),
+      setTimeout(ensureThumbBehavior, 320),
+    ];
+  }};
+  const ensureThumbBehavior = () => {{
+    const markedState = readMarkedState();
+    const allMarked = new Set([...(markedState.left || []), ...(markedState.right || [])]);
+    const heldSet = new Set(markedState.held || []);
+    for (const [galleryId, side] of [["hy-left-gallery", "left"], ["hy-right-gallery", "right"]]) {{
+      const root = document.getElementById(galleryId);
+      if (!root) continue;
+      if (!root.dataset.hyShiftHooked) {{
+        root.addEventListener("click", (event) => {{
+          const card = event.target.closest("button");
+          if (!card || !root.contains(card)) return;
+          if (!event.shiftKey) {{
+            setTimeout(scheduleRepaint, 30);
+            setTimeout(scheduleRepaint, 140);
+            setTimeout(scheduleRepaint, 320);
+            return;
+          }}
+          const thumbButtons = Array.from(root.querySelectorAll("button")).filter((btn) => {{
+            const img = btn.querySelector("img");
+            const inDialog = !!btn.closest('[role="dialog"], [aria-modal="true"]');
+            const hasCaption = !!(btn.querySelector(".caption-label span") || btn.querySelector('[class*="caption"]'));
+            return !inDialog && !!img && hasCaption;
+          }});
+          const index = thumbButtons.indexOf(card);
+          if (index < 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          pushThumbAction(`${{side}}:${{index}}:${{Date.now()}}`);
+        }}, true);
+        root.dataset.hyShiftHooked = "1";
+      }}
+      const thumbButtons = Array.from(root.querySelectorAll("button")).filter((btn) => {{
+        const img = btn.querySelector("img");
+        const inDialog = !!btn.closest('[role="dialog"], [aria-modal="true"]');
+        const hasCaption = !!(btn.querySelector(".caption-label span") || btn.querySelector('[class*="caption"]'));
+        return !inDialog && !!img && hasCaption;
+      }});
+      for (const card of thumbButtons) {{
+        const img = card.querySelector("img");
+        if (!img) continue;
+        const captionEl = card.querySelector(".caption-label span") || card.querySelector('[class*="caption"]');
+        const captionText = captionEl ? (captionEl.textContent || "") : "";
+        const held = captionText.includes("✋ ");
+        const parts = captionText.split("|");
+        const fname = parts.length ? parts[parts.length - 1].trim() : "";
+        const marked = (markedState[side] || []).includes(fname);
+        if (!card) continue;
+        card.style.position = "relative";
+        card.style.boxSizing = "border-box";
+        card.style.outline = marked ? "3px solid #58bb73" : (held ? "3px solid #dd3322" : "");
+        card.style.outlineOffset = (marked || held) ? "-3px" : "";
+        card.style.boxShadow = marked ? "inset 0 0 0 1px rgba(88,187,115,0.35)" : "";
+        img.style.outline = "";
+        img.style.outlineOffset = "";
+      }}
+    }}
+    for (const el of document.querySelectorAll('[data-hy-preview-border="1"]')) {{
+      el.style.outline = "";
+      el.style.outlineOffset = "";
+      el.style.boxShadow = "";
+      el.style.border = "";
+      el.style.borderRadius = "";
+      el.style.background = "";
+      el.style.padding = "";
+      el.style.boxSizing = "";
+      el.style.overflow = "";
+      el.removeAttribute("data-hy-preview-border");
+    }}
+    const previewImages = Array.from(document.querySelectorAll(
+      "#hy-left-gallery span.preview img, #hy-right-gallery span.preview img, #hy-left-gallery .preview img, #hy-right-gallery .preview img"
+    )).filter((img) => {{
+      const rect = img.getBoundingClientRect();
+      const style = window.getComputedStyle(img);
+      return rect.width >= 220 && rect.height >= 220 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    }});
+    for (const chosen of previewImages) {{
+      const captionText = chosen.getAttribute("alt") || "";
+      const parts = captionText.split("|");
+      const fname = parts.length ? parts[parts.length - 1].trim() : "";
+      const marked = allMarked.has(fname);
+      const held = heldSet.has(fname);
+      if (!(marked || held)) continue;
+      const color = marked ? "#58bb73" : "#dd3322";
+      const mediaButton = chosen.closest("button.media-button");
+      if (mediaButton && !mediaButton.matches("button.thumbnail-item, .thumbnail-item")) {{
+        mediaButton.style.outline = "";
+        mediaButton.style.outlineOffset = "";
+        mediaButton.style.border = `4px solid ${{color}}`;
+        mediaButton.style.boxShadow = "0 0 0 1px rgba(0, 0, 0, 0.28)";
+        mediaButton.style.borderRadius = "10px";
+        mediaButton.style.background = "#0a0a12";
+        mediaButton.style.padding = "0";
+        mediaButton.style.boxSizing = "border-box";
+        mediaButton.style.overflow = "hidden";
+        mediaButton.setAttribute("data-hy-preview-border", "1");
+      }}
+      chosen.style.border = "0";
+      chosen.style.boxShadow = "none";
+      chosen.style.borderRadius = "6px";
+      chosen.setAttribute("data-hy-preview-border", "1");
+    }}
+  }};
   const applyTooltips = () => {{
     for (const [id, text] of Object.entries(tooltips)) {{
       const root = document.getElementById(id);
@@ -526,9 +670,48 @@ def create_app():
         el.setAttribute("aria-label", text);
       }}
     }}
+    ensureThumbBehavior();
+  }};
+  const hookMarkState = () => {{
+    const root = document.getElementById("hy-mark-state");
+    if (!root || root.dataset.hyStateHooked) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    input.addEventListener("input", scheduleRepaint);
+    input.addEventListener("change", scheduleRepaint);
+    root.dataset.hyStateHooked = "1";
+  }};
+  const hookZoomControl = () => {{
+    const range = document.getElementById("hy-zoom-range");
+    if (!range || range.dataset.hyZoomHooked) return;
+    const signalRoot = document.getElementById("hy-zoom-signal");
+    const signalInput = signalRoot ? signalRoot.querySelector("input, textarea") : null;
+    if (signalInput && signalInput.value) {{
+      range.value = signalInput.value;
+    }}
+    const sync = () => pushZoomValue(range.value);
+    range.addEventListener("input", sync);
+    range.addEventListener("change", sync);
+    if (signalInput && !signalInput.dataset.hyZoomHooked) {{
+      const pull = () => {{
+        if (signalInput.value) range.value = signalInput.value;
+      }};
+      signalInput.addEventListener("input", pull);
+      signalInput.addEventListener("change", pull);
+      signalInput.dataset.hyZoomHooked = "1";
+    }}
+    range.dataset.hyZoomHooked = "1";
   }};
   applyTooltips();
-  new MutationObserver(applyTooltips).observe(document.body, {{ childList: true, subtree: true }});
+  hookMarkState();
+  hookZoomControl();
+  scheduleRepaint();
+  new MutationObserver(() => {{
+    applyTooltips();
+    hookMarkState();
+    hookZoomControl();
+    scheduleRepaint();
+  }}).observe(document.body, {{ childList: true, subtree: true }});
 }})();
 </script>
 """
@@ -546,13 +729,14 @@ def create_app():
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
-        "hy-zoom": "Choose how many thumbnails appear per row in both galleries.",
+        "hy-zoom-ui": "Choose how many thumbnails appear per row in both galleries.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
         "hy-right-gallery": "Images currently in the right bucket. Click one to select it.",
-        "hy-move-right": "Move the selected left image into the right bucket as a manual override.",
-        "hy-move-left": "Move the selected right image into the left bucket as a manual override.",
+        "hy-move-right": "Move all marked SELECTED images into REJECTED as manual overrides.",
+        "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
+        "hy-clear-status": "Remove manual override status from all marked images so they snap back to their scored bucket.",
     }
 
     def ensure_imagereward_model():
@@ -565,6 +749,21 @@ def create_app():
         if columns is not None:
             update_kwargs["columns"] = columns
         return gr.update(**update_kwargs)
+
+    def selection_info():
+        left_count = len(state.get("left_marked", []))
+        right_count = len(state.get("right_marked", []))
+        if not left_count and not right_count:
+            return "Shift+click thumbnails to mark multiple images."
+        return f"Marked: **{left_count}** in SELECTED, **{right_count}** in REJECTED"
+
+    def marked_state_json():
+        return json.dumps({
+            "left": state.get("left_marked", []),
+            "right": state.get("right_marked", []),
+            "held": list(state.get("overrides", {}).keys()),
+            "preview": state.get("preview_fname"),
+        })
 
     def render_histogram(method, scores, main_threshold, aux_threshold):
         if not scores:
@@ -597,10 +796,10 @@ def create_app():
 
             pos_counts, pos_lo, pos_hi = _bins(pos_vals)
             neg_counts, neg_lo, neg_hi = _bins(neg_vals)
-            W, CH = 300, 130
+            W, CH = 300, max(60, int(130 * HIST_HEIGHT_SCALE))
             PAD_L, PAD_R = 38, 8
-            PAD_TOP, PAD_BOT = 18, 22
-            GAP = 28
+            PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
+            GAP = max(16, int(28 * HIST_HEIGHT_SCALE))
             n_ch = 2 if has_neg else 1
             H = PAD_TOP + n_ch * CH + (n_ch - 1) * GAP + PAD_BOT
             img = Image.new("RGB", (W, H), "#0d0d11")
@@ -664,9 +863,9 @@ def create_app():
         counts = [0] * bins
         for val in vals:
             counts[min(int((val - lo) / width), bins - 1)] += 1
-        W, H = 300, 130
+        W, H = 300, max(70, int(130 * HIST_HEIGHT_SCALE))
         PAD_L, PAD_R = 38, 8
-        PAD_TOP, PAD_BOT = 18, 22
+        PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
         cW = W - PAD_L - PAD_R
         img = Image.new("RGB", (W, H), "#0d0d11")
         draw = ImageDraw.Draw(img)
@@ -708,6 +907,10 @@ def create_app():
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
         )
+        left_names = {os.path.basename(path) for path, _ in left_items}
+        right_names = {os.path.basename(path) for path, _ in right_items}
+        state["left_marked"] = [name for name in state.get("left_marked", []) if name in left_names]
+        state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
         return (
             f"### {left_name} — {len(left_items)} images",
             gallery_update(left_items, columns=zoom_columns),
@@ -715,6 +918,8 @@ def create_app():
             gallery_update(right_items, columns=zoom_columns),
             status_line(state["method"], left_items, right_items, state["scores"], state["overrides"]),
             render_histogram(state["method"], state["scores"], main_threshold, aux_threshold),
+            selection_info(),
+            marked_state_json(),
         )
 
     def score_imagereward(folder_paths, positive_prompt, negative_prompt, penalty_weight, progress):
@@ -762,20 +967,21 @@ def create_app():
     def configure_controls(method):
         state["method"] = method
         state["overrides"] = {}
-        state["left_sel"] = None
-        state["right_sel"] = None
+        state["left_marked"] = []
+        state["right_marked"] = []
+        state["preview_fname"] = None
         if method == METHOD_PROMPTMATCH:
             return (
                 gr.update(visible=True),
                 gr.update(visible=False),
-                gr.update(label="Primary threshold (>= -> SELECTED)", value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-                gr.update(label="Negative threshold (< -> passes)", visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(label="Primary thresh (>=  SELECTED)", value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(label="Neg threshold (< -> passes)", visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt."),
             )
         return (
             gr.update(visible=False),
             gr.update(visible=True),
-            gr.update(label="Primary threshold (>= -> SELECTED)", value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
+            gr.update(label="Primary thresh (>=  SELECTED)", value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
             gr.update(visible=False, value=NEGATIVE_THRESHOLD),
             gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score."),
         )
@@ -789,6 +995,8 @@ def create_app():
             gallery_update([]),
             message,
             None,
+            selection_info(),
+            marked_state_json(),
             main_upd,
             aux_upd,
         )
@@ -805,8 +1013,9 @@ def create_app():
         state["method"] = method
         state["source_dir"] = folder
         state["overrides"] = {}
-        state["left_sel"] = None
-        state["right_sel"] = None
+        state["left_marked"] = []
+        state["right_marked"] = []
+        state["preview_fname"] = None
 
         if method == METHOD_PROMPTMATCH:
             cfg = get_model_config(model_label)
@@ -830,7 +1039,7 @@ def create_app():
 
             state["scores"] = score_all(image_paths, state["backend"], pos_emb, neg_emb, progress_cb=_cb)
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
-            left_head, left_gallery, right_head, right_gallery, status, hist = current_view(pos_mid, neg_mid)
+            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(pos_mid, neg_mid)
             return (
                 left_head,
                 left_gallery,
@@ -838,8 +1047,10 @@ def create_app():
                 right_gallery,
                 status,
                 hist,
-                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=pos_mid, label="Primary threshold (>= -> SELECTED)"),
-                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=neg_mid, visible=True, interactive=has_neg, label="Negative threshold (< -> passes)"),
+                sel_info,
+                mark_state,
+                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=pos_mid, label="Primary thresh (>=  SELECTED)"),
+                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=neg_mid, visible=True, interactive=has_neg, label="Neg threshold (< -> passes)"),
             )
 
         state["scores"] = score_imagereward(
@@ -850,7 +1061,7 @@ def create_app():
             progress,
         )
         lo, hi, mid = imagereward_slider_range(state["scores"])
-        left_head, left_gallery, right_head, right_gallery, status, hist = current_view(mid, NEGATIVE_THRESHOLD)
+        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(mid, NEGATIVE_THRESHOLD)
         return (
             left_head,
             left_gallery,
@@ -858,42 +1069,70 @@ def create_app():
             right_gallery,
             status,
             hist,
-            gr.update(minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX, value=mid, label="Primary threshold (>= -> SELECTED)"),
+            sel_info,
+            mark_state,
+            gr.update(minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX, value=mid, label="Primary thresh (>=  SELECTED)"),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
         )
 
     def update_split(main_threshold, aux_threshold):
         return current_view(main_threshold, aux_threshold)
 
-    def select_left(evt: gr.SelectData, main_threshold, aux_threshold):
-        left_items, _ = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
-        state["left_sel"] = os.path.basename(left_items[evt.index][0]) if evt.index < len(left_items) else None
-        state["right_sel"] = None
-        left_name, _, _, _ = method_labels(state["method"])
-        return f"Selected in {left_name}: **{state['left_sel'] or '?'}**"
+    def toggle_mark(action, main_threshold, aux_threshold):
+        if not action:
+            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        try:
+            side, raw_index, _ = str(action).split(":", 2)
+            index = int(raw_index)
+        except Exception:
+            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
+        items = left_items if side == "left" else right_items
+        marked_key = "left_marked" if side == "left" else "right_marked"
+        if 0 <= index < len(items):
+            fname = os.path.basename(items[index][0])
+            if fname in state[marked_key]:
+                state[marked_key] = [name for name in state[marked_key] if name != fname]
+            else:
+                state[marked_key].append(fname)
+        return current_view(main_threshold, aux_threshold)
 
-    def select_right(evt: gr.SelectData, main_threshold, aux_threshold):
-        _, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
-        state["right_sel"] = os.path.basename(right_items[evt.index][0]) if evt.index < len(right_items) else None
-        state["left_sel"] = None
-        _, right_name, _, _ = method_labels(state["method"])
-        return f"Selected in {right_name}: **{state['right_sel'] or '?'}**"
+    def remember_preview(side, main_threshold, aux_threshold, evt: gr.SelectData):
+        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
+        items = left_items if side == "left" else right_items
+        if 0 <= evt.index < len(items):
+            state["preview_fname"] = os.path.basename(items[evt.index][0])
+            return marked_state_json()
+        return gr.update()
+
+    def remember_preview_left(main_threshold, aux_threshold, evt: gr.SelectData):
+        return remember_preview("left", main_threshold, aux_threshold, evt)
+
+    def remember_preview_right(main_threshold, aux_threshold, evt: gr.SelectData):
+        return remember_preview("right", main_threshold, aux_threshold, evt)
 
     def move_right(main_threshold, aux_threshold):
         left_name, right_name, _, _ = method_labels(state["method"])
-        if state["left_sel"]:
-            state["overrides"][state["left_sel"]] = right_name
-        state["left_sel"] = None
-        state["right_sel"] = None
-        return (*current_view(main_threshold, aux_threshold), "")
+        for fname in state["left_marked"]:
+            state["overrides"][fname] = right_name
+        state["left_marked"] = []
+        state["right_marked"] = []
+        return current_view(main_threshold, aux_threshold)
 
     def move_left(main_threshold, aux_threshold):
         left_name, right_name, _, _ = method_labels(state["method"])
-        if state["right_sel"]:
-            state["overrides"][state["right_sel"]] = left_name
-        state["left_sel"] = None
-        state["right_sel"] = None
-        return (*current_view(main_threshold, aux_threshold), "")
+        for fname in state["right_marked"]:
+            state["overrides"][fname] = left_name
+        state["left_marked"] = []
+        state["right_marked"] = []
+        return current_view(main_threshold, aux_threshold)
+
+    def clear_status(main_threshold, aux_threshold):
+        for fname in set(state["left_marked"] + state["right_marked"]):
+            state["overrides"].pop(fname, None)
+        state["left_marked"] = []
+        state["right_marked"] = []
+        return current_view(main_threshold, aux_threshold)
 
     def set_from_percentile(percentile, main_threshold, aux_threshold):
         new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
@@ -904,8 +1143,8 @@ def create_app():
             state["zoom_columns"] = max(2, min(10, int(zoom_value)))
         except Exception:
             state["zoom_columns"] = 5
-        left_head, left_gallery, right_head, right_gallery, status, hist = current_view(main_threshold, aux_threshold)
-        return left_head, left_gallery, right_head, right_gallery, status, hist
+        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(main_threshold, aux_threshold)
+        return left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state
 
     def on_hist_click(sel: gr.SelectData, main_threshold, aux_threshold):
         geom = state.get("hist_geom")
@@ -980,12 +1219,13 @@ def create_app():
     h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66; text-transform:uppercase; margin:0; font-size:1.4rem; }
     .subhead { color:#667755; font-family:monospace; font-size:.78em; margin-top:3px; }
     .sidebar-box { background:#171722; border:1px solid #2c2c39; border-radius:10px; padding:12px; }
+    .sidebar-box .gr-accordion { margin-bottom:10px !important; border:1px solid #2c2c39 !important; border-radius:8px !important; background:#151520 !important; }
+    .sidebar-box .gr-accordion summary, .sidebar-box .gr-accordion button { font-family:monospace !important; font-size:.9rem !important; color:#d7dbc8 !important; }
     .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:8px; padding:6px 9px; }
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
     .hist-img img { cursor:crosshair !important; border-radius:6px; }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
-    .grid-wrap img[alt^="✋"] { outline: 3px solid #dd3322 !important; outline-offset: -3px; }
     .grid-wrap .caption-label span, .grid-wrap [class*="caption"] { font-family:monospace !important; font-size:.72em !important; color:#8899aa !important; }
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
     .move-col button { width:100%; }
@@ -1012,14 +1252,38 @@ def create_app():
         background:#256d35 !important;
         color:#d8ead8 !important;
     }
-    #hy-zoom {
-        background:#101923 !important;
-        border:1px solid #2d4b66 !important;
-        border-radius:8px !important;
-        padding:8px 10px 10px 10px !important;
+    .gallery-side { min-width:0; }
+    .gallery-topbar { align-items:end; margin-bottom:8px; }
+    .gallery-right-topbar { align-items:center; gap:12px; justify-content:space-between; }
+    .zoom-inline-wrap { align-items:center; gap:10px; margin-left:auto; flex-wrap:nowrap; }
+    .zoom-inline-label p,
+    #hy-zoom-ui .zoom-label {
+        margin:0 !important;
+        color:#8ec5ff !important;
+        font-family:monospace !important;
+        font-size:.8rem !important;
+        line-height:1 !important;
     }
-    #hy-zoom label, #hy-zoom .block-title { color:#8ec5ff !important; font-weight:700 !important; }
-    #hy-zoom input { border-color:#355f84 !important; }
+    #hy-zoom-ui {
+        display:flex;
+        align-items:center;
+        gap:10px;
+        width:276px;
+        min-width:276px;
+        max-width:276px;
+    }
+    #hy-zoom-ui .zoom-range-wrap {
+        flex:1 1 auto;
+        display:flex;
+        align-items:center;
+        height:22px;
+    }
+    #hy-zoom-ui input[type="range"] {
+        width:100%;
+        margin:0;
+        height:18px;
+        accent-color:#ff7a1a;
+    }
     """
 
     with gr.Blocks(title="HybridSelector") as demo:
@@ -1030,68 +1294,95 @@ def create_app():
 
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=330, elem_classes=["sidebar-box"]):
-                method_dd = gr.Dropdown(
-                    choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
-                    value=METHOD_PROMPTMATCH,
-                    label="Method",
-                    elem_id="hy-method",
-                )
-                method_note = gr.Markdown(
-                    "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt.",
-                    elem_classes=["method-note"],
-                )
-                folder_input = gr.Textbox(
-                    value=source_dir,
-                    label="Image folder - paste a path here",
-                    lines=2,
-                    placeholder=folder_placeholder(),
-                    elem_id="hy-folder",
-                )
-
-                with gr.Group(visible=True) as promptmatch_group:
-                    model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
-                    pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
-                    neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
-
-                with gr.Group(visible=False) as imagereward_group:
-                    ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=3, elem_id="hy-ir-pos")
-                    ir_negative_prompt_tb = gr.Textbox(
-                        value=DEFAULT_IR_NEGATIVE_PROMPT,
-                        label="Experimental penalty prompt",
+                thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
+                mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
+                zoom_signal = gr.Textbox(value="5", visible="hidden", elem_id="hy-zoom-signal")
+                with gr.Accordion("1. Setup", open=True):
+                    method_dd = gr.Dropdown(
+                        choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
+                        value=METHOD_PROMPTMATCH,
+                        label="Method",
+                        elem_id="hy-method",
+                    )
+                    method_note = gr.Markdown(
+                        "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt.",
+                        elem_classes=["method-note"],
+                    )
+                    folder_input = gr.Textbox(
+                        value=source_dir,
+                        label="Image folder - paste a path here",
                         lines=2,
-                        placeholder="Optional: undesirable style or mood to subtract",
-                        elem_id="hy-ir-neg",
-                    )
-                    ir_penalty_weight_tb = gr.Number(
-                        value=DEFAULT_IR_PENALTY_WEIGHT,
-                        label="Penalty weight",
-                        minimum=0.0,
-                        maximum=3.0,
-                        step=0.1,
-                        elem_id="hy-ir-weight",
+                        placeholder=folder_placeholder(),
+                        elem_id="hy-folder",
                     )
 
-                run_btn = gr.Button("Run scoring", elem_id="hy-run", variant="primary")
-                hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
-                main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary threshold (>= -> SELECTED)", elem_id="hy-main-slider")
-                aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Negative threshold (< -> passes)", elem_id="hy-aux-slider")
-                percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
-                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", elem_id="hy-zoom")
-                status_md = gr.Markdown("", elem_classes=["status-md"])
-                export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
-                export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
+                with gr.Accordion("2. Method settings", open=True):
+                    with gr.Group(visible=True) as promptmatch_group:
+                        model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
+                        pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
+                        neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
+
+                    with gr.Group(visible=False) as imagereward_group:
+                        ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=3, elem_id="hy-ir-pos")
+                        ir_negative_prompt_tb = gr.Textbox(
+                            value=DEFAULT_IR_NEGATIVE_PROMPT,
+                            label="Experimental penalty prompt",
+                            lines=2,
+                            placeholder="Optional: undesirable style or mood to subtract",
+                            elem_id="hy-ir-neg",
+                        )
+                        ir_penalty_weight_tb = gr.Number(
+                            value=DEFAULT_IR_PENALTY_WEIGHT,
+                            label="Penalty weight",
+                            minimum=0.0,
+                            maximum=3.0,
+                            step=0.1,
+                            elem_id="hy-ir-weight",
+                        )
+
+                    run_btn = gr.Button("Run scoring", elem_id="hy-run", variant="primary")
+
+                with gr.Accordion("3. Thresholds", open=False):
+                    hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
+                    main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
+                    aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
+                    percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
+                    status_md = gr.Markdown("", elem_classes=["status-md"])
+
+                with gr.Accordion("4. Export", open=False):
+                    export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
+                    export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
 
             with gr.Column(scale=5):
-                with gr.Row():
-                    left_head = gr.Markdown("### SELECTED")
-                    right_head = gr.Markdown("### REJECTED")
+                with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
+                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                        left_head = gr.Markdown("### SELECTED")
+                    with gr.Column(scale=0, min_width=100):
+                        gr.HTML("")
+                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                        with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
+                            right_head = gr.Markdown("### REJECTED")
+                            with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
+                                zoom_slider = gr.HTML(
+                                    """
+<div id="hy-zoom-ui">
+  <span class="zoom-label">Zoom</span>
+  <div class="zoom-range-wrap">
+    <input id="hy-zoom-range" type="range" min="2" max="10" step="1" value="5">
+  </div>
+</div>
+"""
+                                )
                 with gr.Row(equal_height=True):
-                    left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
+                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                        left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
-                        sel_info = gr.Markdown("", elem_classes=["sel-info"])
+                        sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
                         move_right_btn = gr.Button("Move →", elem_id="hy-move-right")
                         move_left_btn = gr.Button("← Move", elem_id="hy-move-left")
-                    right_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
+                        clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
+                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                        right_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
 
         method_dd.change(
             fn=configure_controls,
@@ -1102,26 +1393,28 @@ def create_app():
         run_btn.click(
             fn=score_folder,
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
 
-        main_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot])
-        aux_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot])
+        main_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        aux_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         percentile_slider.change(
             fn=set_from_percentile,
             inputs=[percentile_slider, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, main_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider],
         )
-        zoom_slider.change(
+        zoom_signal.change(
             fn=update_zoom,
-            inputs=[zoom_slider, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot],
+            inputs=[zoom_signal, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
         )
-        left_gallery.select(fn=select_left, inputs=[main_slider, aux_slider], outputs=[sel_info])
-        right_gallery.select(fn=select_right, inputs=[main_slider, aux_slider], outputs=[sel_info])
-        move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info])
-        move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info])
-        hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, main_slider, aux_slider])
+        left_gallery.select(fn=remember_preview_left, inputs=[main_slider, aux_slider], outputs=[mark_state])
+        right_gallery.select(fn=remember_preview_right, inputs=[main_slider, aux_slider], outputs=[mark_state])
+        thumb_action.change(fn=toggle_mark, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         export_btn.click(fn=export_files, inputs=[main_slider, aux_slider], outputs=[export_tb])
 
     return demo, css, tooltip_head(tooltips)

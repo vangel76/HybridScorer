@@ -2,6 +2,7 @@ venv312/
 __pycache__/
 old/
 obsolete/
+images/
 *.pyc
 *.pyo
 *.pyd
