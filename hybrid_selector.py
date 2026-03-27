@@ -30,6 +30,7 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+# High-level app modes and default thresholds/prompts.
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
@@ -104,6 +105,7 @@ def is_cuda_oom_error(exc):
 
 
 def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
+    # Scale batch size from currently free VRAM so large models do not OOM instantly.
     if device != "cuda" or not torch.cuda.is_available():
         return DEFAULT_BATCH_SIZE
 
@@ -139,6 +141,7 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
 
 
 def iter_imagereward_scores(image_paths, model, device, prompt):
+    # Yield partial results so Gradio can update progress while large folders are scored.
     scores = {}
     total = len(image_paths)
     done = 0
@@ -177,6 +180,7 @@ def iter_imagereward_scores(image_paths, model, device, prompt):
 
 
 class ModelBackend:
+    # Small adapter that hides the differences between OpenAI CLIP, OpenCLIP, and SigLIP.
     def __init__(self, device, backend="openclip", clip_model="ViT-L/14",
                  openclip_model="ViT-bigG-14", openclip_pretrained="laion2b_s39b_b160k",
                  siglip_model="google/siglip-so400m-patch14-384"):
@@ -235,6 +239,7 @@ class ModelBackend:
         print("[SigLIP] Ready.")
 
     def encode_text(self, prompt):
+        # Average a few prompt phrasings to make matching a little less brittle.
         phrases = [f"a photo of a {prompt}", f"a photo of {prompt}", prompt]
         with torch.no_grad():
             if self.backend == "openai":
@@ -263,6 +268,7 @@ class ModelBackend:
 
 
 def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None):
+    # PromptMatch scoring path: embed images in batches, then compare against text embeddings.
     results = {}
     total = len(image_paths)
     done = 0
@@ -442,6 +448,7 @@ def status_line(method, left_items, right_items, scores, overrides):
 
 
 def build_split(method, scores, overrides, main_threshold, aux_threshold):
+    # Build the two visible buckets while preserving any manual user overrides.
     left, right = [], []
     left_name, right_name, _, _ = method_labels(method)
     if not scores:
@@ -497,6 +504,7 @@ def create_app():
 
     prompt_backend = ModelBackend(device)
 
+    # Shared mutable state for the one-page app. Gradio callbacks update this in place.
     state = {
         "method": METHOD_PROMPTMATCH,
         "source_dir": source_dir,
@@ -516,21 +524,13 @@ def create_app():
 <script>
 (() => {{
   const tooltips = {mapping};
+  // Hidden text inputs are used as tiny event bridges from custom JS back into Gradio callbacks.
   const pushThumbAction = (value) => {{
     const root = document.getElementById("hy-thumb-action");
     if (!root) return;
     const input = root.querySelector("input, textarea");
     if (!input) return;
     input.value = value;
-    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
-    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
-  }};
-  const pushZoomValue = (value) => {{
-    const root = document.getElementById("hy-zoom-signal");
-    if (!root) return;
-    const input = root.querySelector("input, textarea");
-    if (!input) return;
-    input.value = String(value);
     input.dispatchEvent(new Event("input", {{ bubbles: true }}));
     input.dispatchEvent(new Event("change", {{ bubbles: true }}));
   }};
@@ -547,6 +547,7 @@ def create_app():
   }};
   let repaintTimers = [];
   const scheduleRepaint = () => {{
+    // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
     ensureThumbBehavior();
     for (const timer of repaintTimers) clearTimeout(timer);
     repaintTimers = [
@@ -556,6 +557,7 @@ def create_app():
     ];
   }};
   const ensureThumbBehavior = () => {{
+    // Re-apply green/red borders after every gallery rerender and preview change.
     const markedState = readMarkedState();
     const allMarked = new Set([...(markedState.left || []), ...(markedState.right || [])]);
     const heldSet = new Set(markedState.held || []);
@@ -681,7 +683,9 @@ def create_app():
     input.addEventListener("change", scheduleRepaint);
     root.dataset.hyStateHooked = "1";
   }};
+<<<<<<< ours
   const hookZoomControl = () => {{
+    // The visible zoom control is a plain HTML range input; this syncs it with Gradio state.
     const range = document.getElementById("hy-zoom-range");
     if (!range || range.dataset.hyZoomHooked) return;
     const signalRoot = document.getElementById("hy-zoom-signal");
@@ -702,14 +706,14 @@ def create_app():
     }}
     range.dataset.hyZoomHooked = "1";
   }};
+=======
+>>>>>>> theirs
   applyTooltips();
   hookMarkState();
-  hookZoomControl();
   scheduleRepaint();
   new MutationObserver(() => {{
     applyTooltips();
     hookMarkState();
-    hookZoomControl();
     scheduleRepaint();
   }}).observe(document.body, {{ childList: true, subtree: true }});
 }})();
@@ -729,7 +733,7 @@ def create_app():
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
-        "hy-zoom-ui": "Choose how many thumbnails appear per row in both galleries.",
+        "hy-zoom": "Choose how many thumbnails appear per row in both galleries.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
@@ -766,6 +770,7 @@ def create_app():
         })
 
     def render_histogram(method, scores, main_threshold, aux_threshold):
+        # Draw a lightweight PIL histogram image instead of depending on a plotting library.
         if not scores:
             state["hist_geom"] = None
             return None
@@ -902,6 +907,7 @@ def create_app():
         return img
 
     def current_view(main_threshold, aux_threshold):
+        # Single place that rebuilds gallery contents, status text, histogram, and marked-state JSON.
         left_name, right_name, _, _ = method_labels(state["method"])
         zoom_columns = int(state.get("zoom_columns", 5))
         left_items, right_items = build_split(
@@ -923,6 +929,7 @@ def create_app():
         )
 
     def score_imagereward(folder_paths, positive_prompt, negative_prompt, penalty_weight, progress):
+        # Optional penalty prompt is implemented as a second pass whose score is subtracted.
         model = ensure_imagereward_model()
         positive_prompt = (positive_prompt or "").strip() or IR_PROMPT
         negative_prompt = (negative_prompt or "").strip()
@@ -1002,6 +1009,7 @@ def create_app():
         )
 
     def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, progress=gr.Progress()):
+        # Main entrypoint for "Run scoring"; both methods converge back into current_view().
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
             return empty_result(f"Invalid folder: {folder!r}", method)
@@ -1079,6 +1087,7 @@ def create_app():
         return current_view(main_threshold, aux_threshold)
 
     def toggle_mark(action, main_threshold, aux_threshold):
+        # Shift-click marks thumbnails for bulk move/clear actions without opening the preview.
         if not action:
             return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
         try:
@@ -1139,6 +1148,7 @@ def create_app():
         return (*current_view(new_threshold, aux_threshold), gr.update(value=new_threshold))
 
     def update_zoom(zoom_value, main_threshold, aux_threshold):
+        # Gallery zoom is implemented by changing the number of columns in both galleries.
         try:
             state["zoom_columns"] = max(2, min(10, int(zoom_value)))
         except Exception:
@@ -1190,6 +1200,7 @@ def create_app():
         return (*current_view(main_threshold, aux_threshold), gr.update(value=main_threshold), gr.update(value=aux_threshold))
 
     def export_files(main_threshold, aux_threshold):
+        # Export is a lossless copy, not a rewrite or recompression of the originals.
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         left_name, right_name, left_dirname, right_dirname = method_labels(state["method"])
         base = state["source_dir"]
@@ -1252,37 +1263,68 @@ def create_app():
         background:#256d35 !important;
         color:#d8ead8 !important;
     }
+    #hy-zoom {
+        background:transparent !important;
+        border:0 !important;
+        border-radius:0 !important;
+        padding:0 !important;
+        width:276px !important;
+        max-width:276px !important;
+        min-width:276px !important;
+        height:24px !important;
+        min-height:24px !important;
+        margin-left:0 !important;
+        overflow:hidden !important;
+        box-sizing:border-box !important;
+        scrollbar-width:none !important;
+        -ms-overflow-style:none !important;
+    }
+    #hy-zoom::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
+    #hy-zoom .head,
+    #hy-zoom label,
+    #hy-zoom .tab-like-container,
+    #hy-zoom [data-testid="number-input"],
+    #hy-zoom [data-testid="reset-button"],
+    #hy-zoom .min_value,
+    #hy-zoom .max_value { display:none !important; }
+    #hy-zoom .wrap {
+        gap:0 !important;
+        width:100% !important;
+        max-width:100% !important;
+        overflow:hidden !important;
+        min-height:24px !important;
+        scrollbar-width:none !important;
+        -ms-overflow-style:none !important;
+    }
+    #hy-zoom .wrap::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
+    #hy-zoom .slider_input_container {
+        padding:0 !important;
+        gap:0 !important;
+        width:100% !important;
+        max-width:100% !important;
+        overflow:hidden !important;
+        min-height:24px !important;
+        scrollbar-width:none !important;
+        -ms-overflow-style:none !important;
+    }
+    #hy-zoom .slider_input_container::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
+    #hy-zoom input[type="range"] {
+        margin:0 !important;
+        height:20px !important;
+        width:100% !important;
+        min-width:100% !important;
+        display:block !important;
+    }
     .gallery-side { min-width:0; }
     .gallery-topbar { align-items:end; margin-bottom:8px; }
     .gallery-right-topbar { align-items:center; gap:12px; justify-content:space-between; }
-    .zoom-inline-wrap { align-items:center; gap:10px; margin-left:auto; flex-wrap:nowrap; }
-    .zoom-inline-label p,
-    #hy-zoom-ui .zoom-label {
+    .zoom-inline-wrap { align-items:center; gap:10px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; }
+    .zoom-inline-label p {
         margin:0 !important;
         color:#8ec5ff !important;
         font-family:monospace !important;
         font-size:.8rem !important;
         line-height:1 !important;
-    }
-    #hy-zoom-ui {
-        display:flex;
-        align-items:center;
-        gap:10px;
-        width:276px;
-        min-width:276px;
-        max-width:276px;
-    }
-    #hy-zoom-ui .zoom-range-wrap {
-        flex:1 1 auto;
-        display:flex;
-        align-items:center;
-        height:22px;
-    }
-    #hy-zoom-ui input[type="range"] {
-        width:100%;
-        margin:0;
-        height:18px;
-        accent-color:#ff7a1a;
     }
     """
 
@@ -1296,7 +1338,6 @@ def create_app():
             with gr.Column(scale=1, min_width=330, elem_classes=["sidebar-box"]):
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
-                zoom_signal = gr.Textbox(value="5", visible="hidden", elem_id="hy-zoom-signal")
                 with gr.Accordion("1. Setup", open=True):
                     method_dd = gr.Dropdown(
                         choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
@@ -1363,16 +1404,8 @@ def create_app():
                         with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
                             right_head = gr.Markdown("### REJECTED")
                             with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
-                                zoom_slider = gr.HTML(
-                                    """
-<div id="hy-zoom-ui">
-  <span class="zoom-label">Zoom</span>
-  <div class="zoom-range-wrap">
-    <input id="hy-zoom-range" type="range" min="2" max="10" step="1" value="5">
-  </div>
-</div>
-"""
-                                )
+                                gr.Markdown("Zoom", elem_classes=["zoom-inline-label"])
+                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, elem_id="hy-zoom")
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
@@ -1403,9 +1436,9 @@ def create_app():
             inputs=[percentile_slider, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider],
         )
-        zoom_signal.change(
+        zoom_slider.change(
             fn=update_zoom,
-            inputs=[zoom_signal, main_slider, aux_slider],
+            inputs=[zoom_slider, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
         )
         left_gallery.select(fn=remember_preview_left, inputs=[main_slider, aux_slider], outputs=[mark_state])
