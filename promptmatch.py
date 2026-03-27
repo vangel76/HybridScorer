@@ -11,7 +11,7 @@ PromptMatch — Interactive Image Sorter
 • Created by vangel
 """
 
-import os, sys, json, socket, warnings
+import os, sys, json, socket, string, warnings
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -45,6 +45,37 @@ def require_cuda():
             "CUDA is mandatory for this project.\n"
             "No CUDA device was detected by PyTorch."
         )
+
+
+def is_windows():
+    return os.name == "nt"
+
+
+def folder_placeholder():
+    return r"C:\path\to\images" if is_windows() else "/path/to/images"
+
+
+def get_allowed_paths(*extra_paths):
+    if not is_windows():
+        return ["/"]
+
+    allowed = []
+    for drive in string.ascii_uppercase:
+        root = f"{drive}:\\"
+        if os.path.exists(root):
+            allowed.append(root)
+    for path in extra_paths:
+        if path:
+            allowed.append(os.path.abspath(path))
+
+    deduped = []
+    seen = set()
+    for path in allowed:
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(path)
+    return deduped or [os.path.abspath(os.getcwd())]
 
 
 def is_port_available(port):
@@ -1151,7 +1182,7 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                     gr.Markdown("#### 📁 Image folder")
                     folder_input = gr.Textbox(
                         value=source_dir, label="", show_label=False,
-                        placeholder="/path/to/images", lines=1,
+                        placeholder=folder_placeholder(), lines=1,
                         elem_classes=["folder-input"],
                         elem_id="pm-folder-input",
                     )
@@ -1337,7 +1368,7 @@ def launch_ui(initial_scores, image_paths, backend, script_dir, source_dir, serv
                 inbrowser=True, share=False,
                 css=css, theme=gr.themes.Base(),
                 head=tooltip_head(tooltips),
-                allowed_paths=["/"])  # allow serving images from any path
+                allowed_paths=get_allowed_paths(script_dir, source_dir))
 
 
 # ---------------------------------------------------------------------------

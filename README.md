@@ -176,8 +176,6 @@ PromptMatch supports multiple model families so you can trade speed, memory use,
 
 Windows-ready entrypoints:
 
-*   `imagereward_windows.py`
-*   `promptmatch_windows.py`
 *   `setup-venv312-windows.bat`
 *   `run-imagereward-windows.bat`
 *   `run-promptmatch-windows.bat`
