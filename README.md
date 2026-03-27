@@ -1,6 +1,6 @@
 # RATEImagesCLIP
 
-This repository contains two interactive Gradio applications for rating and sorting images with GPU-accelerated AI models.
+This repository contains three interactive Gradio applications for rating and sorting images with GPU-accelerated AI models.
 
 ## What This Is
 
@@ -8,6 +8,7 @@ This repository contains two interactive Gradio applications for rating and sort
 
 - `promptmatch.py` finds images that match a subject, concept, or prompt.
 - `imagereward.py` ranks images by aesthetic fit to a style prompt.
+- `hybrid_selector.py` combines both methods in one UI and lets you switch between them.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
 - In the end, the apps losslessly copy the original image files into two output folders based on your final split.
 - The source images are not recompressed or edited.
@@ -18,14 +19,15 @@ This repository contains two interactive Gradio applications for rating and sort
 | --- | --- | --- | --- |
 | `promptmatch.py` | Finding specific subjects, concepts, or visual attributes | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
 | `imagereward.py` | Ranking by taste, mood, style, and overall visual appeal | Aesthetic preference scoring with ImageReward | `best` / `normal` |
+| `hybrid_selector.py` | Using both methods from one app | Switchable PromptMatch or ImageReward scoring in one UI | Method-dependent |
 
 ## Install With Setup Scripts
 
-Set up the Python virtual environment first. You need to do this before trying to run either app.
+Set up the Python virtual environment first. You need to do this before trying to run any of the apps.
 
 ### Linux Setup Script
 
-Use [setup-venv312.sh](/home/vangel/apps/RATEImagesCLIP/setup-venv312.sh) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
+Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
 
 ```bash
 ./setup-venv312.sh
@@ -33,7 +35,7 @@ Use [setup-venv312.sh](/home/vangel/apps/RATEImagesCLIP/setup-venv312.sh) to cre
 
 ### Windows Setup Script
 
-Use [setup-venv312-windows.bat](/home/vangel/apps/RATEImagesCLIP/setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
+Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
 
 ```bat
 setup-venv312-windows.bat
@@ -42,6 +44,14 @@ setup-venv312-windows.bat
 ## Run
 
 After the virtual environment is set up, just run the script you want. The run scripts activate `venv312` automatically.
+
+The main Python apps are shared across Linux and Windows:
+
+- `promptmatch.py`
+- `imagereward.py`
+- `hybrid_selector.py`
+
+The `.sh` and `.bat` files are only convenience launchers.
 
 ### Linux
 
@@ -55,10 +65,17 @@ or
 ./run-imagereward.sh
 ```
 
+or
+
+```bash
+./run-hybrid-selector.sh
+```
+
 Open:
 
 - `http://localhost:7861` for PromptMatch
 - `http://localhost:7860` for ImageReward
+- `http://localhost:7862` for HybridSelector
 
 ### Windows
 
@@ -70,6 +87,12 @@ or
 
 ```bat
 run-imagereward-windows.bat
+```
+
+or
+
+```bat
+run-hybrid-selector-windows.bat
 ```
 
 ## Manual Install
@@ -133,12 +156,13 @@ Ranks images by overall aesthetic fit to a style prompt, so it is better for tas
 
 ## Architecture
 
-The repository consists of two main Python scripts, each providing a web-based UI for image evaluation:
+The repository consists of three main Python scripts, each providing a web-based UI for image evaluation:
 
 1.  **`imagereward.py`**: An interactive tool for **aesthetic scoring** of images.
 2.  **`promptmatch.py`**: An interactive tool for **semantic content matching** using CLIP models.
+3.  **`hybrid_selector.py`**: A combined app that lets you switch between both scoring methods in one interface.
 
-Both applications are built with [Gradio](https://www.gradio.app/) and use PyTorch for model inference. They are designed to be run as standalone scripts. Set up a local Python 3.12 virtual environment named `venv312` before running them.
+All three applications are built with [Gradio](https://www.gradio.app/) and use PyTorch for model inference. They are designed to be run as standalone scripts. Set up a local Python 3.12 virtual environment named `venv312` before running them.
 
 ### `imagereward.py` - Aesthetic Scorer
 
@@ -172,13 +196,42 @@ PromptMatch supports multiple model families so you can trade speed, memory use,
 *   **On-the-Fly Model Switching**: Load and switch between different CLIP models directly from the UI.
 *   **Export**: Save the sorted images into `found` and `notfound` subdirectories.
 
+### `hybrid_selector.py` - Combined Selector
+
+This app combines PromptMatch and ImageReward into one UI and lets you switch scoring methods without leaving the page.
+
+**Key Features:**
+
+*   **Method Selector**: Switch between PromptMatch and ImageReward inside one app.
+*   **Shared Gallery Workflow**: One folder input, shared galleries, manual overrides, export, and threshold controls.
+*   **PromptMatch Mode**: Supports CLIP-family model selection plus positive and negative prompts.
+*   **ImageReward Mode**: Supports a positive aesthetic prompt and an experimental penalty prompt.
+*   **Histogram Threshold Selection**: Click the histogram to set thresholds directly.
+*   **Thumbnail Zoom**: Resize both galleries together with one slider.
+
 ## Files Included
 
-Windows-ready entrypoints:
+Windows launchers:
 
 *   `setup-venv312-windows.bat`
 *   `run-imagereward-windows.bat`
 *   `run-promptmatch-windows.bat`
+*   `run-hybrid-selector-windows.bat`
+
+Linux launchers:
+
+*   `setup-venv312.sh`
+*   `run-imagereward.sh`
+*   `run-promptmatch.sh`
+*   `run-hybrid-selector.sh`
+
+Main cross-platform app scripts:
+
+*   `imagereward.py`
+*   `promptmatch.py`
+*   `hybrid_selector.py`
+
+There are no separate Windows-only Python app files. Both operating systems use the same main `.py` scripts.
 
 Dependency notes:
 
