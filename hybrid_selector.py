@@ -382,9 +382,7 @@ def get_model_config(label):
 
 
 def method_labels(method):
-    if method == METHOD_PROMPTMATCH:
-        return "FOUND", "NOT FOUND", "found", "notfound"
-    return "BEST", "NORMAL", "best", "normal"
+    return "SELECTED", "REJECTED", "selected", "rejected"
 
 
 def promptmatch_slider_range(scores):
@@ -550,7 +548,7 @@ def create_app():
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
         "hy-zoom": "Choose how many thumbnails appear per row in both galleries.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
-        "hy-export": "COPY the current split into two method-specific output folders inside source folder.",
+        "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
         "hy-right-gallery": "Images currently in the right bucket. Click one to select it.",
         "hy-move-right": "Move the selected left image into the right bucket as a manual override.",
@@ -770,14 +768,14 @@ def create_app():
             return (
                 gr.update(visible=True),
                 gr.update(visible=False),
-                gr.update(label="Primary threshold (>= -> FOUND)", value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(label="Primary threshold (>= -> SELECTED)", value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(label="Negative threshold (< -> passes)", visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt."),
             )
         return (
             gr.update(visible=False),
             gr.update(visible=True),
-            gr.update(label="Primary threshold (>= -> BEST)", value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
+            gr.update(label="Primary threshold (>= -> SELECTED)", value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
             gr.update(visible=False, value=NEGATIVE_THRESHOLD),
             gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score."),
         )
@@ -840,7 +838,7 @@ def create_app():
                 right_gallery,
                 status,
                 hist,
-                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=pos_mid, label="Primary threshold (>= -> FOUND)"),
+                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=pos_mid, label="Primary threshold (>= -> SELECTED)"),
                 gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=neg_mid, visible=True, interactive=has_neg, label="Negative threshold (< -> passes)"),
             )
 
@@ -860,7 +858,7 @@ def create_app():
             right_gallery,
             status,
             hist,
-            gr.update(minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX, value=mid, label="Primary threshold (>= -> BEST)"),
+            gr.update(minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX, value=mid, label="Primary threshold (>= -> SELECTED)"),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
         )
 
@@ -1075,7 +1073,7 @@ def create_app():
 
                 run_btn = gr.Button("Run scoring", elem_id="hy-run", variant="primary")
                 hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
-                main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary threshold (>= -> FOUND)", elem_id="hy-main-slider")
+                main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary threshold (>= -> SELECTED)", elem_id="hy-main-slider")
                 aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Negative threshold (< -> passes)", elem_id="hy-aux-slider")
                 percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
                 zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", elem_id="hy-zoom")
@@ -1085,8 +1083,8 @@ def create_app():
 
             with gr.Column(scale=5):
                 with gr.Row():
-                    left_head = gr.Markdown("### FOUND")
-                    right_head = gr.Markdown("### NOT FOUND")
+                    left_head = gr.Markdown("### SELECTED")
+                    right_head = gr.Markdown("### REJECTED")
                 with gr.Row(equal_height=True):
                     left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
