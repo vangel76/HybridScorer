@@ -12,33 +12,23 @@ HybridSelector — PromptMatch + ImageReward in one UI
 import json
 import os
 import shutil
+import socket
 import string
 import sys
+import warnings
 
 import gradio as gr
 import ImageReward as RM
+import torch
+import torch.nn.functional as F
 
-from imagereward import (
-    ALLOWED_EXTENSIONS,
-    INPUT_FOLDER_NAME,
-    IR_PROMPT,
-    THRESHOLD as IMAGEREWARD_THRESHOLD,
-    iter_imagereward_scores,
-    require_cuda,
-    resolve_server_port,
-)
-from promptmatch import (
-    MODEL_CHOICES,
-    MODEL_LABELS,
-    ModelBackend,
-    NEGATIVE_PROMPT,
-    NEGATIVE_THRESHOLD,
-    SEARCH_PROMPT,
-    label_for_backend,
-    score_all,
-)
 from PIL import Image, ImageDraw
 
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+)
 
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
@@ -48,6 +38,301 @@ PROMPTMATCH_SLIDER_MIN = -1.0
 PROMPTMATCH_SLIDER_MAX = 1.0
 IMAGEREWARD_SLIDER_MIN = -5.0
 IMAGEREWARD_SLIDER_MAX = 5.0
+
+SEARCH_PROMPT = "woman"
+NEGATIVE_PROMPT = ""
+NEGATIVE_THRESHOLD = 0.14
+IR_PROMPT = (
+    "masterpiece, best quality, ultra-detailed, cinematic, "
+    "extremely beautiful woman, dramatic lighting, rim light, chiaroscuro, "
+    "professional studio portrait, 8k, award-winning"
+)
+IMAGEREWARD_THRESHOLD = 0.5
+INPUT_FOLDER_NAME = "images"
+ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".avif")
+DEFAULT_BATCH_SIZE = 32
+MAX_BATCH_SIZE = 128
+
+
+def require_cuda():
+    if not torch.cuda.is_available():
+        sys.exit(
+            "CUDA is mandatory for this project.\n"
+            "No CUDA device was detected by PyTorch."
+        )
+
+
+def is_port_available(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def get_ephemeral_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def resolve_server_port(default_port, app_env_var):
+    raw = os.getenv(app_env_var) or os.getenv("GRADIO_SERVER_PORT")
+    if raw:
+        try:
+            port = int(raw)
+        except ValueError:
+            sys.exit(f"Invalid port value in {app_env_var}/GRADIO_SERVER_PORT: {raw!r}")
+        if not is_port_available(port):
+            sys.exit(
+                f"Port {port} is already in use.\n"
+                f"Set {app_env_var} or GRADIO_SERVER_PORT to a free port."
+            )
+        return port
+
+    if is_port_available(default_port):
+        return default_port
+
+    return get_ephemeral_port()
+
+
+def is_cuda_oom_error(exc):
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
+    if device != "cuda" or not torch.cuda.is_available():
+        return DEFAULT_BATCH_SIZE
+
+    if backend is not None:
+        reference_vram_gb = 20
+        if backend.backend == "openclip":
+            if "bigG" in backend._openclip_model:
+                reference_vram_gb = 32
+            elif "ViT-H" in backend._openclip_model:
+                reference_vram_gb = 24
+        elif backend.backend == "openai" and "@336px" in backend._clip_model:
+            reference_vram_gb = 24
+        elif backend.backend == "siglip":
+            if "large" in backend._siglip_model:
+                reference_vram_gb = 24
+            elif "base" in backend._siglip_model:
+                reference_vram_gb = 16
+
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info()
+    except RuntimeError:
+        return DEFAULT_BATCH_SIZE
+
+    free_gb = free_bytes / (1024 ** 3)
+    scaled = max(1, int(DEFAULT_BATCH_SIZE * (free_gb / float(reference_vram_gb))))
+
+    if scaled >= 16:
+        scaled = max(16, (scaled // 8) * 8)
+    elif scaled >= 8:
+        scaled = max(8, (scaled // 4) * 4)
+
+    return max(1, min(MAX_BATCH_SIZE, scaled))
+
+
+def iter_imagereward_scores(image_paths, model, device, prompt):
+    scores = {}
+    total = len(image_paths)
+    done = 0
+    batch_size = get_auto_batch_size(device)
+    model = model.to(device).eval()
+    print(f"[ImageReward] Using batch size {batch_size}")
+
+    while done < total:
+        current_size = min(batch_size, total - done)
+        batch_paths = image_paths[done:done + current_size]
+        batch_filenames = [os.path.basename(p) for p in batch_paths]
+
+        try:
+            with torch.no_grad():
+                _, batch_rewards = model.inference_rank(prompt, batch_paths)
+            for filename, path, reward in zip(batch_filenames, batch_paths, batch_rewards):
+                scores[filename] = {"score": float(reward), "path": path}
+            done += len(batch_paths)
+            yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
+        except Exception as exc:
+            if device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
+                batch_size = max(1, current_size // 2)
+                print(f"[ImageReward] CUDA OOM, retrying with batch size {batch_size}")
+                torch.cuda.empty_cache()
+                yield {"type": "oom", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
+                continue
+
+            print(f"Batch error at {done}: {exc}", file=sys.stderr)
+            for filename, path in zip(batch_filenames, batch_paths):
+                scores[filename] = {"score": -float('inf'), "path": path}
+            done += len(batch_paths)
+            yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
+        finally:
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+
+class ModelBackend:
+    def __init__(self, device, backend="openclip", clip_model="ViT-L/14",
+                 openclip_model="ViT-bigG-14", openclip_pretrained="laion2b_s39b_b160k",
+                 siglip_model="google/siglip-so400m-patch14-384"):
+        self.device = device
+        self.backend = backend
+        self._clip_model = clip_model
+        self._openclip_model = openclip_model
+        self._openclip_pre = openclip_pretrained
+        self._siglip_model = siglip_model
+        self._load()
+
+    def _load(self):
+        if self.backend == "openai":
+            self._load_openai()
+        elif self.backend == "openclip":
+            self._load_openclip()
+        elif self.backend == "siglip":
+            self._load_siglip()
+        else:
+            sys.exit(f"Unknown MODEL_BACKEND: {self.backend!r}")
+
+    def _load_openai(self):
+        try:
+            import clip as _clip
+        except ImportError:
+            sys.exit("OpenAI CLIP not installed.\nRun: pip install git+https://github.com/openai/CLIP.git")
+        print(f"[OpenAI CLIP] Loading {self._clip_model} …")
+        self._model, self._preprocess = _clip.load(self._clip_model, device=self.device)
+        self._model.eval()
+        self._clip_mod = _clip
+        print("[OpenAI CLIP] Ready.")
+
+    def _load_openclip(self):
+        try:
+            import open_clip
+        except ImportError:
+            sys.exit("OpenCLIP not installed.\nRun: pip install open_clip_torch")
+        print(f"[OpenCLIP] Loading {self._openclip_model} / {self._openclip_pre} …")
+        self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+            self._openclip_model, pretrained=self._openclip_pre, device=self.device
+        )
+        self._model.eval()
+        self._tokenizer = open_clip.get_tokenizer(self._openclip_model)
+        print("[OpenCLIP] Ready.")
+
+    def _load_siglip(self):
+        try:
+            from transformers import AutoModel, AutoProcessor
+        except ImportError:
+            sys.exit("transformers not installed.\nRun: pip install transformers")
+        print(f"[SigLIP] Loading {self._siglip_model} …")
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        self._processor = AutoProcessor.from_pretrained(self._siglip_model)
+        self._model = AutoModel.from_pretrained(self._siglip_model, torch_dtype=dtype).to(self.device)
+        self._model.eval()
+        print("[SigLIP] Ready.")
+
+    def encode_text(self, prompt):
+        phrases = [f"a photo of a {prompt}", f"a photo of {prompt}", prompt]
+        with torch.no_grad():
+            if self.backend == "openai":
+                toks = self._clip_mod.tokenize(phrases).to(self.device)
+                feat = self._model.encode_text(toks)
+            elif self.backend == "openclip":
+                toks = self._tokenizer(phrases).to(self.device)
+                feat = self._model.encode_text(toks)
+            else:
+                inputs = self._processor(text=phrases, return_tensors="pt", padding="max_length", truncation=True).to(self.device)
+                feat = self._model.get_text_features(**inputs)
+            feat = F.normalize(feat.float(), dim=-1)
+            return F.normalize(feat.mean(dim=0, keepdim=True), dim=-1)
+
+    def encode_images_batch(self, pil_images):
+        with torch.no_grad():
+            if self.backend in ("openai", "openclip"):
+                tensors = torch.stack([self._preprocess(img) for img in pil_images]).to(self.device)
+                tensors = tensors.to(next(self._model.parameters()).dtype)
+                feat = self._model.encode_image(tensors)
+            else:
+                inputs = self._processor(images=pil_images, return_tensors="pt").to(self.device)
+                inputs["pixel_values"] = inputs["pixel_values"].to(next(self._model.parameters()).dtype)
+                feat = self._model.get_image_features(**inputs)
+            return F.normalize(feat.float(), dim=-1)
+
+
+def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None):
+    results = {}
+    total = len(image_paths)
+    done = 0
+    batch_size = get_auto_batch_size(backend.device, backend)
+    print(f"[PromptMatch] Using batch size {batch_size}")
+    while done < total:
+        current_size = min(batch_size, total - done)
+        batch = image_paths[done:done + current_size]
+        pil_imgs, valid = [], []
+        for path in batch:
+            try:
+                pil_imgs.append(Image.open(path).convert("RGB"))
+                valid.append(path)
+            except Exception as exc:
+                print(f"  [WARN] {path}: {exc}")
+                results[os.path.basename(path)] = {"pos": -1.0, "neg": None, "path": path}
+        if pil_imgs:
+            try:
+                feat = backend.encode_images_batch(pil_imgs)
+                pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
+                neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(valid)
+                for path, pos_score, neg_score in zip(valid, pos_sims, neg_sims):
+                    results[os.path.basename(path)] = {
+                        "pos": float(pos_score),
+                        "neg": float(neg_score) if neg_score is not None else None,
+                        "path": path,
+                    }
+            except Exception as exc:
+                if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
+                    batch_size = max(1, current_size // 2)
+                    print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
+                    torch.cuda.empty_cache()
+                    if progress_cb:
+                        progress_cb(done, total, batch_size, True)
+                    continue
+                print(f"  [WARN] batch error: {exc}")
+                for path in valid:
+                    results[os.path.basename(path)] = {"pos": -1.0, "neg": None, "path": path}
+            if backend.device == "cuda":
+                torch.cuda.empty_cache()
+        done += len(batch)
+        if progress_cb:
+            progress_cb(done, total, batch_size, False)
+    return results
+
+
+MODEL_CHOICES = [
+    ("SigLIP  so400m-patch14-384  ★ recommended", "siglip", {"siglip_model": "google/siglip-so400m-patch14-384"}),
+    ("SigLIP  large-patch16-384", "siglip", {"siglip_model": "google/siglip-large-patch16-384"}),
+    ("SigLIP  base-patch16-224", "siglip", {"siglip_model": "google/siglip-base-patch16-224"}),
+    ("OpenCLIP  ViT-bigG-14  laion2b  ★ best CLIP", "openclip", {"openclip_model": "ViT-bigG-14", "openclip_pretrained": "laion2b_s39b_b160k"}),
+    ("OpenCLIP  ViT-H-14  laion2b", "openclip", {"openclip_model": "ViT-H-14", "openclip_pretrained": "laion2b_s32b_b79k"}),
+    ("OpenCLIP  ViT-L-14  laion2b", "openclip", {"openclip_model": "ViT-L-14", "openclip_pretrained": "laion2b_s32b_b82k"}),
+    ("OpenAI CLIP  ViT-L/14@336px", "openai", {"clip_model": "ViT-L/14@336px"}),
+    ("OpenAI CLIP  ViT-L/14", "openai", {"clip_model": "ViT-L/14"}),
+    ("OpenAI CLIP  ViT-B/32  (fastest)", "openai", {"clip_model": "ViT-B/32"}),
+]
+MODEL_LABELS = [choice[0] for choice in MODEL_CHOICES]
+
+
+def label_for_backend(backend):
+    for label, name, kwargs in MODEL_CHOICES:
+        if name != backend.backend:
+            continue
+        if name == "openai" and kwargs.get("clip_model") == backend._clip_model:
+            return label
+        if name == "openclip" and kwargs.get("openclip_model") == backend._openclip_model:
+            return label
+        if name == "siglip" and kwargs.get("siglip_model") == backend._siglip_model:
+            return label
+    return MODEL_LABELS[0]
 
 
 def is_windows():
@@ -252,7 +537,7 @@ def create_app():
 
     tooltips = {
         "hy-method": "Choose whether to sort by PromptMatch or ImageReward.",
-        "hy-folder": "Path to the image folder you want to score.",
+        "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
         "hy-model": "Choose the PromptMatch model family and size.",
         "hy-pos": "Describe what you want to find in the images.",
         "hy-neg": "Optional PromptMatch negative prompt that counts against a match.",
@@ -263,9 +548,9 @@ def create_app():
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
-        "hy-zoom": "Change thumbnail size in both galleries at once.",
+        "hy-zoom": "Choose how many thumbnails appear per row in both galleries.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
-        "hy-export": "Losslessly copy the current split into method-specific output folders.",
+        "hy-export": "COPY the current split into two method-specific output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
         "hy-right-gallery": "Images currently in the right bucket. Click one to select it.",
         "hy-move-right": "Move the selected left image into the right bucket as a manual override.",
@@ -540,9 +825,9 @@ def create_app():
             progress(0, desc=f"Scoring {len(image_paths)} images with PromptMatch...")
 
             def _cb(done, total, batch_size, oom_retry):
-                label = f"PromptMatch {done}/{total} (batch {batch_size})"
+                label = f"PromptMatch {done}/{total} (autobatch {batch_size})"
                 if oom_retry:
-                    label = f"PromptMatch OOM, retrying batch {batch_size}"
+                    label = f"PromptMatch OOM, retrying autobatch {batch_size}"
                 progress(done / max(total, 1), desc=label)
 
             state["scores"] = score_all(image_paths, state["backend"], pos_emb, neg_emb, progress_cb=_cb)
@@ -697,7 +982,8 @@ def create_app():
     h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66; text-transform:uppercase; margin:0; font-size:1.4rem; }
     .subhead { color:#667755; font-family:monospace; font-size:.78em; margin-top:3px; }
     .sidebar-box { background:#171722; border:1px solid #2c2c39; border-radius:10px; padding:12px; }
-    .method-note { font-family:monospace; font-size:.78em; color:#94a57f; background:#11111a; border-radius:8px; padding:8px 10px; }
+    .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:8px; padding:6px 9px; }
+    .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
     .hist-img img { cursor:crosshair !important; border-radius:6px; }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
@@ -706,6 +992,36 @@ def create_app():
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
     .move-col button { width:100%; }
     .sel-info p { font-family:monospace !important; font-size:.72em !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
+    #hy-folder textarea, #hy-folder input { min-height:60px !important; font-size:.96rem !important; }
+    #hy-run, #hy-export { border-radius:8px !important; }
+    #hy-run, #hy-run button, #hy-export, #hy-export button {
+        background:#2f8f45 !important;
+        background-image:none !important;
+        border:1px solid #58bb73 !important;
+        color:#f3fff2 !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(25, 55, 30, 0.15) inset !important;
+    }
+    #hy-run button, #hy-export button {
+        min-height:40px !important;
+        border-radius:8px !important;
+    }
+    #hy-run:hover, #hy-run button:hover, #hy-export:hover, #hy-export button:hover {
+        background:#38a14f !important;
+        background-image:none !important;
+    }
+    #hy-run button:disabled, #hy-export button:disabled {
+        background:#256d35 !important;
+        color:#d8ead8 !important;
+    }
+    #hy-zoom {
+        background:#101923 !important;
+        border:1px solid #2d4b66 !important;
+        border-radius:8px !important;
+        padding:8px 10px 10px 10px !important;
+    }
+    #hy-zoom label, #hy-zoom .block-title { color:#8ec5ff !important; font-weight:700 !important; }
+    #hy-zoom input { border-color:#355f84 !important; }
     """
 
     with gr.Blocks(title="HybridSelector") as demo:
@@ -726,7 +1042,13 @@ def create_app():
                     "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt.",
                     elem_classes=["method-note"],
                 )
-                folder_input = gr.Textbox(value=source_dir, label="Image folder", lines=1, placeholder=folder_placeholder(), elem_id="hy-folder")
+                folder_input = gr.Textbox(
+                    value=source_dir,
+                    label="Image folder - paste a path here",
+                    lines=2,
+                    placeholder=folder_placeholder(),
+                    elem_id="hy-folder",
+                )
 
                 with gr.Group(visible=True) as promptmatch_group:
                     model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
@@ -751,14 +1073,14 @@ def create_app():
                         elem_id="hy-ir-weight",
                     )
 
-                run_btn = gr.Button("Run scoring", elem_id="hy-run")
+                run_btn = gr.Button("Run scoring", elem_id="hy-run", variant="primary")
                 hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
                 main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary threshold (>= -> FOUND)", elem_id="hy-main-slider")
                 aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Negative threshold (< -> passes)", elem_id="hy-aux-slider")
                 percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
-                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail zoom", elem_id="hy-zoom")
+                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", elem_id="hy-zoom")
                 status_md = gr.Markdown("", elem_classes=["status-md"])
-                export_btn = gr.Button("Export folders", elem_id="hy-export")
+                export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
                 export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
 
             with gr.Column(scale=5):

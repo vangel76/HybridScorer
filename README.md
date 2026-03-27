@@ -1,14 +1,13 @@
 # RATEImagesCLIP
 
-This repository contains three interactive Gradio applications for rating and sorting images with GPU-accelerated AI models.
+This repository contains a main interactive Gradio application for rating and sorting images with GPU-accelerated AI models, plus archived standalone variants.
 
 ## What This Is
 
 `RATEImagesCLIP` is built for quick human-in-the-loop image triage.
 
-- `promptmatch.py` finds images that match a subject, concept, or prompt.
-- `imagereward.py` ranks images by aesthetic fit to a style prompt.
-- `hybrid_selector.py` combines both methods in one UI and lets you switch between them.
+- `hybrid_selector.py` is the main app and combines both methods in one UI.
+- The old standalone `promptmatch.py` and `imagereward.py` apps are archived in [`obsolete/`](obsolete/).
 - CUDA is required so scoring stays fast enough to be practical on large folders.
 - In the end, the apps losslessly copy the original image files into two output folders based on your final split.
 - The source images are not recompressed or edited.
@@ -17,13 +16,13 @@ This repository contains three interactive Gradio applications for rating and so
 
 | App | Best for | How it scores | Output buckets |
 | --- | --- | --- | --- |
-| `promptmatch.py` | Finding specific subjects, concepts, or visual attributes | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
-| `imagereward.py` | Ranking by taste, mood, style, and overall visual appeal | Aesthetic preference scoring with ImageReward | `best` / `normal` |
 | `hybrid_selector.py` | Using both methods from one app | Switchable PromptMatch or ImageReward scoring in one UI | Method-dependent |
+| `obsolete/promptmatch.py` | Archived standalone subject/content matcher | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
+| `obsolete/imagereward.py` | Archived standalone aesthetic sorter | Aesthetic preference scoring with ImageReward | `best` / `normal` |
 
 ## Install With Setup Scripts
 
-Set up the Python virtual environment first. You need to do this before trying to run any of the apps.
+Set up the Python virtual environment first. You need to do this before trying to run the app.
 
 ### Linux Setup Script
 
@@ -45,27 +44,18 @@ setup-venv312-windows.bat
 
 After the virtual environment is set up, just run the script you want. The run scripts activate `venv312` automatically.
 
-The main Python apps are shared across Linux and Windows:
+Main app:
 
-- `promptmatch.py`
-- `imagereward.py`
 - `hybrid_selector.py`
+
+Archived standalone apps:
+
+- `obsolete/promptmatch.py`
+- `obsolete/imagereward.py`
 
 The `.sh` and `.bat` files are only convenience launchers.
 
 ### Linux
-
-```bash
-./run-promptmatch.sh
-```
-
-or
-
-```bash
-./run-imagereward.sh
-```
-
-or
 
 ```bash
 ./run-hybrid-selector.sh
@@ -73,27 +63,20 @@ or
 
 Open:
 
-- `http://localhost:7861` for PromptMatch
-- `http://localhost:7860` for ImageReward
 - `http://localhost:7862` for HybridSelector
 
 ### Windows
 
 ```bat
-run-promptmatch-windows.bat
-```
-
-or
-
-```bat
-run-imagereward-windows.bat
-```
-
-or
-
-```bat
 run-hybrid-selector-windows.bat
 ```
+
+Archived launchers are in [`obsolete/`](obsolete/):
+
+- `obsolete/run-promptmatch.sh`
+- `obsolete/run-imagereward.sh`
+- `obsolete/run-promptmatch-windows.bat`
+- `obsolete/run-imagereward-windows.bat`
 
 ## Manual Install
 
@@ -156,45 +139,11 @@ Ranks images by overall aesthetic fit to a style prompt, so it is better for tas
 
 ## Architecture
 
-The repository consists of three main Python scripts, each providing a web-based UI for image evaluation:
+The repository centers on one main Python app:
 
-1.  **`imagereward.py`**: An interactive tool for **aesthetic scoring** of images.
-2.  **`promptmatch.py`**: An interactive tool for **semantic content matching** using CLIP models.
-3.  **`hybrid_selector.py`**: A combined app that lets you switch between both scoring methods in one interface.
+- **`hybrid_selector.py`**: a combined interface that lets you switch between semantic prompt matching and aesthetic scoring in one place.
 
-All three applications are built with [Gradio](https://www.gradio.app/) and use PyTorch for model inference. They are designed to be run as standalone scripts. Set up a local Python 3.12 virtual environment named `venv312` before running them.
-
-### `imagereward.py` - Aesthetic Scorer
-
-This tool uses the [ImageReward](https://github.com/THUDM/ImageReward) model (`ImageReward-v1.0`) to score images based on their aesthetic quality, guided by a text prompt.
-
-**Key Features:**
-
-*   **Aesthetic Scoring**: Ranks images based on how well they match a desired aesthetic (e.g., "cinematic," "high fashion").
-*   **Best/Normal Galleries**: The UI is split into "BEST" and "NORMAL" galleries.
-*   **Score Threshold**: A slider allows you to dynamically set the score threshold to move images between the two galleries.
-*   **Manual Override**: Manually move images between galleries if the model's score is not to your liking.
-*   **Re-scoring**: Change the prompt to re-evaluate all images based on a new aesthetic.
-*   **Export**: Save the sorted images into `best` and `normal` subdirectories.
-
-### `promptmatch.py` - Semantic Sorter
-
-This tool uses various CLIP-style models to find images that match a specific textual description (semantic content).
-
-PromptMatch supports multiple model families so you can trade speed, memory use, and matching quality:
-
-- **OpenAI CLIP**: the original CLIP models.
-- **OpenCLIP**: strong open-source CLIP variants, including larger high-quality models.
-- **SigLIP**: newer Google models that are often very strong for text-image matching.
-
-**Key Features:**
-
-*   **Flexible Model Backend**: Switch between OpenAI CLIP, OpenCLIP, and SigLIP in the UI.
-*   **Positive & Negative Prompts**: Sort images based on a **positive prompt** (what you want to find) and an optional **negative prompt** (what you want to exclude).
-*   **Found/Not Found Galleries**: The UI is split into "FOUND" and "NOT FOUND" galleries.
-*   **Dual Thresholds**: Independent sliders for positive and negative similarity scores provide fine-grained control.
-*   **On-the-Fly Model Switching**: Load and switch between different CLIP models directly from the UI.
-*   **Export**: Save the sorted images into `found` and `notfound` subdirectories.
+The app is built with [Gradio](https://www.gradio.app/) and uses PyTorch for model inference. Set up a local Python 3.12 virtual environment named `venv312` before running it.
 
 ### `hybrid_selector.py` - Combined Selector
 
@@ -209,29 +158,43 @@ This app combines PromptMatch and ImageReward into one UI and lets you switch sc
 *   **Histogram Threshold Selection**: Click the histogram to set thresholds directly.
 *   **Thumbnail Zoom**: Resize both galleries together with one slider.
 
+## Archived Standalone Apps
+
+The old standalone apps were moved into [`obsolete/`](obsolete/) for reference:
+
+- `obsolete/promptmatch.py`
+- `obsolete/imagereward.py`
+- `obsolete/run-promptmatch.sh`
+- `obsolete/run-imagereward.sh`
+- `obsolete/run-promptmatch-windows.bat`
+- `obsolete/run-imagereward-windows.bat`
+
 ## Files Included
 
 Windows launchers:
 
 *   `setup-venv312-windows.bat`
-*   `run-imagereward-windows.bat`
-*   `run-promptmatch-windows.bat`
 *   `run-hybrid-selector-windows.bat`
 
 Linux launchers:
 
 *   `setup-venv312.sh`
-*   `run-imagereward.sh`
-*   `run-promptmatch.sh`
 *   `run-hybrid-selector.sh`
 
 Main cross-platform app scripts:
 
-*   `imagereward.py`
-*   `promptmatch.py`
 *   `hybrid_selector.py`
 
-There are no separate Windows-only Python app files. Both operating systems use the same main `.py` scripts.
+Archived files:
+
+*   `obsolete/imagereward.py`
+*   `obsolete/promptmatch.py`
+*   `obsolete/run-imagereward.sh`
+*   `obsolete/run-promptmatch.sh`
+*   `obsolete/run-imagereward-windows.bat`
+*   `obsolete/run-promptmatch-windows.bat`
+
+There are no separate Windows-only Python app files for the main app. Both operating systems use the same `hybrid_selector.py`.
 
 Dependency notes:
 
