@@ -683,31 +683,6 @@ def create_app():
     input.addEventListener("change", scheduleRepaint);
     root.dataset.hyStateHooked = "1";
   }};
-<<<<<<< ours
-  const hookZoomControl = () => {{
-    // The visible zoom control is a plain HTML range input; this syncs it with Gradio state.
-    const range = document.getElementById("hy-zoom-range");
-    if (!range || range.dataset.hyZoomHooked) return;
-    const signalRoot = document.getElementById("hy-zoom-signal");
-    const signalInput = signalRoot ? signalRoot.querySelector("input, textarea") : null;
-    if (signalInput && signalInput.value) {{
-      range.value = signalInput.value;
-    }}
-    const sync = () => pushZoomValue(range.value);
-    range.addEventListener("input", sync);
-    range.addEventListener("change", sync);
-    if (signalInput && !signalInput.dataset.hyZoomHooked) {{
-      const pull = () => {{
-        if (signalInput.value) range.value = signalInput.value;
-      }};
-      signalInput.addEventListener("input", pull);
-      signalInput.addEventListener("change", pull);
-      signalInput.dataset.hyZoomHooked = "1";
-    }}
-    range.dataset.hyZoomHooked = "1";
-  }};
-=======
->>>>>>> theirs
   applyTooltips();
   hookMarkState();
   scheduleRepaint();
@@ -733,7 +708,7 @@ def create_app():
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
-        "hy-zoom": "Choose how many thumbnails appear per row in both galleries.",
+        "hy-zoom-ui": "Choose how many thumbnails appear per row in both galleries.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
@@ -1268,18 +1243,15 @@ def create_app():
         border:0 !important;
         border-radius:0 !important;
         padding:0 !important;
-        width:276px !important;
-        max-width:276px !important;
-        min-width:276px !important;
-        height:24px !important;
-        min-height:24px !important;
+        width:148px !important;
+        max-width:148px !important;
+        min-width:148px !important;
+        height:auto !important;
+        min-height:0 !important;
         margin-left:0 !important;
-        overflow:hidden !important;
+        overflow:visible !important;
         box-sizing:border-box !important;
-        scrollbar-width:none !important;
-        -ms-overflow-style:none !important;
     }
-    #hy-zoom::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
     #hy-zoom .head,
     #hy-zoom label,
     #hy-zoom .tab-like-container,
@@ -1291,26 +1263,20 @@ def create_app():
         gap:0 !important;
         width:100% !important;
         max-width:100% !important;
-        overflow:hidden !important;
-        min-height:24px !important;
-        scrollbar-width:none !important;
-        -ms-overflow-style:none !important;
+        overflow:visible !important;
+        min-height:0 !important;
     }
-    #hy-zoom .wrap::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
     #hy-zoom .slider_input_container {
         padding:0 !important;
         gap:0 !important;
         width:100% !important;
         max-width:100% !important;
-        overflow:hidden !important;
-        min-height:24px !important;
-        scrollbar-width:none !important;
-        -ms-overflow-style:none !important;
+        overflow:visible !important;
+        min-height:0 !important;
     }
-    #hy-zoom .slider_input_container::-webkit-scrollbar { display:none !important; width:0 !important; height:0 !important; }
     #hy-zoom input[type="range"] {
         margin:0 !important;
-        height:20px !important;
+        height:14px !important;
         width:100% !important;
         min-width:100% !important;
         display:block !important;
@@ -1318,13 +1284,22 @@ def create_app():
     .gallery-side { min-width:0; }
     .gallery-topbar { align-items:end; margin-bottom:8px; }
     .gallery-right-topbar { align-items:center; gap:12px; justify-content:space-between; }
-    .zoom-inline-wrap { align-items:center; gap:10px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; }
+    .zoom-inline-wrap { align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; }
+    .zoom-inline-label {
+        flex:0 0 auto;
+        overflow:hidden !important;
+        min-width:34px !important;
+        max-width:34px !important;
+        line-height:1 !important;
+    }
     .zoom-inline-label p {
         margin:0 !important;
         color:#8ec5ff !important;
         font-family:monospace !important;
-        font-size:.8rem !important;
+        font-size:.72rem !important;
         line-height:1 !important;
+        white-space:nowrap !important;
+        overflow:hidden !important;
     }
     """
 
@@ -1405,7 +1380,7 @@ def create_app():
                             right_head = gr.Markdown("### REJECTED")
                             with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
                                 gr.Markdown("Zoom", elem_classes=["zoom-inline-label"])
-                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, elem_id="hy-zoom")
+                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
