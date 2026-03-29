@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "VENV_PY=%CD%\venv312\Scripts\python.exe"
-set "APP_PY=%CD%\hybrid_selector.py"
+set "APP_PY=%CD%\Hybrid-Scorer.py"
 
 if not exist "%VENV_PY%" (
     echo venv312 was not found.
@@ -12,7 +12,7 @@ if not exist "%VENV_PY%" (
 )
 
 if not exist "%APP_PY%" (
-    echo hybrid_selector.py was not found in:
+    echo Hybrid-Scorer.py was not found in:
     echo   %CD%
     exit /b 1
 )

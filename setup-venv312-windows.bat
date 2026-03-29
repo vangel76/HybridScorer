@@ -8,21 +8,63 @@ if "%PYTORCH_CUDA_INDEX_URL%"=="" set "PYTORCH_CUDA_INDEX_URL=https://download.p
 where py >nul 2>nul
 if errorlevel 1 (
     echo Python launcher "py" was not found.
-    echo Install Python 3.12 for Windows from python.org and enable the launcher.
-    exit /b 1
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo winget was not found.
+        echo Install Python 3.12 for Windows from python.org and enable the launcher.
+        exit /b 1
+    )
+
+    echo Attempting to install Python 3.12 with winget...
+    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo Automatic Python install failed.
+        echo Install Python 3.12 for Windows from python.org and enable the launcher.
+        exit /b 1
+    )
+
+    where py >nul 2>nul
+    if errorlevel 1 (
+        echo Python 3.12 installation finished, but the py launcher is still not available in this shell.
+        echo Close this window, open a new one, and run setup-venv312-windows.bat again.
+        exit /b 1
+    )
 )
 
 where git >nul 2>nul
 if errorlevel 1 (
     echo Git was not found in PATH.
-    echo Install Git for Windows first, then run this setup script again.
-    exit /b 1
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo winget was not found.
+        echo Install Git for Windows first, then run this setup script again.
+        exit /b 1
+    )
+
+    echo Attempting to install Git with winget...
+    winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo Automatic Git install failed.
+        echo Install Git for Windows first, then run this setup script again.
+        exit /b 1
+    )
+
+    where git >nul 2>nul
+    if errorlevel 1 (
+        echo Git installation finished, but git is still not available in this shell.
+        echo Close this window, open a new one, and run setup-venv312-windows.bat again.
+        exit /b 1
+    )
 )
 
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo Creating virtual environment at "%VENV_DIR%"...
     py -3.12 -m venv "%VENV_DIR%"
-    if errorlevel 1 exit /b 1
+    if errorlevel 1 (
+        echo Python 3.12 was found, but creating the virtual environment failed.
+        echo Make sure Python 3.12 is installed correctly, then run this script again.
+        exit /b 1
+    )
 ) else (
     echo Reusing existing virtual environment at "%VENV_DIR%".
 )

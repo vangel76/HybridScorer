@@ -31,7 +31,7 @@ Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabl
 
 ### Windows Setup Script
 
-Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
+Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, verify that CUDA is available, and attempt to install Python 3.12 and Git automatically with `winget` if they are missing:
 
 ```bat
 setup-venv312-windows.bat
@@ -133,27 +133,43 @@ python -m pip install -r requirements.txt
 ### Windows Manual Install
 
 1. Install Python 3.12.
-2. Open `cmd.exe` in the project folder.
-3. Create the virtual environment:
+2. Make sure the Python launcher `py` is available.
+3. Open `cmd.exe` in the project folder.
+4. Create the virtual environment:
    ```bat
    py -3.12 -m venv venv312
    ```
-4. Activate it:
+5. Activate it:
    ```bat
    venv312\Scripts\activate.bat
    ```
-5. Upgrade packaging tools:
+6. Upgrade packaging tools:
    ```bat
    python -m pip install --upgrade pip setuptools wheel
    ```
-6. Install CUDA-enabled PyTorch:
+7. Install CUDA-enabled PyTorch:
    ```bat
    python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
    ```
-7. Install the app dependencies:
+8. Install the app dependencies:
    ```bat
    python -m pip install -r requirements.txt
    ```
+
+## Windows Requirements
+
+For the Windows scripts to work end-to-end, the user needs:
+
+- an NVIDIA GPU with a working CUDA-compatible driver
+- internet access for pip installs, `winget` installs, and first-time model downloads
+- either Python 3.12 and Git already installed, or `winget` available so the setup script can try to install them automatically
+
+After that, the intended Windows flow is:
+
+```bat
+setup-venv312-windows.bat
+run-Hybrid-Scorer-windows.bat
+```
 
 ## CUDA Requirement
 
