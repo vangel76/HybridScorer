@@ -12,6 +12,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+where git >nul 2>nul
+if errorlevel 1 (
+    echo Git was not found in PATH.
+    echo Install Git for Windows first, then run this setup script again.
+    exit /b 1
+)
+
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo Creating virtual environment at "%VENV_DIR%"...
     py -3.12 -m venv "%VENV_DIR%"

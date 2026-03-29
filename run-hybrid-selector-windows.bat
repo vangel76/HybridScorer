@@ -2,13 +2,19 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist "venv312\Scripts\python.exe" (
+set "VENV_PY=%CD%\venv312\Scripts\python.exe"
+set "APP_PY=%CD%\hybrid_selector.py"
+
+if not exist "%VENV_PY%" (
     echo venv312 was not found.
     echo Run setup-venv312-windows.bat first.
     exit /b 1
 )
 
-call "venv312\Scripts\activate.bat"
-if errorlevel 1 exit /b 1
+if not exist "%APP_PY%" (
+    echo hybrid_selector.py was not found in:
+    echo   %CD%
+    exit /b 1
+)
 
-python hybrid_selector.py
+"%VENV_PY%" "%APP_PY%"
