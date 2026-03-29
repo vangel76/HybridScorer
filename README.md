@@ -1,15 +1,15 @@
 # HybridScorer
 
-This repository contains one interactive Gradio application for rating and sorting images with GPU-accelerated AI models.
+Interactive Gradio application for rating and sorting images with GPU-accelerated AI models. Windows/Linux
 
 ## What This Is
 
-`HybridScorer` is built for quick human-in-the-loop image triage.
+`HybridScorer` is built for quick AI assisted human-in-the-loop image scoring.
 
 - `Hybrid-Scorer.py` combines PromptMatch and ImageReward in one UI.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
-- In the end, the app losslessly copies the original image files into two output folders: `selected` and `rejected`.
-- The source images are not recompressed or edited.
+- In the end, the app copies the original image files into two output folders: `selected` and `rejected`.
+- The source images are not recompressed or edited. The sources remains untouched and in place.
 
 ## Main App
 
@@ -63,16 +63,16 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 
 ### Basic Workflow
 
-1. Start the app and open your image folder.
-2. Choose a method:
-   - **PromptMatch**: best for subject, concept, or attribute matching.
-   - **ImageReward**: best for aesthetic, style, and overall preference sorting.
-3. Enter your prompt settings.
-4. Click **Run scoring**.
-5. Review the `SELECTED` and `REJECTED` galleries.
-6. Adjust the threshold sliders or click directly on the histogram to refine the split.
-7. Manually move exceptions between buckets if needed.
-8. Click **Export folders** to losslessly copy the final result into `selected/` and `rejected/`.
+- Start the app and open your image folder.
+- Choose a method.
+- Use **PromptMatch** for subject, concept, or attribute matching.
+- Use **ImageReward** for aesthetic, style, and overall preference sorting.
+- Enter your prompt settings.
+- Click **Run scoring**.
+- Review the `SELECTED` and `REJECTED` galleries.
+- Adjust the threshold sliders or click directly on the histogram to refine the split.
+- Manually move exceptions between buckets if needed.
+- Click **Export folders** to losslessly copy the final result into `selected/` and `rejected/`.
 
 ### PromptMatch
 
