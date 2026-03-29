@@ -1379,7 +1379,7 @@ def create_app():
                         with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
                             right_head = gr.Markdown("### REJECTED")
                             with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
-                                gr.Markdown("Zoom", elem_classes=["zoom-inline-label"])
+                                gr.Markdown("Tiles #", elem_classes=["zoom-inline-label"])
                                 zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):

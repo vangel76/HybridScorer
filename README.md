@@ -1,24 +1,21 @@
 # RATEImagesCLIP
 
-This repository contains a main interactive Gradio application for rating and sorting images with GPU-accelerated AI models, plus archived standalone variants.
+This repository contains one interactive Gradio application for rating and sorting images with GPU-accelerated AI models.
 
 ## What This Is
 
 `RATEImagesCLIP` is built for quick human-in-the-loop image triage.
 
-- `hybrid_selector.py` is the main app and combines both methods in one UI.
-- The old standalone `promptmatch.py` and `imagereward.py` apps are archived in [`obsolete/`](obsolete/).
+- `hybrid_selector.py` combines PromptMatch and ImageReward in one UI.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
-- In the end, the apps losslessly copy the original image files into two output folders based on your final split.
+- In the end, the app losslessly copies the original image files into two output folders: `selected` and `rejected`.
 - The source images are not recompressed or edited.
 
-## Choose The App
+## Main App
 
 | App | Best for | How it scores | Output buckets |
 | --- | --- | --- | --- |
-| `hybrid_selector.py` | Using both methods from one app | Switchable PromptMatch or ImageReward scoring in one UI | Method-dependent |
-| `obsolete/promptmatch.py` | Archived standalone subject/content matcher | Text-image similarity with CLIP, OpenCLIP, or SigLIP | `found` / `notfound` |
-| `obsolete/imagereward.py` | Archived standalone aesthetic sorter | Aesthetic preference scoring with ImageReward | `best` / `normal` |
+| `hybrid_selector.py` | Switching between content matching and aesthetic ranking in one place | PromptMatch with CLIP-family models or ImageReward with optional penalty prompt | `selected` / `rejected` |
 
 ## Install With Setup Scripts
 
@@ -42,18 +39,7 @@ setup-venv312-windows.bat
 
 ## Run
 
-After the virtual environment is set up, just run the script you want. The run scripts activate `venv312` automatically.
-
-Main app:
-
-- `hybrid_selector.py`
-
-Archived standalone apps:
-
-- `obsolete/promptmatch.py`
-- `obsolete/imagereward.py`
-
-The `.sh` and `.bat` files are only convenience launchers.
+After the virtual environment is set up, just run the launcher script. The run scripts activate `venv312` automatically.
 
 ### Linux
 
@@ -70,13 +56,6 @@ Open:
 ```bat
 run-hybrid-selector-windows.bat
 ```
-
-Archived launchers are in [`obsolete/`](obsolete/):
-
-- `obsolete/run-promptmatch.sh`
-- `obsolete/run-imagereward.sh`
-- `obsolete/run-promptmatch-windows.bat`
-- `obsolete/run-imagereward-windows.bat`
 
 ## Manual Install
 
@@ -119,7 +98,7 @@ python -m pip install -r requirements.txt
 
 ## CUDA Requirement
 
-CUDA is mandatory for this project. These apps are meant to rate and sort many images quickly, and that speed depends on GPU inference.
+CUDA is mandatory for this project. The app is meant to rate and sort many images quickly, and that speed depends on GPU inference.
 
 - If PyTorch cannot see a CUDA device, the app exits immediately.
 - The setup scripts install CUDA 12.6 PyTorch wheels by default.
@@ -127,19 +106,13 @@ CUDA is mandatory for this project. These apps are meant to rate and sort many i
 
 ## Screenshots
 
-### PromptMatch
-Finds images that match a subject or concept you describe in text, with optional negative prompting to exclude unwanted content.
+`hybrid_selector.py` lets you switch between PromptMatch for content matching and ImageReward for aesthetic scoring inside one shared workflow.
 
-![PromptMatch UI](screenshots/Promptmatch.jpg)
-
-### ImageReward
-Ranks images by overall aesthetic fit to a style prompt, so it is better for taste, mood, and visual quality than literal content matching.
-
-![ImageReward UI](screenshots/Imagereward.jpg)
+![HybridSelector UI](screenshots/HybridScorer.jpg)
 
 ## Architecture
 
-The repository centers on one main Python app:
+The repository centers on one Python app:
 
 - **`hybrid_selector.py`**: a combined interface that lets you switch between semantic prompt matching and aesthetic scoring in one place.
 
@@ -156,45 +129,25 @@ This app combines PromptMatch and ImageReward into one UI and lets you switch sc
 *   **PromptMatch Mode**: Supports CLIP-family model selection plus positive and negative prompts.
 *   **ImageReward Mode**: Supports a positive aesthetic prompt and an experimental penalty prompt.
 *   **Histogram Threshold Selection**: Click the histogram to set thresholds directly.
-*   **Thumbnail Zoom**: Resize both galleries together with one slider.
-
-## Archived Standalone Apps
-
-The old standalone apps were moved into [`obsolete/`](obsolete/) for reference:
-
-- `obsolete/promptmatch.py`
-- `obsolete/imagereward.py`
-- `obsolete/run-promptmatch.sh`
-- `obsolete/run-imagereward.sh`
-- `obsolete/run-promptmatch-windows.bat`
-- `obsolete/run-imagereward-windows.bat`
+*   **Thumbnail Control**: Resize both galleries together with one top-bar slider.
 
 ## Files Included
 
-Windows launchers:
+Windows scripts:
 
 *   `setup-venv312-windows.bat`
 *   `run-hybrid-selector-windows.bat`
 
-Linux launchers:
+Linux scripts:
 
 *   `setup-venv312.sh`
 *   `run-hybrid-selector.sh`
 
-Main cross-platform app scripts:
+Main cross-platform app:
 
 *   `hybrid_selector.py`
 
-Archived files:
-
-*   `obsolete/imagereward.py`
-*   `obsolete/promptmatch.py`
-*   `obsolete/run-imagereward.sh`
-*   `obsolete/run-promptmatch.sh`
-*   `obsolete/run-imagereward-windows.bat`
-*   `obsolete/run-promptmatch-windows.bat`
-
-There are no separate Windows-only Python app files for the main app. Both operating systems use the same `hybrid_selector.py`.
+There are no separate Windows-only Python app files. Both operating systems use the same `hybrid_selector.py`.
 
 Dependency notes:
 
