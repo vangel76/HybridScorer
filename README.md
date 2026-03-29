@@ -37,6 +37,16 @@ Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, 
 setup-venv312-windows.bat
 ```
 
+## Model Downloads
+
+Model weights are downloaded on first use only for the method and model you actually choose.
+
+- The default PromptMatch model is `SigLIP so400m-patch14-384`, which is about **3.3 GB** downloaded and is a good balance of quality and size.
+- The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
+- `ImageReward` is also downloaded on first use when you switch to that method.
+
+So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
+
 ## Run
 
 After the virtual environment is set up, just run the launcher script. The run scripts activate `venv312` automatically.
@@ -228,6 +238,6 @@ Dependency notes:
 
 - `requirements.txt` contains the shared application dependencies.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
-- Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries.
+- Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
 
 Place your images in a folder named `images` in the root of the repository to have them loaded at startup. You can also load images from any other folder using the UI.

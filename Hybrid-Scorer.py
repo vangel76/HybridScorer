@@ -502,7 +502,13 @@ def create_app():
     if not os.path.isdir(source_dir):
         source_dir = script_dir
 
-    prompt_backend = ModelBackend(device)
+    # Start with the lighter recommended SigLIP model so first-run download size
+    # and VRAM pressure are more reasonable than the much larger ViT-bigG-14.
+    prompt_backend = ModelBackend(
+        device,
+        backend="siglip",
+        siglip_model="google/siglip-so400m-patch14-384",
+    )
 
     # Shared mutable state for the one-page app. Gradio callbacks update this in place.
     state = {
