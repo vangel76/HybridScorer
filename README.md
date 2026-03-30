@@ -29,6 +29,8 @@ Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabl
 ./setup-venv312.sh
 ```
 
+If `venv312` was created before the CUDA 12.8 cleanup or copied from another project path, remove it once and rerun setup so the environment can be rebuilt cleanly.
+
 ### Windows Setup Script
 
 Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, verify that CUDA is available, and attempt to install Python 3.12 and Git automatically with `winget` if they are missing:
@@ -130,15 +132,19 @@ Export does a **lossless file copy** of the originals.
 
 If you do not want to use the setup scripts, you can set up the environment manually.
 
+`requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers` plus `sentencepiece` and `protobuf` for SigLIP and ImageReward.
+
 ### Linux Manual Install
 
 ```bash
 python3.12 -m venv venv312
 source venv312/bin/activate
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
 ```
+
+If you choose a different `PYTORCH_CUDA_INDEX_URL`, make sure `torch==2.9.1` and `torchvision==0.24.1` are available on that index or adjust the pinned versions to match.
 
 ### Windows Manual Install
 
@@ -159,12 +165,14 @@ python -m pip install -r requirements.txt
    ```
 7. Install CUDA-enabled PyTorch:
    ```bat
-   python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+   python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
    ```
 8. Install the app dependencies:
    ```bat
    python -m pip install -r requirements.txt
    ```
+
+If you choose a different `PYTORCH_CUDA_INDEX_URL`, make sure `torch==2.9.1` and `torchvision==0.24.1` are available on that index or adjust the pinned versions to match.
 
 ## Windows Requirements
 
@@ -186,8 +194,8 @@ run-Hybrid-Scorer-windows.bat
 CUDA is mandatory for this project. The app is meant to rate and sort many images quickly, and that speed depends on GPU inference.
 
 - If PyTorch cannot see a CUDA device, the app exits immediately.
-- The setup scripts install CUDA 12.6 PyTorch wheels by default.
-- If your machine needs a different supported PyTorch CUDA wheel, set `PYTORCH_CUDA_INDEX_URL` before setup.
+- The setup scripts install pinned CUDA 12.8 PyTorch wheels by default.
+- If your machine needs a different supported PyTorch CUDA wheel, set `PYTORCH_CUDA_INDEX_URL` before setup and update the pinned PyTorch versions if needed.
 
 ## Screenshots
 
@@ -237,6 +245,7 @@ There are no separate Windows-only Python app files. Both operating systems use 
 Dependency notes:
 
 - `requirements.txt` contains the shared application dependencies.
+- `requirements.txt` also includes the pinned `transformers` version and the tokenizer/runtime extras (`sentencepiece`, `protobuf`) needed by SigLIP and ImageReward.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
 - Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
 

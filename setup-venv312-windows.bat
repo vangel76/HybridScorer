@@ -3,7 +3,9 @@ setlocal
 cd /d "%~dp0"
 
 set "VENV_DIR=%CD%\venv312"
-if "%PYTORCH_CUDA_INDEX_URL%"=="" set "PYTORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu126"
+if "%PYTORCH_CUDA_INDEX_URL%"=="" set "PYTORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu128"
+if "%PYTORCH_TORCH_VERSION%"=="" set "PYTORCH_TORCH_VERSION=2.9.1"
+if "%PYTORCH_TORCHVISION_VERSION%"=="" set "PYTORCH_TORCHVISION_VERSION=0.24.1"
 
 where py >nul 2>nul
 if errorlevel 1 (
@@ -67,6 +69,24 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
     )
 ) else (
     echo Reusing existing virtual environment at "%VENV_DIR%".
+    "%VENV_DIR%\Scripts\python.exe" -m pip --version >nul 2>nul
+    if errorlevel 1 (
+        echo Existing venv312 is not healthy.
+        echo python -m pip failed inside "%VENV_DIR%".
+        echo Delete venv312 and run setup-venv312-windows.bat again.
+        exit /b 1
+    )
+
+    if exist "%VENV_DIR%\pyvenv.cfg" (
+        findstr /C:"%VENV_DIR%" "%VENV_DIR%\pyvenv.cfg" >nul 2>nul
+        if errorlevel 1 (
+            echo Existing venv312 appears to have been copied or moved from another path.
+            echo Expected to find this project path in "%VENV_DIR%\pyvenv.cfg":
+            echo   %VENV_DIR%
+            echo Delete venv312 and run setup-venv312-windows.bat again.
+            exit /b 1
+        )
+    )
 )
 
 call "%VENV_DIR%\Scripts\activate.bat"
@@ -78,7 +98,11 @@ if errorlevel 1 exit /b 1
 echo.
 echo Installing CUDA-enabled PyTorch from:
 echo   %PYTORCH_CUDA_INDEX_URL%
-python -m pip install torch torchvision torchaudio --index-url %PYTORCH_CUDA_INDEX_URL%
+echo Pinned package versions:
+echo   torch==%PYTORCH_TORCH_VERSION%
+echo   torchvision==%PYTORCH_TORCHVISION_VERSION%
+echo If you override PYTORCH_CUDA_INDEX_URL, make sure these pinned versions exist on that index.
+python -m pip install torch==%PYTORCH_TORCH_VERSION% torchvision==%PYTORCH_TORCHVISION_VERSION% --index-url %PYTORCH_CUDA_INDEX_URL%
 if errorlevel 1 exit /b 1
 
 python -m pip install -r "%CD%\requirements.txt"

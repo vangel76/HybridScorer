@@ -15,10 +15,12 @@ import shutil
 import socket
 import string
 import sys
+import types
 import warnings
+from importlib import import_module
+from importlib.machinery import ModuleSpec
 
 import gradio as gr
-import ImageReward as RM
 import torch
 import torch.nn.functional as F
 
@@ -54,6 +56,45 @@ INPUT_FOLDER_NAME = "images"
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".avif")
 DEFAULT_BATCH_SIZE = 32
 MAX_BATCH_SIZE = 128
+
+
+def get_imagereward_utils():
+    # Avoid ImageReward's package-level ReFL import, which pulls in unrelated diffusers code.
+    package_name = "ImageReward"
+    module_name = f"{package_name}.utils"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    package_dir = None
+    for entry in sys.path:
+        candidate = os.path.join(entry, "ImageReward")
+        if os.path.isdir(candidate):
+            package_dir = candidate
+            break
+
+    if package_dir is None:
+        sys.exit(
+            "ImageReward not installed.\n"
+            "Run: python -m pip install -r requirements.txt"
+        )
+
+    if package_name not in sys.modules:
+        package = types.ModuleType(package_name)
+        package.__file__ = os.path.join(package_dir, "__init__.py")
+        package.__path__ = [package_dir]
+        package.__package__ = package_name
+        spec = ModuleSpec(package_name, loader=None, is_package=True)
+        spec.submodule_search_locations = [package_dir]
+        package.__spec__ = spec
+        sys.modules[package_name] = package
+
+    try:
+        return import_module(module_name)
+    except Exception as exc:
+        sys.exit(
+            "ImageReward could not be imported.\n"
+            f"{exc}"
+        )
 
 
 def require_cuda():
@@ -726,7 +767,7 @@ def create_app():
 
     def ensure_imagereward_model():
         if state["ir_model"] is None:
-            state["ir_model"] = RM.load("ImageReward-v1.0")
+            state["ir_model"] = get_imagereward_utils().load("ImageReward-v1.0")
         return state["ir_model"]
 
     def gallery_update(items, columns=None):

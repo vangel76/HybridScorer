@@ -3,6 +3,7 @@ pillow
 tqdm
 image-reward
 open_clip_torch
-transformers
+transformers==4.37.2
 sentencepiece
+protobuf
 git+https://github.com/openai/CLIP.git
