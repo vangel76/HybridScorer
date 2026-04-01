@@ -10,6 +10,7 @@ HybridSelector — PromptMatch + ImageReward in one UI
 """
 
 import json
+import math
 import os
 import shutil
 import socket
@@ -729,6 +730,14 @@ def threshold_for_percentile(method, scores, percentile):
     return round(vals[idx], 3)
 
 
+def slider_step_floor(value, step=0.001):
+    return round(math.floor(float(value) / step) * step, 3)
+
+
+def slider_step_ceil_exclusive(value, step=0.001):
+    return round((math.floor(float(value) / step) + 1) * step, 3)
+
+
 def status_line(method, left_items, right_items, scores, overrides):
     left_name, right_name, _, _ = method_labels(method)
     if not scores:
@@ -1048,6 +1057,7 @@ def create_app():
         "hy-right-gallery": "Images currently in the right bucket. Click one to select it.",
         "hy-move-right": "Move all marked SELECTED images into REJECTED as manual overrides.",
         "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
+        "hy-fit-threshold": "Adjust the score threshold just enough so the marked images flip to the other bucket. Uses the previewed image if nothing is marked.",
         "hy-clear-status": "Remove manual override status from all marked images so they snap back to their scored bucket.",
     }
 
@@ -1089,6 +1099,24 @@ def create_app():
             "held": list(state.get("overrides", {}).keys()),
             "preview": state.get("preview_fname"),
         })
+
+    def active_targets(main_threshold, aux_threshold):
+        left_items, right_items = build_split(
+            state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
+        )
+        left_names = {os.path.basename(path) for path, _ in left_items}
+        right_names = {os.path.basename(path) for path, _ in right_items}
+        left_marked = [name for name in state.get("left_marked", []) if name in left_names]
+        right_marked = [name for name in state.get("right_marked", []) if name in right_names]
+        if left_marked or right_marked:
+            return left_marked, right_marked
+
+        preview_fname = state.get("preview_fname")
+        if preview_fname in left_names:
+            return [preview_fname], []
+        if preview_fname in right_names:
+            return [], [preview_fname]
+        return [], []
 
     def render_histogram(method, scores, main_threshold, aux_threshold):
         # Draw a lightweight PIL histogram image instead of depending on a plotting library.
@@ -1635,6 +1663,72 @@ def create_app():
         state["right_marked"] = []
         return current_view(main_threshold, aux_threshold)
 
+    def fit_threshold_to_targets(main_threshold, aux_threshold):
+        left_targets, right_targets = active_targets(main_threshold, aux_threshold)
+        targets = left_targets or right_targets
+        if not targets or (left_targets and right_targets) or not state["scores"]:
+            return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
+
+        for fname in targets:
+            state["overrides"].pop(fname, None)
+
+        new_main = float(main_threshold)
+        new_aux = float(aux_threshold)
+
+        if state["method"] == METHOD_IMAGEREWARD:
+            lo, hi, _ = imagereward_slider_range(state["scores"])
+            valid_scores = [
+                state["scores"][fname]["score"]
+                for fname in targets
+                if fname in state["scores"] and state["scores"][fname]["score"] > -1000
+            ]
+            if valid_scores:
+                if right_targets:
+                    new_main = min(new_main, slider_step_floor(min(valid_scores)))
+                else:
+                    new_main = max(new_main, slider_step_ceil_exclusive(max(valid_scores)))
+                new_main = round(max(lo, min(hi, new_main)), 3)
+        else:
+            pos_lo, pos_hi, _, neg_lo, neg_hi, _, has_neg = promptmatch_slider_range(state["scores"])
+            valid_items = [
+                state["scores"][fname]
+                for fname in targets
+                if fname in state["scores"] and not state["scores"][fname].get("failed", False)
+            ]
+            if valid_items:
+                if right_targets:
+                    min_pos = min(item["pos"] for item in valid_items)
+                    new_main = min(new_main, slider_step_floor(min_pos))
+                    if has_neg:
+                        neg_scores = [item["neg"] for item in valid_items if item.get("neg") is not None]
+                        if neg_scores:
+                            new_aux = max(new_aux, slider_step_ceil_exclusive(max(neg_scores)))
+                else:
+                    main_candidate = max(new_main, slider_step_ceil_exclusive(max(item["pos"] for item in valid_items)))
+                    main_delta = abs(main_candidate - float(main_threshold))
+
+                    aux_candidate = None
+                    aux_delta = None
+                    if has_neg and all(item.get("neg") is not None for item in valid_items):
+                        aux_candidate = min(new_aux, slider_step_floor(min(item["neg"] for item in valid_items)))
+                        aux_delta = abs(aux_candidate - float(aux_threshold))
+
+                    if aux_candidate is not None and aux_delta is not None and aux_delta < main_delta:
+                        new_aux = aux_candidate
+                    else:
+                        new_main = main_candidate
+
+                new_main = round(max(pos_lo, min(pos_hi, new_main)), 3)
+                new_aux = round(max(neg_lo, min(neg_hi, new_aux)), 3)
+
+        state["left_marked"] = []
+        state["right_marked"] = []
+        return (
+            *current_view(new_main, new_aux),
+            gr.update(value=new_main),
+            gr.update(value=new_aux),
+        )
+
     def set_from_percentile(percentile, main_threshold, aux_threshold):
         new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
         return (*current_view(new_threshold, aux_threshold), gr.update(value=new_threshold))
@@ -1905,6 +1999,7 @@ def create_app():
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
                         sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
                         move_right_btn = gr.Button("Move →", elem_id="hy-move-right")
+                        fit_threshold_btn = gr.Button("Fit thresh", elem_id="hy-fit-threshold")
                         move_left_btn = gr.Button("← Move", elem_id="hy-move-left")
                         clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
@@ -1948,6 +2043,7 @@ def create_app():
         right_gallery.select(fn=remember_preview_right, inputs=[main_slider, aux_slider], outputs=[mark_state])
         thumb_action.change(fn=toggle_mark, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
