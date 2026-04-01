@@ -8,6 +8,7 @@ Interactive Gradio application for rating and sorting images with GPU-accelerate
 
 - `Hybrid-Scorer.py` combines PromptMatch and ImageReward in one UI.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
+- Both scoring methods can use cached proxy images to speed up repeat scoring and large-folder browsing.
 - In the end, the app copies the original image files into two output folders: `selected` and `rejected`.
 - The source images are not recompressed or edited. The sources remains untouched and in place.
 
@@ -47,6 +48,7 @@ Model weights are downloaded on first use only for the method and model you actu
 - PromptMatch also supports OpenCLIP ConvNeXt backbones if you want additional alternatives in the same prompt-based workflow.
 - The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
 - `ImageReward` is also downloaded on first use when you switch to that method.
+- The UI now shows whether a model is being loaded from memory, disk cache, or a likely network download so users are not left guessing.
 
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
 
@@ -84,6 +86,7 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 - Click **Run scoring**.
 - Review the `SELECTED` and `REJECTED` galleries.
 - Adjust the threshold sliders or click directly on the histogram to refine the split.
+- Leave **Use proxies for gallery display** enabled for large folders if you want much faster gallery refreshes.
 - Manually move exceptions between buckets if needed.
 - Click **Export folders** to losslessly copy the final result into `selected/` and `rejected/`.
 
@@ -94,6 +97,7 @@ Use PromptMatch when you want to find images that match a text description.
 - Set a **positive prompt** for what you want.
 - Optionally set a **negative prompt** for what should count against a match.
 - Choose the PromptMatch model from the dropdown. Available families include SigLIP, OpenCLIP ViT, OpenCLIP ConvNeXt, and OpenAI CLIP.
+- PromptMatch shows proxy preparation, model loading source, and scoring autobatch size in the progress UI.
 - Use the **main threshold** to control how strong the positive match must be.
 - If you use a negative prompt, use the **negative threshold** to control how strongly that negative signal is allowed to pass.
 
@@ -103,8 +107,21 @@ Use ImageReward when you care more about style, mood, or overall visual appeal t
 
 - Set an **ImageReward positive prompt** describing the look you want.
 - Optionally set an **experimental penalty prompt** to subtract an unwanted style or mood.
-- Increase **penalty weight** if the penalty prompt should matter more.
+- Increase **penalty weight** with the `0.0` to `4.0` slider if the penalty prompt should matter more.
+- Penalty weight now recalculates the final score instantly from the stored positive and penalty passes; it does not rescore the folder.
+- The penalty is applied relative to the current folder's penalty scores, so raising the penalty weight makes stronger negative-prompt matches stricter without accidentally boosting selection.
+- ImageReward also uses the proxy cache and shows autobatch size in the progress UI.
 - Use the **main threshold** to decide which images land in `SELECTED`.
+
+### Proxy Cache
+
+Large folders are faster because the app can build reusable proxy images with the longest edge capped at `1024px`.
+
+- Proxy creation is multithreaded.
+- Proxies are cached in the system temp directory under `HybridScorerPromptMatchProxyCache`.
+- The cache is reused while you keep working on the same folder.
+- When you switch folders in the UI, the previous folder's proxy cache is deleted.
+- Export still copies the original source files, never the proxies.
 
 ### Reviewing And Manual Overrides
 
@@ -227,7 +244,9 @@ This app combines PromptMatch and ImageReward into one UI and lets you switch sc
 - **Method Selector**: Switch between PromptMatch and ImageReward inside one app.
 - **Shared Gallery Workflow**: One folder input, shared galleries, manual overrides, export, and threshold controls.
 - **PromptMatch Mode**: Supports CLIP-family model selection plus positive and negative prompts.
-- **ImageReward Mode**: Supports a positive aesthetic prompt and an experimental penalty prompt.
+- **ImageReward Mode**: Supports a positive aesthetic prompt, an experimental penalty prompt, and instant penalty-weight recalculation from stored scores.
+- **Proxy Cache**: Reuses multithreaded `1024px` proxies for faster scoring and optional faster gallery display on large folders.
+- **Load Visibility**: Shows whether models are already in memory or expected to come from disk cache / network download.
 - **Histogram Threshold Selection**: Click the histogram to set thresholds directly.
 - **Thumbnail Control**: Resize both galleries together with one top-bar slider.
 

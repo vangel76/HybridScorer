@@ -127,6 +127,65 @@ def get_ephemeral_port():
         return sock.getsockname()[1]
 
 
+def huggingface_file_cached(repo_id, filename):
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:
+        return False
+    try:
+        cached = try_to_load_from_cache(repo_id=repo_id, filename=filename)
+    except Exception:
+        return False
+    return bool(cached) and os.path.isfile(cached)
+
+
+def describe_openai_clip_source(model_name):
+    try:
+        import clip as _clip
+    except Exception:
+        return "network or disk cache"
+    url = _clip._MODELS.get(model_name)
+    if not url:
+        return "network or disk cache"
+    filename = os.path.basename(url)
+    cache_path = os.path.join(os.path.expanduser("~"), ".cache", "clip", filename)
+    return "disk cache" if os.path.isfile(cache_path) else "network download"
+
+
+def describe_openclip_source(model_name, pretrained_tag):
+    try:
+        import open_clip.pretrained as oc_pretrained
+    except Exception:
+        return "network or disk cache"
+    cfg = oc_pretrained.get_pretrained_cfg(model_name, pretrained_tag)
+    if not cfg:
+        return "network or disk cache"
+    if "file" in cfg:
+        return "disk file"
+    hf_ref = cfg.get("hf_hub", "")
+    if hf_ref:
+        model_id, filename = os.path.split(hf_ref)
+        if model_id and filename and huggingface_file_cached(model_id, filename):
+            return "disk cache"
+        return "network download"
+    return "network or disk cache"
+
+
+def describe_siglip_source(model_name):
+    cached = huggingface_file_cached(model_name, "config.json") and (
+        huggingface_file_cached(model_name, "model.safetensors")
+        or huggingface_file_cached(model_name, "pytorch_model.bin")
+    )
+    return "disk cache" if cached else "network download"
+
+
+def describe_imagereward_source():
+    cache_root = os.path.expanduser("~/.cache/ImageReward")
+    model_ok = os.path.isfile(os.path.join(cache_root, "ImageReward.pt"))
+    med_ok = os.path.isfile(os.path.join(cache_root, "med_config.json"))
+    return "disk cache" if model_ok and med_ok else "network download"
+
+
 def normalize_folder_identity(folder):
     return os.path.normcase(os.path.abspath(folder))
 
@@ -152,6 +211,16 @@ def build_promptmatch_proxy_path(original_path, cache_dir, max_edge=PROMPTMATCH_
     ])
     filename = f"{sha256(cache_key.encode('utf-8', errors='ignore')).hexdigest()}.jpg"
     return os.path.join(cache_dir, filename)
+
+
+def get_image_paths_signature(image_paths):
+    digest = sha256()
+    for path in image_paths:
+        stat = os.stat(path)
+        digest.update(os.path.normcase(os.path.abspath(path)).encode("utf-8", errors="ignore"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+    return digest.hexdigest()
 
 
 def ensure_promptmatch_proxy(original_path, cache_dir, max_edge=PROMPTMATCH_PROXY_MAX_EDGE):
@@ -322,6 +391,21 @@ def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=Non
         finally:
             if device == "cuda":
                 torch.cuda.empty_cache()
+
+
+def get_imagereward_penalty_offset(penalty_values):
+    valid = [float(val) for val in penalty_values if val is not None]
+    if not valid:
+        return None
+    return min(valid)
+
+
+def compute_imagereward_final_score(base_score, penalty_score, penalty_weight, penalty_offset=None):
+    final_score = float(base_score)
+    if penalty_score is not None and penalty_offset is not None:
+        effective_penalty = max(0.0, float(penalty_score) - float(penalty_offset))
+        final_score = final_score - (float(penalty_weight) * effective_penalty)
+    return float(final_score)
 
 
 class ModelBackend:
@@ -723,6 +807,12 @@ def create_app():
         "proxy_cache_dir": None,
         "proxy_map": {},
         "use_proxy_display": True,
+        "ir_penalty_weight": DEFAULT_IR_PENALTY_WEIGHT,
+        "ir_cached_signature": None,
+        "ir_cached_positive_prompt": None,
+        "ir_cached_negative_prompt": None,
+        "ir_cached_base_scores": None,
+        "ir_cached_penalty_scores": None,
     }
 
     def sync_promptmatch_proxy_cache(folder):
@@ -732,6 +822,11 @@ def create_app():
             state["proxy_folder_key"] = folder_key
             state["proxy_cache_dir"] = get_promptmatch_proxy_cache_dir(folder)
             state["proxy_map"] = {}
+            state["ir_cached_signature"] = None
+            state["ir_cached_positive_prompt"] = None
+            state["ir_cached_negative_prompt"] = None
+            state["ir_cached_base_scores"] = None
+            state["ir_cached_penalty_scores"] = None
         return state["proxy_cache_dir"]
 
     def tooltip_head(pairs):
@@ -1139,6 +1234,8 @@ def create_app():
         positive_prompt = (positive_prompt or "").strip() or IR_PROMPT
         negative_prompt = (negative_prompt or "").strip()
         penalty_weight = float(penalty_weight)
+        state["ir_penalty_weight"] = penalty_weight
+        image_signature = get_image_paths_signature(folder_paths)
         proxy_map = {}
         cache_dir = state.get("proxy_cache_dir")
         scoring_paths = list(folder_paths)
@@ -1161,49 +1258,82 @@ def create_app():
             print(f"[ImageReward] Proxy prep complete: {generated} new, {reused} reused")
 
         base_scores = {}
-        progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(folder_paths)} images with ImageReward...")
-        for event in iter_imagereward_scores(scoring_paths, model, device, positive_prompt, source_paths=folder_paths):
-            if event["type"] == "oom":
-                progress(
-                    PROMPTMATCH_PROXY_PROGRESS_SHARE
-                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                    desc=f"ImageReward OOM, retrying batch {event['batch_size']}",
-                )
-                continue
-            progress(
-                PROMPTMATCH_PROXY_PROGRESS_SHARE
-                + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                desc=f"ImageReward {event['done']}/{event['total']}",
-            )
-            base_scores = event["scores"]
-
-        penalty_scores = {}
-        if negative_prompt:
-            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Applying penalty prompt to {len(folder_paths)} images...")
-            for event in iter_imagereward_scores(scoring_paths, model, device, negative_prompt, source_paths=folder_paths):
+        can_reuse_base = (
+            state.get("ir_cached_signature") == image_signature
+            and state.get("ir_cached_positive_prompt") == positive_prompt
+            and state.get("ir_cached_base_scores") is not None
+        )
+        if can_reuse_base:
+            base_scores = dict(state["ir_cached_base_scores"])
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached ImageReward positive pass for {len(folder_paths)} images")
+        else:
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(folder_paths)} images with ImageReward...")
+            for event in iter_imagereward_scores(scoring_paths, model, device, positive_prompt, source_paths=folder_paths):
                 if event["type"] == "oom":
                     progress(
                         PROMPTMATCH_PROXY_PROGRESS_SHARE
                         + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                        desc=f"Penalty OOM, retrying batch {event['batch_size']}",
+                        desc=f"ImageReward OOM, retrying autobatch {event['batch_size']}",
                     )
                     continue
                 progress(
                     PROMPTMATCH_PROXY_PROGRESS_SHARE
                     + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                    desc=f"Penalty prompt {event['done']}/{event['total']}",
+                    desc=f"ImageReward {event['done']}/{event['total']} (autobatch {event['batch_size']})",
                 )
-                penalty_scores = event["scores"]
+                base_scores = event["scores"]
+            state["ir_cached_signature"] = image_signature
+            state["ir_cached_positive_prompt"] = positive_prompt
+            state["ir_cached_base_scores"] = dict(base_scores)
 
+        penalty_scores = {}
+        if negative_prompt:
+            can_reuse_penalty = (
+                state.get("ir_cached_signature") == image_signature
+                and state.get("ir_cached_negative_prompt") == negative_prompt
+                and state.get("ir_cached_penalty_scores") is not None
+            )
+            if can_reuse_penalty:
+                penalty_scores = dict(state["ir_cached_penalty_scores"])
+                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached penalty pass for {len(folder_paths)} images")
+            else:
+                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Applying penalty prompt to {len(folder_paths)} images...")
+                for event in iter_imagereward_scores(scoring_paths, model, device, negative_prompt, source_paths=folder_paths):
+                    if event["type"] == "oom":
+                        progress(
+                            PROMPTMATCH_PROXY_PROGRESS_SHARE
+                            + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
+                            desc=f"Penalty OOM, retrying autobatch {event['batch_size']}",
+                        )
+                        continue
+                    progress(
+                        PROMPTMATCH_PROXY_PROGRESS_SHARE
+                        + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
+                        desc=f"Penalty prompt {event['done']}/{event['total']} (autobatch {event['batch_size']})",
+                    )
+                    penalty_scores = event["scores"]
+                state["ir_cached_signature"] = image_signature
+                state["ir_cached_negative_prompt"] = negative_prompt
+                state["ir_cached_penalty_scores"] = dict(penalty_scores)
+        else:
+            state["ir_cached_negative_prompt"] = ""
+            state["ir_cached_penalty_scores"] = {}
+
+        penalty_offset = get_imagereward_penalty_offset(
+            item["score"] for item in penalty_scores.values()
+        )
         wrapped = {}
         for path in folder_paths:
             fname = os.path.basename(path)
             base_item = base_scores.get(fname, {"score": -float("inf"), "path": path})
             penalty_item = penalty_scores.get(fname)
             penalty_value = penalty_item["score"] if penalty_item is not None else None
-            final_score = base_item["score"]
-            if penalty_value is not None:
-                final_score = final_score - (penalty_weight * penalty_value)
+            final_score = compute_imagereward_final_score(
+                base_item["score"],
+                penalty_value,
+                penalty_weight,
+                penalty_offset=penalty_offset,
+            )
             wrapped[fname] = {
                 "score": float(final_score),
                 "base": float(base_item["score"]),
@@ -1211,6 +1341,28 @@ def create_app():
                 "path": path,
             }
         return wrapped
+
+    def recompute_imagereward_scores(penalty_weight):
+        penalty_weight = float(penalty_weight)
+        state["ir_penalty_weight"] = penalty_weight
+        if state["method"] != METHOD_IMAGEREWARD or not state["scores"]:
+            return False
+
+        changed = False
+        penalty_offset = get_imagereward_penalty_offset(
+            item.get("penalty") for item in state["scores"].values() if "base" in item
+        )
+        for item in state["scores"].values():
+            if "base" not in item:
+                continue
+            item["score"] = compute_imagereward_final_score(
+                item["base"],
+                item.get("penalty"),
+                penalty_weight,
+                penalty_offset=penalty_offset,
+            )
+            changed = True
+        return changed
 
     def configure_controls(method):
         state["method"] = method
@@ -1273,10 +1425,19 @@ def create_app():
                 return empty_result(f"Unknown PromptMatch model: {model_label}", method)
             _, backend_name, kwargs = cfg
             if label_for_backend(state["backend"]) != model_label:
+                if backend_name == "openai":
+                    source = describe_openai_clip_source(kwargs.get("clip_model"))
+                elif backend_name == "openclip":
+                    source = describe_openclip_source(kwargs.get("openclip_model"), kwargs.get("openclip_pretrained"))
+                else:
+                    source = describe_siglip_source(kwargs.get("siglip_model"))
+                progress(0, desc=f"Loading PromptMatch model from {source}: {model_label}")
                 try:
                     state["backend"] = ModelBackend(device, backend=backend_name, **kwargs)
                 except Exception as exc:
                     return empty_result(str(exc), method)
+            else:
+                progress(0, desc=f"Using loaded PromptMatch model from memory: {model_label}")
 
             proxy_map = {}
             cache_dir = state.get("proxy_cache_dir")
@@ -1338,6 +1499,11 @@ def create_app():
                 gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=neg_mid, visible=True, interactive=has_neg, label="Neg threshold (< -> passes)"),
             )
 
+        if state["ir_model"] is None:
+            progress(0, desc=f"Loading ImageReward model from {describe_imagereward_source()}: ImageReward-v1.0")
+        else:
+            progress(0, desc="Using loaded ImageReward model from memory: ImageReward-v1.0")
+
         state["scores"] = score_imagereward(
             image_paths,
             ir_prompt,
@@ -1366,6 +1532,28 @@ def create_app():
     def update_proxy_display(use_proxy_display, main_threshold, aux_threshold):
         state["use_proxy_display"] = bool(use_proxy_display)
         return current_view(main_threshold, aux_threshold)
+
+    def update_imagereward_penalty_weight(penalty_weight, main_threshold, aux_threshold):
+        recomputed = recompute_imagereward_scores(penalty_weight)
+        if not recomputed:
+            return (
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+            )
+
+        lo, hi, _ = imagereward_slider_range(state["scores"])
+        clamped = round(max(lo, min(hi, float(main_threshold))), 3)
+        return (
+            *current_view(clamped, aux_threshold),
+            gr.update(
+                minimum=IMAGEREWARD_SLIDER_MIN,
+                maximum=IMAGEREWARD_SLIDER_MAX,
+                value=clamped,
+                label="Primary thresh (>=  SELECTED)",
+            ),
+            gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+        )
 
     def toggle_mark(action, main_threshold, aux_threshold):
         # Shift-click marks thumbnails for bulk move/clear actions without opening the preview.
@@ -1653,11 +1841,11 @@ def create_app():
                             placeholder="Optional: undesirable style or mood to subtract",
                             elem_id="hy-ir-neg",
                         )
-                        ir_penalty_weight_tb = gr.Number(
+                        ir_penalty_weight_tb = gr.Slider(
                             value=DEFAULT_IR_PENALTY_WEIGHT,
                             label="Penalty weight",
                             minimum=0.0,
-                            maximum=3.0,
+                            maximum=4.0,
                             step=0.1,
                             elem_id="hy-ir-weight",
                         )
@@ -1727,6 +1915,11 @@ def create_app():
             fn=update_proxy_display,
             inputs=[proxy_display_cb, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
+        )
+        ir_penalty_weight_tb.change(
+            fn=update_imagereward_penalty_weight,
+            inputs=[ir_penalty_weight_tb, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
         left_gallery.select(fn=remember_preview_left, inputs=[main_slider, aux_slider], outputs=[mark_state])
         right_gallery.select(fn=remember_preview_right, inputs=[main_slider, aux_slider], outputs=[mark_state])
