@@ -153,10 +153,15 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
     if backend is not None:
         reference_vram_gb = 20
         if backend.backend == "openclip":
-            if "bigG" in backend._openclip_model:
+            model_name = backend._openclip_model.lower()
+            if "bigg" in model_name or "xxlarge" in model_name:
                 reference_vram_gb = 32
-            elif "ViT-H" in backend._openclip_model:
+            elif "large_d_320" in model_name:
+                reference_vram_gb = 28
+            elif "vit-h" in model_name:
                 reference_vram_gb = 24
+            elif "base_w" in model_name:
+                reference_vram_gb = 20
         elif backend.backend == "openai" and "@336px" in backend._clip_model:
             reference_vram_gb = 24
         elif backend.backend == "siglip":
@@ -260,9 +265,17 @@ class ModelBackend:
         except ImportError:
             sys.exit("OpenCLIP not installed.\nRun: pip install open_clip_torch")
         print(f"[OpenCLIP] Loading {self._openclip_model} / {self._openclip_pre} …")
-        self._model, _, self._preprocess = open_clip.create_model_and_transforms(
-            self._openclip_model, pretrained=self._openclip_pre, device=self.device
-        )
+        try:
+            self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+                self._openclip_model, pretrained=self._openclip_pre, device=self.device
+            )
+        except RuntimeError as exc:
+            if "install the latest timm" in str(exc).lower():
+                raise RuntimeError(
+                    "This OpenCLIP model requires a newer timm build.\n"
+                    "Run: python -m pip install --upgrade timm"
+                )
+            raise
         self._model.eval()
         self._tokenizer = open_clip.get_tokenizer(self._openclip_model)
         print("[OpenCLIP] Ready.")
@@ -363,6 +376,9 @@ MODEL_CHOICES = [
     ("OpenCLIP  ViT-bigG-14  laion2b  ★ best CLIP", "openclip", {"openclip_model": "ViT-bigG-14", "openclip_pretrained": "laion2b_s39b_b160k"}),
     ("OpenCLIP  ViT-H-14  laion2b", "openclip", {"openclip_model": "ViT-H-14", "openclip_pretrained": "laion2b_s32b_b79k"}),
     ("OpenCLIP  ViT-L-14  laion2b", "openclip", {"openclip_model": "ViT-L-14", "openclip_pretrained": "laion2b_s32b_b82k"}),
+    ("OpenCLIP  ConvNeXt-Base-W  laion2b", "openclip", {"openclip_model": "convnext_base_w", "openclip_pretrained": "laion2b_s13b_b82k"}),
+    ("OpenCLIP  ConvNeXt-Large-D-320  laion2b", "openclip", {"openclip_model": "convnext_large_d_320", "openclip_pretrained": "laion2b_s29b_b131k_ft"}),
+    ("OpenCLIP  ConvNeXt-XXLarge  laion2b", "openclip", {"openclip_model": "convnext_xxlarge", "openclip_pretrained": "laion2b_s34b_b82k_augreg"}),
     ("OpenAI CLIP  ViT-L/14@336px", "openai", {"clip_model": "ViT-L/14@336px"}),
     ("OpenAI CLIP  ViT-L/14", "openai", {"clip_model": "ViT-L/14"}),
     ("OpenAI CLIP  ViT-B/32  (fastest)", "openai", {"clip_model": "ViT-B/32"}),
@@ -376,7 +392,11 @@ def label_for_backend(backend):
             continue
         if name == "openai" and kwargs.get("clip_model") == backend._clip_model:
             return label
-        if name == "openclip" and kwargs.get("openclip_model") == backend._openclip_model:
+        if (
+            name == "openclip"
+            and kwargs.get("openclip_model") == backend._openclip_model
+            and kwargs.get("openclip_pretrained") == backend._openclip_pre
+        ):
             return label
         if name == "siglip" and kwargs.get("siglip_model") == backend._siglip_model:
             return label
@@ -1053,7 +1073,10 @@ def create_app():
                 return empty_result(f"Unknown PromptMatch model: {model_label}", method)
             _, backend_name, kwargs = cfg
             if label_for_backend(state["backend"]) != model_label:
-                state["backend"] = ModelBackend(device, backend=backend_name, **kwargs)
+                try:
+                    state["backend"] = ModelBackend(device, backend=backend_name, **kwargs)
+                except Exception as exc:
+                    return empty_result(str(exc), method)
 
             pos_prompt = (pos_prompt or "").strip() or SEARCH_PROMPT
             neg_prompt = (neg_prompt or "").strip()

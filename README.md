@@ -44,6 +44,7 @@ setup-venv312-windows.bat
 Model weights are downloaded on first use only for the method and model you actually choose.
 
 - The default PromptMatch model is `SigLIP so400m-patch14-384`, which is about **3.3 GB** downloaded and is a good balance of quality and size.
+- PromptMatch also supports OpenCLIP ConvNeXt backbones if you want additional alternatives in the same prompt-based workflow.
 - The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
 - `ImageReward` is also downloaded on first use when you switch to that method.
 
@@ -92,7 +93,7 @@ Use PromptMatch when you want to find images that match a text description.
 
 - Set a **positive prompt** for what you want.
 - Optionally set a **negative prompt** for what should count against a match.
-- Choose the PromptMatch model from the dropdown.
+- Choose the PromptMatch model from the dropdown. Available families include SigLIP, OpenCLIP ViT, OpenCLIP ConvNeXt, and OpenAI CLIP.
 - Use the **main threshold** to control how strong the positive match must be.
 - If you use a negative prompt, use the **negative threshold** to control how strongly that negative signal is allowed to pass.
 
@@ -132,7 +133,7 @@ Export does a **lossless file copy** of the originals.
 
 If you do not want to use the setup scripts, you can set up the environment manually.
 
-`requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers` plus `sentencepiece` and `protobuf` for SigLIP and ImageReward.
+`requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers`, a modern `timm` for ConvNeXt-backed OpenCLIP models, plus `sentencepiece` and `protobuf` for SigLIP and ImageReward.
 
 ### Linux Manual Install
 
@@ -171,6 +172,12 @@ If you choose a different `PYTORCH_CUDA_INDEX_URL`, make sure `torch==2.9.1` and
    ```bat
    python -m pip install -r requirements.txt
    ```
+
+If you installed dependencies before ConvNeXt support was added, run this once to refresh `timm`:
+
+```bat
+python -m pip install --upgrade timm
+```
 
 If you choose a different `PYTORCH_CUDA_INDEX_URL`, make sure `torch==2.9.1` and `torchvision==0.24.1` are available on that index or adjust the pinned versions to match.
 
@@ -245,7 +252,7 @@ There are no separate Windows-only Python app files. Both operating systems use 
 Dependency notes:
 
 - `requirements.txt` contains the shared application dependencies.
-- `requirements.txt` also includes the pinned `transformers` version and the tokenizer/runtime extras (`sentencepiece`, `protobuf`) needed by SigLIP and ImageReward.
+- `requirements.txt` also includes the pinned `transformers` version, a current `timm` for ConvNeXt-backed OpenCLIP models, and the tokenizer/runtime extras (`sentencepiece`, `protobuf`) needed by SigLIP and ImageReward.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
 - Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
 

@@ -3,7 +3,9 @@ pillow
 tqdm
 image-reward
 open_clip_torch
+timm>=1.0.0
 transformers==4.37.2
 sentencepiece
 protobuf
+hf_xet
 git+https://github.com/openai/CLIP.git
