@@ -15,8 +15,11 @@ import shutil
 import socket
 import string
 import sys
+import tempfile
 import types
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from hashlib import sha256
 from importlib import import_module
 from importlib.machinery import ModuleSpec
 
@@ -56,6 +59,9 @@ INPUT_FOLDER_NAME = "images"
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".avif")
 DEFAULT_BATCH_SIZE = 32
 MAX_BATCH_SIZE = 128
+PROMPTMATCH_PROXY_MAX_EDGE = 1024
+PROMPTMATCH_PROXY_CACHE_ROOT = "HybridScorerPromptMatchProxyCache"
+PROMPTMATCH_PROXY_PROGRESS_SHARE = 0.25
 
 
 def get_imagereward_utils():
@@ -119,6 +125,98 @@ def get_ephemeral_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+def normalize_folder_identity(folder):
+    return os.path.normcase(os.path.abspath(folder))
+
+
+def get_promptmatch_proxy_cache_dir(folder):
+    folder_key = normalize_folder_identity(folder)
+    digest = sha256(folder_key.encode("utf-8", errors="ignore")).hexdigest()
+    return os.path.join(tempfile.gettempdir(), PROMPTMATCH_PROXY_CACHE_ROOT, digest)
+
+
+def clear_promptmatch_proxy_cache(cache_dir):
+    if cache_dir and os.path.isdir(cache_dir):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def build_promptmatch_proxy_path(original_path, cache_dir, max_edge=PROMPTMATCH_PROXY_MAX_EDGE):
+    stat = os.stat(original_path)
+    cache_key = "|".join([
+        os.path.normcase(os.path.abspath(original_path)),
+        str(stat.st_size),
+        str(stat.st_mtime_ns),
+        str(max_edge),
+    ])
+    filename = f"{sha256(cache_key.encode('utf-8', errors='ignore')).hexdigest()}.jpg"
+    return os.path.join(cache_dir, filename)
+
+
+def ensure_promptmatch_proxy(original_path, cache_dir, max_edge=PROMPTMATCH_PROXY_MAX_EDGE):
+    os.makedirs(cache_dir, exist_ok=True)
+    proxy_path = build_promptmatch_proxy_path(original_path, cache_dir, max_edge=max_edge)
+    if os.path.isfile(proxy_path):
+        return proxy_path
+
+    resampling = getattr(Image, "Resampling", Image)
+    tmp_handle = tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".jpg", delete=False)
+    tmp_path = tmp_handle.name
+    tmp_handle.close()
+
+    try:
+        with Image.open(original_path) as src_img:
+            img = src_img.convert("RGB")
+            if max(img.size) > max_edge:
+                img.thumbnail((max_edge, max_edge), resampling.LANCZOS)
+            img.save(tmp_path, format="JPEG", quality=90)
+        os.replace(tmp_path, proxy_path)
+        return proxy_path
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def prepare_promptmatch_proxies(image_paths, cache_dir, progress_cb=None):
+    os.makedirs(cache_dir, exist_ok=True)
+    proxy_map = {}
+    generated = 0
+    reused = 0
+    total = len(image_paths)
+    if total == 0:
+        return proxy_map, generated, reused
+
+    max_workers = max(1, min(total, os.cpu_count() or 1))
+
+    def _prepare_one(original_path):
+        try:
+            proxy_path = build_promptmatch_proxy_path(original_path, cache_dir)
+            if os.path.isfile(proxy_path):
+                return original_path, proxy_path, False, None
+            proxy_path = ensure_promptmatch_proxy(original_path, cache_dir)
+            return original_path, proxy_path, True, None
+        except Exception as exc:
+            return original_path, original_path, False, exc
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_prepare_one, original_path): original_path for original_path in image_paths}
+        for future in as_completed(future_map):
+            original_path, resolved_path, was_generated, exc = future.result()
+            proxy_map[original_path] = resolved_path
+            completed += 1
+            if exc is not None:
+                print(f"  [WARN] proxy fallback for {original_path}: {exc}")
+            elif was_generated:
+                generated += 1
+            else:
+                reused += 1
+        if progress_cb:
+            progress_cb(completed, total, generated, reused)
+
+    return proxy_map, generated, reused
 
 
 def resolve_server_port(default_port, app_env_var):
@@ -321,35 +419,56 @@ class ModelBackend:
             return F.normalize(feat.float(), dim=-1)
 
 
-def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None):
+def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_resolver=None):
     # PromptMatch scoring path: embed images in batches, then compare against text embeddings.
     results = {}
     total = len(image_paths)
     done = 0
     batch_size = get_auto_batch_size(backend.device, backend)
     print(f"[PromptMatch] Using batch size {batch_size}")
+
+    def _score_items(valid_items):
+        pil_imgs = []
+        loaded = []
+        for original_path, scoring_path in valid_items:
+            try:
+                with Image.open(scoring_path) as src_img:
+                    pil_imgs.append(src_img.convert("RGB"))
+                loaded.append((original_path, scoring_path))
+            except Exception as exc:
+                print(f"  [WARN] {original_path}: {exc}")
+                results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
+        if not pil_imgs:
+            return
+
+        feat = backend.encode_images_batch(pil_imgs)
+        pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
+        neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(loaded)
+        for (original_path, _), pos_score, neg_score in zip(loaded, pos_sims, neg_sims):
+            results[os.path.basename(original_path)] = {
+                "pos": float(pos_score),
+                "neg": float(neg_score) if neg_score is not None else None,
+                "path": original_path,
+                "failed": False,
+            }
+
     while done < total:
         current_size = min(batch_size, total - done)
         batch = image_paths[done:done + current_size]
-        pil_imgs, valid = [], []
-        for path in batch:
+        batch_start = done + 1
+        batch_end = done + len(batch)
+        print(f"[PromptMatch] Batch {batch_start}-{batch_end}/{total} ({len(batch)} images)")
+        valid = []
+        for original_path in batch:
             try:
-                pil_imgs.append(Image.open(path).convert("RGB"))
-                valid.append(path)
+                scoring_path = proxy_resolver(original_path) if proxy_resolver is not None else original_path
+                valid.append((original_path, scoring_path))
             except Exception as exc:
-                print(f"  [WARN] {path}: {exc}")
-                results[os.path.basename(path)] = {"pos": -1.0, "neg": None, "path": path}
-        if pil_imgs:
+                print(f"  [WARN] {original_path}: {exc}")
+                results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
+        if valid:
             try:
-                feat = backend.encode_images_batch(pil_imgs)
-                pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
-                neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(valid)
-                for path, pos_score, neg_score in zip(valid, pos_sims, neg_sims):
-                    results[os.path.basename(path)] = {
-                        "pos": float(pos_score),
-                        "neg": float(neg_score) if neg_score is not None else None,
-                        "path": path,
-                    }
+                _score_items(valid)
             except Exception as exc:
                 if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
                     batch_size = max(1, current_size // 2)
@@ -358,9 +477,23 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None):
                     if progress_cb:
                         progress_cb(done, total, batch_size, True)
                     continue
-                print(f"  [WARN] batch error: {exc}")
-                for path in valid:
-                    results[os.path.basename(path)] = {"pos": -1.0, "neg": None, "path": path}
+                print(f"  [WARN] batch error, retrying individually: {exc}")
+                recovered = 0
+                failed = 0
+                for item in valid:
+                    try:
+                        _score_items([item])
+                        original_path, _ = item
+                        if not results.get(os.path.basename(original_path), {}).get("failed", False):
+                            recovered += 1
+                        else:
+                            failed += 1
+                    except Exception as single_exc:
+                        original_path, _ = item
+                        print(f"  [WARN] single-image error for {original_path}: {single_exc}")
+                        results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
+                        failed += 1
+                print(f"[PromptMatch] Individual retry result: {recovered} recovered, {failed} failed")
             if backend.device == "cuda":
                 torch.cuda.empty_cache()
         done += len(batch)
@@ -454,8 +587,8 @@ def method_labels(method):
 
 
 def promptmatch_slider_range(scores):
-    pos_vals = [v["pos"] for v in scores.values() if v["pos"] >= 0]
-    neg_vals = [v["neg"] for v in scores.values() if v.get("neg") is not None and v["neg"] >= 0]
+    pos_vals = [v["pos"] for v in scores.values() if not v.get("failed", False)]
+    neg_vals = [v["neg"] for v in scores.values() if not v.get("failed", False) and v.get("neg") is not None]
     pos_min = round(min(pos_vals) - 0.01, 3) if pos_vals else -1.0
     pos_max = round(max(pos_vals) + 0.01, 3) if pos_vals else 1.0
     pos_mid = round((pos_min + pos_max) / 2.0, 3)
@@ -477,7 +610,7 @@ def imagereward_slider_range(scores):
 
 def threshold_for_percentile(method, scores, percentile):
     if method == METHOD_PROMPTMATCH:
-        vals = sorted([v["pos"] for v in scores.values() if v["pos"] >= 0], reverse=True)
+        vals = sorted([v["pos"] for v in scores.values() if not v.get("failed", False)], reverse=True)
     else:
         vals = sorted([v["score"] for v in scores.values() if v["score"] > -1000], reverse=True)
     if not vals:
@@ -495,7 +628,7 @@ def status_line(method, left_items, right_items, scores, overrides):
     if not scores:
         failed = 0
     elif method == METHOD_PROMPTMATCH and all("pos" in v for v in scores.values()):
-        failed = sum(1 for v in scores.values() if v["pos"] < 0)
+        failed = sum(1 for v in scores.values() if v.get("failed", False))
     elif method == METHOD_IMAGEREWARD and all("score" in v for v in scores.values()):
         failed = sum(1 for v in scores.values() if v["score"] < -1000)
     else:
@@ -523,14 +656,16 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
     if method == METHOD_PROMPTMATCH:
         ordered = sorted(scores.items(), key=lambda x: -x[1]["pos"])
         for fname, item in ordered:
-            if item["pos"] < 0:
-                continue
             side = overrides.get(fname)
             if side is None:
-                pos_ok = item["pos"] >= main_threshold
-                neg_ok = (item["neg"] is None) or (item["neg"] < aux_threshold)
-                side = left_name if (pos_ok and neg_ok) else right_name
-            caption = f"{'✋ ' if fname in overrides else ''}{item['pos']:.3f} | {fname}"
+                if item.get("failed", False):
+                    side = right_name
+                else:
+                    pos_ok = item["pos"] >= main_threshold
+                    neg_ok = (item["neg"] is None) or (item["neg"] < aux_threshold)
+                    side = left_name if (pos_ok and neg_ok) else right_name
+            score_text = "FAILED" if item.get("failed", False) else f"{item['pos']:.3f}"
+            caption = f"{'✋ ' if fname in overrides else ''}{score_text} | {fname}"
             entry = (item["path"], caption)
             if side == left_name:
                 left.append(entry)
@@ -583,7 +718,17 @@ def create_app():
         "backend": prompt_backend,
         "ir_model": None,
         "hist_geom": None,
+        "proxy_folder_key": None,
+        "proxy_cache_dir": None,
     }
+
+    def sync_promptmatch_proxy_cache(folder):
+        folder_key = normalize_folder_identity(folder)
+        if state["proxy_folder_key"] != folder_key:
+            clear_promptmatch_proxy_cache(state.get("proxy_cache_dir"))
+            state["proxy_folder_key"] = folder_key
+            state["proxy_cache_dir"] = get_promptmatch_proxy_cache_dir(folder)
+        return state["proxy_cache_dir"]
 
     def tooltip_head(pairs):
         mapping = json.dumps(pairs)
@@ -1061,6 +1206,7 @@ def create_app():
             return empty_result(f"No images found in {folder}", method)
 
         state["method"] = method
+        sync_promptmatch_proxy_cache(folder)
         state["source_dir"] = folder
         state["overrides"] = {}
         state["left_marked"] = []
@@ -1078,19 +1224,50 @@ def create_app():
                 except Exception as exc:
                     return empty_result(str(exc), method)
 
+            proxy_map = {}
+            cache_dir = state.get("proxy_cache_dir")
+            if cache_dir:
+                def _proxy_prep_cb(done, total, generated, reused):
+                    desc = f"Preparing PromptMatch proxies {done}/{total}"
+                    if generated or reused:
+                        desc += f" ({generated} new, {reused} reused)"
+                    progress(PROMPTMATCH_PROXY_PROGRESS_SHARE * (done / max(total, 1)), desc=desc)
+
+                progress(0, desc=f"Preparing PromptMatch proxies 0/{len(image_paths)}")
+                proxy_map, generated, reused = prepare_promptmatch_proxies(
+                    image_paths,
+                    cache_dir,
+                    progress_cb=_proxy_prep_cb,
+                )
+                print(f"[PromptMatch] Proxy prep complete: {generated} new, {reused} reused")
+
             pos_prompt = (pos_prompt or "").strip() or SEARCH_PROMPT
             neg_prompt = (neg_prompt or "").strip()
             pos_emb = state["backend"].encode_text(pos_prompt)
             neg_emb = state["backend"].encode_text(neg_prompt) if neg_prompt else None
-            progress(0, desc=f"Scoring {len(image_paths)} images with PromptMatch...")
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(image_paths)} images with PromptMatch...")
 
             def _cb(done, total, batch_size, oom_retry):
                 label = f"PromptMatch {done}/{total} (autobatch {batch_size})"
                 if oom_retry:
                     label = f"PromptMatch OOM, retrying autobatch {batch_size}"
-                progress(done / max(total, 1), desc=label)
+                progress(
+                    PROMPTMATCH_PROXY_PROGRESS_SHARE
+                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (done / max(total, 1))),
+                    desc=label,
+                )
 
-            state["scores"] = score_all(image_paths, state["backend"], pos_emb, neg_emb, progress_cb=_cb)
+            def _proxy_resolver(original_path):
+                return proxy_map.get(original_path, original_path)
+
+            state["scores"] = score_all(
+                image_paths,
+                state["backend"],
+                pos_emb,
+                neg_emb,
+                progress_cb=_cb,
+                proxy_resolver=_proxy_resolver,
+            )
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(pos_mid, neg_mid)
             return (
