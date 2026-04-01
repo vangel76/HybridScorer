@@ -2,6 +2,8 @@
 
 Interactive Gradio application for rating and sorting images with GPU-accelerated AI models. Windows/Linux
 
+Current version: `1.1.0` (`v1.1.0` on GitHub releases)
+
 ## What This Is
 
 `HybridScorer` is built for quick AI assisted human-in-the-loop image scoring.
@@ -17,6 +19,26 @@ Interactive Gradio application for rating and sorting images with GPU-accelerate
 | App | Best for | How it scores | Output buckets |
 | --- | --- | --- | --- |
 | `Hybrid-Scorer.py` | Switching between content matching and aesthetic ranking in one place | PromptMatch with CLIP-family models or ImageReward with optional penalty prompt | `selected` / `rejected` |
+
+## Versioning
+
+This repo now uses a simple release flow:
+
+- `VERSION` is the source of truth for the app version.
+- `CHANGELOG.md` tracks release notes.
+- Git tags should match the app version in `vX.Y.Z` form, for example `v1.1.0`.
+
+For the next release:
+
+```bash
+git add VERSION CHANGELOG.md README.md Hybrid-Scorer.py
+git commit -m "Release v1.1.0"
+git tag -a v1.1.0 -m "HybridScorer v1.1.0"
+git push origin main
+git push origin v1.1.0
+```
+
+After pushing the tag, create the matching GitHub Release from that tag.
 
 ## Install With Setup Scripts
 
@@ -270,6 +292,8 @@ Linux scripts:
 Main cross-platform app:
 
 - `Hybrid-Scorer.py`
+- `VERSION`
+- `CHANGELOG.md`
 
 There are no separate Windows-only Python app files. Both operating systems use the same `Hybrid-Scorer.py`.
 

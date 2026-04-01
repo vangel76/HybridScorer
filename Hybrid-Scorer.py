@@ -35,6 +35,27 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+APP_NAME = "HybridScorer"
+APP_DISPLAY_NAME = "HybridSelector"
+
+
+def load_app_version():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    version_path = os.path.join(script_dir, "VERSION")
+    try:
+        with open(version_path, "r", encoding="utf-8") as handle:
+            version = handle.read().strip()
+            if version:
+                return version
+    except OSError:
+        pass
+    return "0.0.0"
+
+
+APP_VERSION = load_app_version()
+APP_GITHUB_TAG = f"v{APP_VERSION}"
+APP_WINDOW_TITLE = f"{APP_DISPLAY_NAME} {APP_GITHUB_TAG}"
+
 # High-level app modes and default thresholds/prompts.
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
@@ -1799,11 +1820,11 @@ def create_app():
     }
     """
 
-    with gr.Blocks(title="HybridSelector") as demo:
+    with gr.Blocks(title=APP_WINDOW_TITLE) as demo:
         gr.HTML("""
-<h1>⬡ HybridSelector</h1>
-<div class='subhead'>PromptMatch + ImageReward in one UI &middot; quick image triage &middot; created by vangel</div>
-""")
+<h1>⬡ {title}</h1>
+<div class='subhead'>PromptMatch + ImageReward in one UI &middot; quick image triage &middot; {tag} &middot; created by vangel</div>
+""".format(title=APP_DISPLAY_NAME, tag=APP_GITHUB_TAG))
 
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=330, elem_classes=["sidebar-box"]):
@@ -1938,7 +1959,7 @@ def create_app():
 if __name__ == "__main__":
     app, css, head = create_app()
     port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
-    print(f"Launching HybridSelector on http://localhost:{port} ...")
+    print(f"Launching {APP_DISPLAY_NAME} {APP_GITHUB_TAG} on http://localhost:{port} ...")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)
     app.launch(
