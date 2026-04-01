@@ -24,7 +24,7 @@ Set up the Python virtual environment first. You need to do this before trying t
 
 ### Linux Setup Script
 
-Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, and verify that CUDA is available:
+Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabled PyTorch, install the shared app dependencies plus the ImageReward runtime package, and verify that CUDA is available:
 
 ```bash
 ./setup-venv312.sh
@@ -34,7 +34,7 @@ If `venv312` was created before the CUDA 12.8 cleanup or copied from another pro
 
 ### Windows Setup Script
 
-Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install `requirements.txt`, verify that CUDA is available, and attempt to install Python 3.12 and Git automatically with `winget` if they are missing:
+Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install the shared app dependencies plus the ImageReward runtime package, verify that CUDA is available, and attempt to install Python 3.12 and Git automatically with `winget` if they are missing:
 
 ```bat
 setup-venv312-windows.bat
@@ -150,7 +150,7 @@ Export does a **lossless file copy** of the originals.
 
 If you do not want to use the setup scripts, you can set up the environment manually.
 
-`requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers`, a modern `timm` for ConvNeXt-backed OpenCLIP models, plus `sentencepiece` and `protobuf` for SigLIP and ImageReward.
+`requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers`, a modern `timm` for ConvNeXt-backed OpenCLIP models, plus the runtime extras needed by SigLIP and ImageReward. The setup scripts install `image-reward==1.5` separately with `--no-deps` so pip does not backtrack into the broken `image-reward==1.0` source build on fresh Python 3.12 environments.
 
 ### Linux Manual Install
 
@@ -160,6 +160,7 @@ source venv312/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
+python -m pip install --no-deps image-reward==1.5
 ```
 
 If you choose a different `PYTORCH_CUDA_INDEX_URL`, make sure `torch==2.9.1` and `torchvision==0.24.1` are available on that index or adjust the pinned versions to match.
@@ -188,6 +189,10 @@ If you choose a different `PYTORCH_CUDA_INDEX_URL`, make sure `torch==2.9.1` and
 8. Install the app dependencies:
    ```bat
    python -m pip install -r requirements.txt
+   ```
+9. Install the ImageReward runtime package without its older training-stack dependency pins:
+   ```bat
+   python -m pip install --no-deps image-reward==1.5
    ```
 
 If you installed dependencies before ConvNeXt support was added, run this once to refresh `timm`:
@@ -271,7 +276,8 @@ There are no separate Windows-only Python app files. Both operating systems use 
 Dependency notes:
 
 - `requirements.txt` contains the shared application dependencies.
-- `requirements.txt` also includes the pinned `transformers` version, a current `timm` for ConvNeXt-backed OpenCLIP models, and the tokenizer/runtime extras (`sentencepiece`, `protobuf`) needed by SigLIP and ImageReward.
+- `requirements.txt` also includes the pinned `transformers` version, a current `timm` for ConvNeXt-backed OpenCLIP models, and the runtime extras used by SigLIP and ImageReward.
+- The setup scripts install `image-reward==1.5` separately with `--no-deps` to avoid pip resolving down to the broken `image-reward==1.0` source package on clean Python 3.12 installs.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
 - Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
 

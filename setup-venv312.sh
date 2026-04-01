@@ -63,6 +63,7 @@ python -m pip install \
   --index-url "$PYTORCH_CUDA_INDEX_URL"
 
 python -m pip install -r "$SCRIPT_DIR/requirements.txt"
+python -m pip install --no-deps image-reward==1.5
 
 python - <<'PY'
 import sys

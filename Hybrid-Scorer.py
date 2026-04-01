@@ -1241,6 +1241,7 @@ def create_app():
         scoring_paths = list(folder_paths)
 
         if cache_dir:
+            print(f"[ImageReward] Proxy cache dir: {cache_dir}")
             def _proxy_prep_cb(done, total, generated, reused):
                 desc = f"Preparing ImageReward proxies {done}/{total}"
                 if generated or reused:
@@ -1255,7 +1256,7 @@ def create_app():
             )
             state["proxy_map"] = dict(proxy_map)
             scoring_paths = [proxy_map.get(path, path) for path in folder_paths]
-            print(f"[ImageReward] Proxy prep complete: {generated} new, {reused} reused")
+            print(f"[ImageReward] Proxy prep complete in {cache_dir}: {generated} new, {reused} reused")
 
         base_scores = {}
         can_reuse_base = (
@@ -1442,6 +1443,7 @@ def create_app():
             proxy_map = {}
             cache_dir = state.get("proxy_cache_dir")
             if cache_dir:
+                print(f"[PromptMatch] Proxy cache dir: {cache_dir}")
                 def _proxy_prep_cb(done, total, generated, reused):
                     desc = f"Preparing PromptMatch proxies {done}/{total}"
                     if generated or reused:
@@ -1455,7 +1457,7 @@ def create_app():
                     progress_cb=_proxy_prep_cb,
                 )
                 state["proxy_map"] = dict(proxy_map)
-                print(f"[PromptMatch] Proxy prep complete: {generated} new, {reused} reused")
+                print(f"[PromptMatch] Proxy prep complete in {cache_dir}: {generated} new, {reused} reused")
 
             pos_prompt = (pos_prompt or "").strip() or SEARCH_PROMPT
             neg_prompt = (neg_prompt or "").strip()
