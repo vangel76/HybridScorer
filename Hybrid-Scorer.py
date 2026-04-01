@@ -284,7 +284,7 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
     return max(1, min(MAX_BATCH_SIZE, scaled))
 
 
-def iter_imagereward_scores(image_paths, model, device, prompt):
+def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=None):
     # Yield partial results so Gradio can update progress while large folders are scored.
     scores = {}
     total = len(image_paths)
@@ -296,13 +296,14 @@ def iter_imagereward_scores(image_paths, model, device, prompt):
     while done < total:
         current_size = min(batch_size, total - done)
         batch_paths = image_paths[done:done + current_size]
-        batch_filenames = [os.path.basename(p) for p in batch_paths]
+        batch_source_paths = source_paths[done:done + current_size] if source_paths is not None else batch_paths
+        batch_filenames = [os.path.basename(p) for p in batch_source_paths]
 
         try:
             with torch.no_grad():
                 _, batch_rewards = model.inference_rank(prompt, batch_paths)
-            for filename, path, reward in zip(batch_filenames, batch_paths, batch_rewards):
-                scores[filename] = {"score": float(reward), "path": path}
+            for filename, source_path, reward in zip(batch_filenames, batch_source_paths, batch_rewards):
+                scores[filename] = {"score": float(reward), "path": source_path}
             done += len(batch_paths)
             yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
         except Exception as exc:
@@ -314,8 +315,8 @@ def iter_imagereward_scores(image_paths, model, device, prompt):
                 continue
 
             print(f"Batch error at {done}: {exc}", file=sys.stderr)
-            for filename, path in zip(batch_filenames, batch_paths):
-                scores[filename] = {"score": -float('inf'), "path": path}
+            for filename, source_path in zip(batch_filenames, batch_source_paths):
+                scores[filename] = {"score": -float('inf'), "path": source_path}
             done += len(batch_paths)
             yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
         finally:
@@ -720,6 +721,8 @@ def create_app():
         "hist_geom": None,
         "proxy_folder_key": None,
         "proxy_cache_dir": None,
+        "proxy_map": {},
+        "use_proxy_display": True,
     }
 
     def sync_promptmatch_proxy_cache(folder):
@@ -728,6 +731,7 @@ def create_app():
             clear_promptmatch_proxy_cache(state.get("proxy_cache_dir"))
             state["proxy_folder_key"] = folder_key
             state["proxy_cache_dir"] = get_promptmatch_proxy_cache_dir(folder)
+            state["proxy_map"] = {}
         return state["proxy_cache_dir"]
 
     def tooltip_head(pairs):
@@ -921,6 +925,7 @@ def create_app():
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
         "hy-zoom-ui": "Choose how many thumbnails appear per row in both galleries.",
+        "hy-use-proxy-display": "Show gallery images from cached proxies for faster browsing on large folders.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
@@ -940,6 +945,19 @@ def create_app():
         if columns is not None:
             update_kwargs["columns"] = columns
         return gr.update(**update_kwargs)
+
+    def gallery_display_items(items):
+        if not state.get("use_proxy_display", True):
+            return items
+
+        proxy_map = state.get("proxy_map", {})
+        displayed = []
+        for original_path, caption in items:
+            display_path = proxy_map.get(original_path, original_path)
+            if not os.path.isfile(display_path):
+                display_path = original_path
+            displayed.append((display_path, caption))
+        return displayed
 
     def selection_info():
         left_count = len(state.get("left_marked", []))
@@ -1106,9 +1124,9 @@ def create_app():
         state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
         return (
             f"### {left_name} — {len(left_items)} images",
-            gallery_update(left_items, columns=zoom_columns),
+            gallery_update(gallery_display_items(left_items), columns=zoom_columns),
             f"### {right_name} — {len(right_items)} images",
-            gallery_update(right_items, columns=zoom_columns),
+            gallery_update(gallery_display_items(right_items), columns=zoom_columns),
             status_line(state["method"], left_items, right_items, state["scores"], state["overrides"]),
             render_histogram(state["method"], state["scores"], main_threshold, aux_threshold),
             selection_info(),
@@ -1121,24 +1139,60 @@ def create_app():
         positive_prompt = (positive_prompt or "").strip() or IR_PROMPT
         negative_prompt = (negative_prompt or "").strip()
         penalty_weight = float(penalty_weight)
+        proxy_map = {}
+        cache_dir = state.get("proxy_cache_dir")
+        scoring_paths = list(folder_paths)
+
+        if cache_dir:
+            def _proxy_prep_cb(done, total, generated, reused):
+                desc = f"Preparing ImageReward proxies {done}/{total}"
+                if generated or reused:
+                    desc += f" ({generated} new, {reused} reused)"
+                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE * (done / max(total, 1)), desc=desc)
+
+            progress(0, desc=f"Preparing ImageReward proxies 0/{len(folder_paths)}")
+            proxy_map, generated, reused = prepare_promptmatch_proxies(
+                folder_paths,
+                cache_dir,
+                progress_cb=_proxy_prep_cb,
+            )
+            state["proxy_map"] = dict(proxy_map)
+            scoring_paths = [proxy_map.get(path, path) for path in folder_paths]
+            print(f"[ImageReward] Proxy prep complete: {generated} new, {reused} reused")
 
         base_scores = {}
-        progress(0, desc=f"Scoring {len(folder_paths)} images with ImageReward...")
-        for event in iter_imagereward_scores(folder_paths, model, device, positive_prompt):
+        progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(folder_paths)} images with ImageReward...")
+        for event in iter_imagereward_scores(scoring_paths, model, device, positive_prompt, source_paths=folder_paths):
             if event["type"] == "oom":
-                progress(event["done"] / max(event["total"], 1), desc=f"ImageReward OOM, retrying batch {event['batch_size']}")
+                progress(
+                    PROMPTMATCH_PROXY_PROGRESS_SHARE
+                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
+                    desc=f"ImageReward OOM, retrying batch {event['batch_size']}",
+                )
                 continue
-            progress(event["done"] / max(event["total"], 1), desc=f"ImageReward {event['done']}/{event['total']}")
+            progress(
+                PROMPTMATCH_PROXY_PROGRESS_SHARE
+                + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
+                desc=f"ImageReward {event['done']}/{event['total']}",
+            )
             base_scores = event["scores"]
 
         penalty_scores = {}
         if negative_prompt:
-            progress(0, desc=f"Applying penalty prompt to {len(folder_paths)} images...")
-            for event in iter_imagereward_scores(folder_paths, model, device, negative_prompt):
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Applying penalty prompt to {len(folder_paths)} images...")
+            for event in iter_imagereward_scores(scoring_paths, model, device, negative_prompt, source_paths=folder_paths):
                 if event["type"] == "oom":
-                    progress(event["done"] / max(event["total"], 1), desc=f"Penalty OOM, retrying batch {event['batch_size']}")
+                    progress(
+                        PROMPTMATCH_PROXY_PROGRESS_SHARE
+                        + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
+                        desc=f"Penalty OOM, retrying batch {event['batch_size']}",
+                    )
                     continue
-                progress(event["done"] / max(event["total"], 1), desc=f"Penalty prompt {event['done']}/{event['total']}")
+                progress(
+                    PROMPTMATCH_PROXY_PROGRESS_SHARE
+                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
+                    desc=f"Penalty prompt {event['done']}/{event['total']}",
+                )
                 penalty_scores = event["scores"]
 
         wrapped = {}
@@ -1239,6 +1293,7 @@ def create_app():
                     cache_dir,
                     progress_cb=_proxy_prep_cb,
                 )
+                state["proxy_map"] = dict(proxy_map)
                 print(f"[PromptMatch] Proxy prep complete: {generated} new, {reused} reused")
 
             pos_prompt = (pos_prompt or "").strip() or SEARCH_PROMPT
@@ -1306,6 +1361,10 @@ def create_app():
         )
 
     def update_split(main_threshold, aux_threshold):
+        return current_view(main_threshold, aux_threshold)
+
+    def update_proxy_display(use_proxy_display, main_threshold, aux_threshold):
+        state["use_proxy_display"] = bool(use_proxy_display)
         return current_view(main_threshold, aux_threshold)
 
     def toggle_mark(action, main_threshold, aux_threshold):
@@ -1610,6 +1669,7 @@ def create_app():
                     main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
                     aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
                     percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
+                    proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
                     status_md = gr.Markdown("", elem_classes=["status-md"])
 
                 with gr.Accordion("4. Export", open=False):
@@ -1661,6 +1721,11 @@ def create_app():
         zoom_slider.change(
             fn=update_zoom,
             inputs=[zoom_slider, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
+        )
+        proxy_display_cb.change(
+            fn=update_proxy_display,
+            inputs=[proxy_display_cb, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
         )
         left_gallery.select(fn=remember_preview_left, inputs=[main_slider, aux_slider], outputs=[mark_state])
