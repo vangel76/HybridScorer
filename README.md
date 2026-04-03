@@ -2,14 +2,14 @@
 
 Interactive Gradio application for rating and sorting images with GPU-accelerated AI models. Windows/Linux
 
-Current version: `1.1.0` (`v1.1.0` on GitHub releases)
+Current version: `1.30.0` (`v1.30.0` on GitHub releases)
 
 ## What This Is
 
 `HybridScorer` is built for quick AI assisted human-in-the-loop image scoring.
 
 - `Hybrid-Scorer.py` combines PromptMatch and ImageReward in one UI.
-- The app can also generate a dense editable prompt from the currently previewed image with Florence-2 and drop it into the active method prompt.
+- The app can also generate an editable prompt from the currently previewed image with multiple caption backends, including Florence-2 and JoyCaption Beta One.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
 - Both scoring methods can use cached proxy images to speed up repeat scoring and large-folder browsing.
 - In the end, the app copies the original image files into two output folders: `selected` and `rejected`.
@@ -27,16 +27,16 @@ This repo now uses a simple release flow:
 
 - `VERSION` is the source of truth for the app version.
 - `CHANGELOG.md` tracks release notes.
-- Git tags should match the app version in `vX.Y.Z` form, for example `v1.1.0`.
+- Git tags should match the app version in `vX.Y.Z` form, for example `v1.30.0`.
 
 For the next release:
 
 ```bash
 git add VERSION CHANGELOG.md README.md Hybrid-Scorer.py
-git commit -m "Release v1.1.0"
-git tag -a v1.1.0 -m "HybridScorer v1.1.0"
+git commit -m "Release v1.30.0"
+git tag -a v1.30.0 -m "HybridScorer v1.30.0"
 git push origin main
-git push origin v1.1.0
+git push origin v1.30.0
 ```
 
 After pushing the tag, create the matching GitHub Release from that tag.
@@ -51,6 +51,12 @@ Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabl
 
 ```bash
 ./setup-venv312.sh
+```
+
+If you also want the optional JoyCaption GGUF backend, rerun setup with:
+
+```bash
+INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh
 ```
 
 If `venv312` was created before the CUDA 12.8 cleanup or copied from another project path, remove it once and rerun setup so the environment can be rebuilt cleanly.
@@ -71,7 +77,9 @@ Model weights are downloaded on first use only for the method and model you actu
 - PromptMatch also supports OpenCLIP ConvNeXt backbones if you want additional alternatives in the same prompt-based workflow.
 - The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
 - `ImageReward` is also downloaded on first use when you switch to that method.
-- Florence prompt generation downloads `florence-community/Florence-2-base` on first use when you click **Generate prompt from preview**.
+- Florence prompt generation downloads `florence-community/Florence-2-base` on first use when you choose that prompt generator.
+- JoyCaption HF prompt generation downloads `fancyfeast/llama-joycaption-beta-one-hf-llava` on first use when you choose that prompt generator. It is much heavier than Florence and is best suited to 24 GB class GPUs.
+- JoyCaption GGUF uses a separate optional llama.cpp runtime plus the `Q4_K_M` GGUF and matching mmproj files when you choose that backend.
 - The UI now shows whether a model is being loaded from memory, disk cache, or a likely network download so users are not left guessing.
 
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
@@ -109,7 +117,7 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 - Enter your prompt settings.
 - Click **Run scoring**.
 - Review the `SELECTED` and `REJECTED` galleries.
-- Preview an image and click **Generate prompt from preview** if you want the app to draft a dense prompt you can edit and reuse.
+- Preview an image and click **Generate prompt from preview** if you want the app to draft a prompt you can edit and reuse.
 - Adjust the threshold sliders or click directly on the histogram to refine the split.
 - Leave **Use proxies for gallery display** enabled for large folders if you want much faster gallery refreshes.
 - Manually move exceptions between buckets if needed.
@@ -117,12 +125,15 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 
 ### Prompt From Preview Image
 
-Use the Florence utility when you want the app to draft a generation or edit prompt from one image you already like.
+Use the prompt-generation utility when you want the app to draft a generation or edit prompt from one image you already like.
 
 - Click any thumbnail so it becomes the current preview image.
+- Choose a **Prompt generator**. `Florence-2` is lighter. `JoyCaption Beta One` is heavier but usually better on NSFW or more explicit content. `JoyCaption Beta One GGUF (Q4_K_M)` is the optional lower-VRAM backend.
 - Click **Generate prompt from preview**.
 - The app writes the result only into the editable **Generated prompt** box.
-- Use **Prompt detail** to switch between core facts, balanced detail, and full Florence detail.
+- Use **Prompt detail** to switch between core facts, balanced detail, and full detail for the selected generator.
+- For JoyCaption, those three modes are intentionally different in style:
+  `Core facts` is short comma-style tags, `Balanced` is a compact prompt line, and `Full` is natural descriptive prose.
 - Edit that generated prompt if you want to refine wording before scoring again.
 - Click **Insert into active prompt** if you want to copy your edited scratch prompt into the active method field.
 - This utility only targets the active main positive prompt in v1. It does not write into PromptMatch negative prompt or ImageReward penalty prompt.
@@ -188,6 +199,12 @@ Export does a **lossless file copy** of the originals.
 If you do not want to use the setup scripts, you can set up the environment manually.
 
 `requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers`, a modern `timm` for ConvNeXt-backed OpenCLIP models, plus the runtime extras needed by SigLIP and ImageReward. The setup scripts install `image-reward==1.5` separately with `--no-deps` so pip does not backtrack into the broken `image-reward==1.0` source build on fresh Python 3.12 environments.
+
+If you want the optional JoyCaption GGUF backend in a manual setup, also install:
+
+```bash
+python -m pip install -r requirements-gguf.txt
+```
 
 ### Linux Manual Install
 

@@ -9,6 +9,8 @@ HybridSelector — PromptMatch + ImageReward in one UI
 • Created by vangel
 """
 
+import base64
+import io
 import json
 import math
 import os
@@ -68,8 +70,23 @@ PROMPTMATCH_SLIDER_MAX = 1.0
 IMAGEREWARD_SLIDER_MIN = -5.0
 IMAGEREWARD_SLIDER_MAX = 5.0
 HIST_HEIGHT_SCALE = 0.7
+PROMPT_GENERATOR_FLORENCE = "Florence-2"
+PROMPT_GENERATOR_JOYCAPTION = "JoyCaption Beta One"
+PROMPT_GENERATOR_JOYCAPTION_GGUF = "JoyCaption Beta One GGUF (Q4_K_M)"
+PROMPT_GENERATOR_CHOICES = (
+    PROMPT_GENERATOR_FLORENCE,
+    PROMPT_GENERATOR_JOYCAPTION,
+    PROMPT_GENERATOR_JOYCAPTION_GGUF,
+)
+DEFAULT_PROMPT_GENERATOR = PROMPT_GENERATOR_FLORENCE
 FLORENCE_MODEL_ID = "florence-community/Florence-2-base"
 FLORENCE_MAX_NEW_TOKENS = 256
+JOYCAPTION_MODEL_ID = "fancyfeast/llama-joycaption-beta-one-hf-llava"
+JOYCAPTION_MAX_NEW_TOKENS = 320
+JOYCAPTION_GGUF_REPO_ID = "cinnabrad/llama-joycaption-beta-one-hf-llava-mmproj-gguf"
+JOYCAPTION_GGUF_FILENAME = "Llama-Joycaption-Beta-One-Hf-Llava-Q4_K_M.gguf"
+JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-f16.gguf"
+JOYCAPTION_GGUF_SETUP_HINT = "INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
 
 SEARCH_PROMPT = "woman"
@@ -173,7 +190,9 @@ def huggingface_file_cached(repo_id, filename):
         cached = try_to_load_from_cache(repo_id=repo_id, filename=filename)
     except Exception:
         return False
-    return bool(cached) and os.path.isfile(cached)
+    if not isinstance(cached, (str, bytes, os.PathLike)):
+        return False
+    return os.path.isfile(cached)
 
 
 def describe_openai_clip_source(model_name):
@@ -229,6 +248,51 @@ def describe_florence_source():
         or huggingface_file_cached(FLORENCE_MODEL_ID, "pytorch_model.bin")
     )
     return "disk cache" if cached else "network download"
+
+
+def describe_huggingface_transformers_source(repo_id):
+    has_config = huggingface_file_cached(repo_id, "config.json")
+    has_processor = (
+        huggingface_file_cached(repo_id, "processor_config.json")
+        or huggingface_file_cached(repo_id, "preprocessor_config.json")
+        or huggingface_file_cached(repo_id, "tokenizer_config.json")
+    )
+    has_weights = (
+        huggingface_file_cached(repo_id, "model.safetensors")
+        or huggingface_file_cached(repo_id, "pytorch_model.bin")
+        or huggingface_file_cached(repo_id, "model.safetensors.index.json")
+    )
+    return "disk cache" if has_config and has_processor and has_weights else "network download"
+
+
+def describe_joycaption_gguf_source():
+    cached = (
+        huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_FILENAME)
+        and huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_MMPROJ_FILENAME)
+    )
+    return "disk cache" if cached else "network download"
+
+
+def describe_prompt_generator_source(generator_name):
+    if generator_name == PROMPT_GENERATOR_FLORENCE:
+        return describe_florence_source()
+    if generator_name == PROMPT_GENERATOR_JOYCAPTION:
+        return describe_huggingface_transformers_source(JOYCAPTION_MODEL_ID)
+    if generator_name == PROMPT_GENERATOR_JOYCAPTION_GGUF:
+        return describe_joycaption_gguf_source()
+    return "network or disk cache"
+
+
+def prompt_generator_supports_torch_cleanup(generator_name):
+    return generator_name in {PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION}
+
+
+def cuda_prefers_bfloat16():
+    return (
+        torch.cuda.is_available()
+        and hasattr(torch.cuda, "is_bf16_supported")
+        and torch.cuda.is_bf16_supported()
+    )
 
 
 def normalize_folder_identity(folder):
@@ -778,7 +842,7 @@ def extract_florence_caption(parsed, raw_text, task_prompt):
     return _clean(raw_text)
 
 
-def normalize_generated_prompt(text):
+def normalize_generated_prompt(text, keep_prose=False):
     text = re.sub(r"\s+", " ", (text or "").strip())
     if not text:
         return ""
@@ -795,6 +859,7 @@ def normalize_generated_prompt(text):
         "the image depicts ",
         "this photo shows ",
         "this photo depicts ",
+        "you are looking at ",
         "a photo of ",
         "an image of ",
         "image of ",
@@ -804,6 +869,12 @@ def normalize_generated_prompt(text):
         if lowered.startswith(prefix):
             text = text[len(prefix):].strip()
             break
+
+    if keep_prose:
+        text = re.sub(r"\s*([,:;])\s*", r"\1 ", text)
+        text = re.sub(r"\s*\.\s*", ". ", text)
+        text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+        return text.strip()
 
     text = re.sub(r"\s*[:;]\s*", ", ", text)
     text = re.sub(r"\.\s*", ", ", text)
@@ -837,6 +908,84 @@ def florence_detail_config(detail_level):
         3: ("Full", "<MORE_DETAILED_CAPTION>"),
     }
     return detail_level, *mapping[detail_level]
+
+
+def joycaption_detail_config(detail_level):
+    try:
+        detail_level = int(detail_level)
+    except Exception:
+        detail_level = DEFAULT_GENERATED_PROMPT_DETAIL
+
+    detail_level = max(1, min(3, detail_level))
+    mapping = {
+        1: (
+            "Core facts",
+            (
+                "Write only a very short comma-separated tag list for this image. "
+                "Use about 4 to 8 short tags total. "
+                "Include only the main subject, medium or style, pose, setting, lighting, and one standout object if clearly visible. "
+                "Do not write full sentences. "
+                "Drop minor details completely and avoid repeated concepts. "
+                "Avoid meta lead-ins like 'This image shows', 'In this image we can see', or 'You are looking at'. "
+                "Write it so the result is useful as a text-to-image prompt."
+            ),
+        ),
+        2: (
+            "Balanced",
+            (
+                "Write one compact text-to-image prompt line for this image. "
+                "Use about 18 to 35 words maximum. "
+                "Prefer prompt fragments separated by commas, not full prose. "
+                "Describe the visible subject, appearance, clothing, pose, background, lighting, framing, and the most notable objects. "
+                "Keep only clearly useful details, avoid speculation, and keep it prompt-friendly. "
+                "Avoid meta lead-ins like 'This image shows', 'In this image we can see', or 'You are looking at'. "
+                "Write it so the result is useful as a text-to-image prompt."
+            ),
+        ),
+        3: (
+            "Full",
+            (
+                "Write one natural descriptive paragraph for this image. "
+                "Use about 45 to 90 words maximum. "
+                "Write in clear flowing prose, not a tag list. "
+                "Include concrete visible details about subject, appearance, outfit, pose, composition, background, lighting, viewpoint, and notable objects. "
+                "Use direct factual language that is still useful for a text-to-image prompt. "
+                "Avoid meta lead-ins like 'This image shows', 'In this image we can see', or 'You are looking at'."
+            ),
+        ),
+    }
+    return detail_level, *mapping[detail_level]
+
+
+def joycaption_max_new_tokens(detail_level):
+    detail_level = max(1, min(3, int(detail_level)))
+    mapping = {
+        1: 24,
+        2: 56,
+        3: 128,
+    }
+    return mapping[detail_level]
+
+
+def prompt_generator_detail_config(generator_name, detail_level):
+    if generator_name == PROMPT_GENERATOR_FLORENCE:
+        return florence_detail_config(detail_level)
+    return joycaption_detail_config(detail_level)
+
+
+def extract_joycaption_caption(text):
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return ""
+    text = re.sub(r"^(assistant|caption)\s*:\s*", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def image_to_data_url(image, image_format="PNG"):
+    buffer = io.BytesIO()
+    image.save(buffer, format=image_format)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/{image_format.lower()};base64,{encoded}"
 
 
 def status_line(method, left_items, right_items, scores, overrides):
@@ -944,10 +1093,11 @@ def create_app():
         "ir_cached_negative_prompt": None,
         "ir_cached_base_scores": None,
         "ir_cached_penalty_scores": None,
-        "florence_model": None,
-        "florence_processor": None,
+        "prompt_generator": DEFAULT_PROMPT_GENERATOR,
+        "prompt_backend_cache": {},
         "generated_prompt": "",
         "generated_prompt_source": None,
+        "generated_prompt_backend": DEFAULT_PROMPT_GENERATOR,
         "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
         "generated_prompt_variants": {},
         "generated_prompt_status": "Preview an image, then generate a prompt from it.",
@@ -1163,11 +1313,12 @@ def create_app():
         "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor.",
         "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score.",
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
-        "hy-generate-prompt": "Use the currently previewed image to generate a dense editable prompt with Florence-2.",
+        "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
+        "hy-generate-prompt": "Use the currently previewed image to generate a dense editable prompt with the selected caption backend.",
         "hy-generated-prompt": "Editable scratch prompt generated from the previewed image. You can tweak it before scoring or reinsert it into the active method.",
-        "hy-generated-prompt-detail": "Choose whether Florence should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
+        "hy-generated-prompt-detail": "Choose whether the caption backend should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
         "hy-insert-prompt": "Copy the editable generated prompt back into the active method's main prompt field.",
-        "hy-promptgen-status": "Small status readout for Florence prompt generation.",
+        "hy-promptgen-status": "Small status readout for prompt generation.",
         "hy-run-pm": "Score the current folder with the selected method and prompts.",
         "hy-run-ir": "Score the current folder with the selected method and prompts.",
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
@@ -1191,8 +1342,9 @@ def create_app():
         return state["ir_model"]
 
     def ensure_florence_model():
-        if state["florence_model"] is not None and state["florence_processor"] is not None:
-            return state["florence_model"], state["florence_processor"]
+        cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_FLORENCE)
+        if cached and cached.get("model") is not None and cached.get("processor") is not None:
+            return cached["model"], cached["processor"]
 
         try:
             from transformers import AutoProcessor, Florence2ForConditionalGeneration
@@ -1216,10 +1368,101 @@ def create_app():
             local_files_only=local_files_only,
         ).to(device)
         model.eval()
-        state["florence_processor"] = processor
-        state["florence_model"] = model
+        state["prompt_backend_cache"][PROMPT_GENERATOR_FLORENCE] = {
+            "model": model,
+            "processor": processor,
+        }
         print("[Florence] Ready.")
         return model, processor
+
+    def ensure_joycaption_model():
+        cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_JOYCAPTION)
+        if cached and cached.get("model") is not None and cached.get("processor") is not None:
+            return cached["model"], cached["processor"]
+
+        try:
+            from transformers import AutoProcessor, LlavaForConditionalGeneration
+        except ImportError as exc:
+            raise RuntimeError(
+                "JoyCaption prompt generation needs a newer transformers build.\n"
+                "Run setup again after updating requirements."
+            ) from exc
+
+        dtype = torch.bfloat16 if cuda_prefers_bfloat16() else torch.float16
+        local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION) == "disk cache"
+        print(f"[JoyCaption] Loading {JOYCAPTION_MODEL_ID} …")
+        processor = AutoProcessor.from_pretrained(
+            JOYCAPTION_MODEL_ID,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+        )
+        model = LlavaForConditionalGeneration.from_pretrained(
+            JOYCAPTION_MODEL_ID,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+        ).to(device)
+        model.eval()
+        state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION] = {
+            "model": model,
+            "processor": processor,
+        }
+        print("[JoyCaption] Ready.")
+        return model, processor
+
+    def ensure_joycaption_gguf_model():
+        cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_JOYCAPTION_GGUF)
+        if cached and cached.get("llm") is not None:
+            return cached["llm"]
+
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:
+            raise RuntimeError(
+                "GGUF prompt generation needs huggingface_hub.\n"
+                "Run setup again after updating requirements."
+            ) from exc
+
+        try:
+            from llama_cpp import Llama
+            from llama_cpp.llama_chat_format import Llava15ChatHandler
+        except ImportError as exc:
+            raise RuntimeError(
+                "JoyCaption GGUF support is optional and not installed.\n"
+                f"Run: {JOYCAPTION_GGUF_SETUP_HINT}"
+            ) from exc
+
+        local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_GGUF) == "disk cache"
+        print(f"[JoyCaption GGUF] Loading {JOYCAPTION_GGUF_REPO_ID} / {JOYCAPTION_GGUF_FILENAME} …")
+        model_path = hf_hub_download(
+            repo_id=JOYCAPTION_GGUF_REPO_ID,
+            filename=JOYCAPTION_GGUF_FILENAME,
+            local_files_only=local_files_only,
+        )
+        mmproj_path = hf_hub_download(
+            repo_id=JOYCAPTION_GGUF_REPO_ID,
+            filename=JOYCAPTION_GGUF_MMPROJ_FILENAME,
+            local_files_only=local_files_only,
+        )
+        chat_handler = Llava15ChatHandler(
+            clip_model_path=mmproj_path,
+            verbose=False,
+        )
+        llm = Llama(
+            model_path=model_path,
+            chat_handler=chat_handler,
+            chat_format="llava-1-5",
+            n_ctx=4096,
+            n_gpu_layers=-1 if device == "cuda" else 0,
+            verbose=False,
+        )
+        state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION_GGUF] = {
+            "llm": llm,
+            "model_path": model_path,
+            "mmproj_path": mmproj_path,
+        }
+        print("[JoyCaption GGUF] Ready.")
+        return llm
 
     def gallery_update(items, columns=None):
         update_kwargs = {"value": items, "selected_index": None}
@@ -1440,6 +1683,161 @@ def create_app():
         if not item:
             return None, preview_fname
         return item.get("path"), preview_fname
+
+    def generated_prompt_variants_for(preview_fname, generator_name, create=False):
+        if not preview_fname:
+            return {}
+        preview_bucket = state["generated_prompt_variants"].get(preview_fname)
+        if preview_bucket is None:
+            if not create:
+                return {}
+            preview_bucket = {}
+            state["generated_prompt_variants"][preview_fname] = preview_bucket
+        backend_bucket = preview_bucket.get(generator_name)
+        if backend_bucket is None:
+            if not create:
+                return {}
+            backend_bucket = {}
+            preview_bucket[generator_name] = backend_bucket
+        return backend_bucket
+
+    def select_cached_generated_prompt(generator_name, detail_level, current_generated_prompt):
+        detail_level, detail_label, _ = prompt_generator_detail_config(generator_name, detail_level)
+        state["prompt_generator"] = generator_name
+        state["generated_prompt_detail"] = detail_level
+        _, preview_fname = get_preview_image_path()
+        if not preview_fname:
+            preview_fname = state.get("generated_prompt_source")
+        prompt_text = generated_prompt_variants_for(preview_fname, generator_name).get(detail_level)
+        if prompt_text:
+            state["generated_prompt"] = prompt_text
+            state["generated_prompt_source"] = preview_fname
+            state["generated_prompt_backend"] = generator_name
+            state["generated_prompt_status"] = (
+                f"Showing cached {detail_label.lower()} prompt for {preview_fname} via {generator_name}."
+            )
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=prompt_text),
+            )
+
+        if preview_fname:
+            state["generated_prompt_status"] = (
+                f"{generator_name} {detail_label.lower()} prompt is not cached for {preview_fname}. Click generate to create it."
+            )
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=current_generated_prompt),
+            )
+
+        state["generated_prompt_status"] = "Preview an image, then generate a prompt from it."
+        return (
+            gr.update(value=state["generated_prompt_status"]),
+            gr.update(value=current_generated_prompt),
+        )
+
+    def run_florence_prompt_variant(image, task_prompt):
+        model, processor = ensure_florence_model()
+        inputs = processor(text=task_prompt, images=image, return_tensors="pt")
+        inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
+        if "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
+
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=FLORENCE_MAX_NEW_TOKENS,
+                num_beams=3,
+            )
+
+        raw_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        if florence_task_is_pure_text(task_prompt):
+            parsed = raw_text
+        else:
+            parsed = processor.post_process_generation(
+                raw_text,
+                task=task_prompt,
+                image_size=image.size,
+            )
+        return normalize_generated_prompt(
+            extract_florence_caption(parsed, raw_text, task_prompt)
+        )
+
+    def run_joycaption_prompt_variant(generator_name, image, user_prompt, detail_level):
+        system_prompt = (
+            "You are a helpful image captioner. "
+            "Describe only concrete visible content and write output that is useful as a text-to-image prompt. "
+            "Follow the requested output style exactly, whether it asks for short tags, a compact prompt line, or natural prose. "
+            "Do not begin with meta phrases like 'This image shows', 'In this image we can see', or 'You are looking at'."
+        )
+        max_new_tokens = joycaption_max_new_tokens(detail_level)
+
+        if generator_name == PROMPT_GENERATOR_JOYCAPTION:
+            model, processor = ensure_joycaption_model()
+            conversation = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            convo_string = processor.apply_chat_template(
+                conversation,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            inputs = processor(text=[convo_string], images=[image], return_tensors="pt")
+            inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
+            if "pixel_values" in inputs:
+                inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
+
+            with torch.no_grad():
+                generated_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    use_cache=True,
+                )[0]
+
+            prompt_len = inputs["input_ids"].shape[1]
+            text = processor.tokenizer.decode(
+                generated_ids[prompt_len:],
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            return normalize_generated_prompt(
+                extract_joycaption_caption(text),
+                keep_prose=(detail_level == 3),
+            )
+
+        llm = ensure_joycaption_gguf_model()
+        data_url = image_to_data_url(image)
+        response = llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=max_new_tokens,
+        )
+        try:
+            text = response["choices"][0]["message"]["content"]
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected JoyCaption GGUF response shape: {exc}") from exc
+        return normalize_generated_prompt(
+            extract_joycaption_caption(text),
+            keep_prose=(detail_level == 3),
+        )
+
+    def generate_prompt_variant(generator_name, image, detail_level):
+        _, _, detail_prompt = prompt_generator_detail_config(generator_name, detail_level)
+        if generator_name == PROMPT_GENERATOR_FLORENCE:
+            return run_florence_prompt_variant(image, detail_prompt)
+        return run_joycaption_prompt_variant(generator_name, image, detail_prompt, detail_level)
 
     def score_imagereward(folder_paths, positive_prompt, negative_prompt, penalty_weight, progress):
         # Optional penalty prompt is implemented as a second pass whose score is subtracted.
@@ -1739,33 +2137,15 @@ def create_app():
     def update_split(main_threshold, aux_threshold):
         return current_view(main_threshold, aux_threshold)
 
-    def update_generated_prompt_detail(detail_level, current_generated_prompt):
-        detail_level, detail_label, _ = florence_detail_config(detail_level)
-        state["generated_prompt_detail"] = detail_level
-        preview_fname = state.get("generated_prompt_source")
-        prompt_text = state.get("generated_prompt_variants", {}).get(preview_fname, {}).get(detail_level)
-        if prompt_text:
-            state["generated_prompt"] = prompt_text
-            state["generated_prompt_status"] = f"Showing cached {detail_label.lower()} prompt for {preview_fname}."
-            return (
-                gr.update(value=state["generated_prompt_status"]),
-                gr.update(value=prompt_text),
-            )
+    def update_prompt_generator(generator_name, detail_level, current_generated_prompt):
+        return select_cached_generated_prompt(generator_name, detail_level, current_generated_prompt)
 
-        if preview_fname:
-            state["generated_prompt_status"] = f"{detail_label} detail selected. Click generate to create that variant."
-            return (
-                gr.update(value=state["generated_prompt_status"]),
-                gr.update(value=current_generated_prompt),
-            )
+    def update_generated_prompt_detail(generator_name, detail_level, current_generated_prompt):
+        return select_cached_generated_prompt(generator_name, detail_level, current_generated_prompt)
 
-        return (
-            gr.update(),
-            gr.update(value=current_generated_prompt),
-        )
-
-    def generate_prompt_from_preview(method, current_generated_prompt, detail_level, progress=gr.Progress()):
-        detail_level, detail_label, task_prompt = florence_detail_config(detail_level)
+    def generate_prompt_from_preview(generator_name, current_generated_prompt, detail_level, progress=gr.Progress()):
+        detail_level, detail_label, _ = prompt_generator_detail_config(generator_name, detail_level)
+        state["prompt_generator"] = generator_name
         state["generated_prompt_detail"] = detail_level
         image_path, preview_fname = get_preview_image_path()
         if not image_path or not os.path.isfile(image_path):
@@ -1774,72 +2154,49 @@ def create_app():
                 gr.update(value=state["generated_prompt_status"]),
                 gr.update(value=current_generated_prompt),
                 gr.update(),
-                gr.update(),
-                gr.update(),
             )
 
-        variants = state["generated_prompt_variants"].setdefault(preview_fname, {})
+        variants = generated_prompt_variants_for(preview_fname, generator_name, create=True)
         if all(level in variants and variants[level] for level in (1, 2, 3)):
             cached_prompt = variants.get(detail_level)
             state["generated_prompt"] = cached_prompt
             state["generated_prompt_source"] = preview_fname
-            state["generated_prompt_status"] = f"Reused cached prompt set for {preview_fname}. Showing {detail_label.lower()} detail."
+            state["generated_prompt_backend"] = generator_name
+            state["generated_prompt_status"] = (
+                f"Reused cached prompt set for {preview_fname} via {generator_name}. Showing {detail_label.lower()} detail."
+            )
             return (
                 gr.update(value=state["generated_prompt_status"]),
                 gr.update(value=cached_prompt),
                 gr.update(value=detail_level),
-                gr.update(),
-                gr.update(),
             )
 
-        if state["florence_model"] is None or state["florence_processor"] is None:
-            progress(0, desc=f"Loading Florence prompt model from {describe_florence_source()}: {FLORENCE_MODEL_ID}")
+        backend_cached = state["prompt_backend_cache"].get(generator_name)
+        if not backend_cached:
+            progress(0, desc=f"Loading {generator_name} from {describe_prompt_generator_source(generator_name)}")
         else:
-            progress(0, desc=f"Using loaded Florence prompt model from memory: {FLORENCE_MODEL_ID}")
+            progress(0, desc=f"Using loaded {generator_name} backend from memory")
 
         try:
-            model, processor = ensure_florence_model()
             with Image.open(image_path) as src_img:
                 image = src_img.convert("RGB")
 
             for idx, level in enumerate((1, 2, 3), start=1):
-                _, loop_label, loop_task_prompt = florence_detail_config(level)
-                progress(0.2 + (0.7 * ((idx - 1) / 3.0)), desc=f"Generating {loop_label.lower()} prompt from {preview_fname}")
-                inputs = processor(text=loop_task_prompt, images=image, return_tensors="pt")
-                inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
-                if "pixel_values" in inputs:
-                    inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
-
-                with torch.no_grad():
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=FLORENCE_MAX_NEW_TOKENS,
-                        num_beams=3,
-                    )
-
-                raw_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-                if florence_task_is_pure_text(loop_task_prompt):
-                    parsed = raw_text
-                else:
-                    parsed = processor.post_process_generation(
-                        raw_text,
-                        task=loop_task_prompt,
-                        image_size=image.size,
-                    )
-                variants[level] = normalize_generated_prompt(
-                    extract_florence_caption(parsed, raw_text, loop_task_prompt)
+                _, loop_label, _ = prompt_generator_detail_config(generator_name, level)
+                progress(
+                    0.2 + (0.7 * ((idx - 1) / 3.0)),
+                    desc=f"Generating {loop_label.lower()} prompt from {preview_fname} via {generator_name}",
                 )
+                variants[level] = generate_prompt_variant(generator_name, image, level)
         except Exception as exc:
             state["generated_prompt_status"] = f"Prompt generation failed: {exc}"
             return (
                 gr.update(value=state["generated_prompt_status"]),
                 gr.update(value=current_generated_prompt),
                 gr.update(),
-                gr.update(),
-                gr.update(),
             )
         finally:
-            if device == "cuda":
+            if device == "cuda" and prompt_generator_supports_torch_cleanup(generator_name):
                 torch.cuda.empty_cache()
 
         prompt_text = variants.get(detail_level, "")
@@ -1849,20 +2206,20 @@ def create_app():
                 gr.update(value=state["generated_prompt_status"]),
                 gr.update(value=current_generated_prompt),
                 gr.update(),
-                gr.update(),
-                gr.update(),
             )
 
         state["generated_prompt"] = prompt_text
         state["generated_prompt_source"] = preview_fname
+        state["generated_prompt_backend"] = generator_name
         ready_count = sum(1 for level in (1, 2, 3) if variants.get(level))
-        state["generated_prompt_status"] = f"Generated {ready_count} prompt detail levels for {preview_fname}. Showing {detail_label.lower()} detail."
+        state["generated_prompt_status"] = (
+            f"Generated {ready_count} prompt detail levels for {preview_fname} via {generator_name}. "
+            f"Showing {detail_label.lower()} detail."
+        )
         return (
             gr.update(value=state["generated_prompt_status"]),
             gr.update(value=prompt_text),
             gr.update(value=detail_level),
-            gr.update(),
-            gr.update(),
         )
 
     def insert_generated_prompt(method, prompt_text):
@@ -2259,6 +2616,12 @@ def create_app():
 
                     with gr.Group():
                         gr.Markdown("Prompt from preview image", elem_classes=["method-note"])
+                        prompt_generator_dd = gr.Dropdown(
+                            choices=list(PROMPT_GENERATOR_CHOICES),
+                            value=state["prompt_generator"],
+                            label="Prompt generator",
+                            elem_id="hy-prompt-generator",
+                        )
                         generate_prompt_btn = gr.Button("Generate prompt from preview", elem_id="hy-generate-prompt")
                         promptgen_status_md = gr.Markdown(
                             state["generated_prompt_status"],
@@ -2272,7 +2635,7 @@ def create_app():
                             placeholder="Preview an image, then generate an editable prompt here.",
                             elem_id="hy-generated-prompt",
                         )
-                        generated_prompt_words_slider = gr.Slider(
+                        generated_prompt_detail_slider = gr.Slider(
                             minimum=1,
                             maximum=3,
                             value=DEFAULT_GENERATED_PROMPT_DETAIL,
@@ -2334,14 +2697,19 @@ def create_app():
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
+        prompt_generator_dd.change(
+            fn=update_prompt_generator,
+            inputs=[prompt_generator_dd, generated_prompt_detail_slider, generated_prompt_tb],
+            outputs=[promptgen_status_md, generated_prompt_tb],
+        )
         generate_prompt_btn.click(
             fn=generate_prompt_from_preview,
-            inputs=[method_dd, generated_prompt_tb, generated_prompt_words_slider],
-            outputs=[promptgen_status_md, generated_prompt_tb, generated_prompt_words_slider, pos_prompt_tb, ir_prompt_tb],
+            inputs=[prompt_generator_dd, generated_prompt_tb, generated_prompt_detail_slider],
+            outputs=[promptgen_status_md, generated_prompt_tb, generated_prompt_detail_slider],
         )
-        generated_prompt_words_slider.change(
+        generated_prompt_detail_slider.change(
             fn=update_generated_prompt_detail,
-            inputs=[generated_prompt_words_slider, generated_prompt_tb],
+            inputs=[prompt_generator_dd, generated_prompt_detail_slider, generated_prompt_tb],
             outputs=[promptgen_status_md, generated_prompt_tb],
         )
         insert_prompt_btn.click(

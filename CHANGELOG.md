@@ -4,6 +4,14 @@ All notable changes to this project should be tracked here.
 
 Entries before `1.1.0` were reconstructed from git history and repository snapshots.
 
+## [1.30.0] - 2026-04-03
+
+- Expanded `Prompt from preview image` into a multi-backend prompt generator with a selector for `Florence-2`, `JoyCaption Beta One`, and optional `JoyCaption Beta One GGUF (Q4_K_M)`.
+- Added JoyCaption-specific prompt generation flows, backend-aware caching per preview image and detail level, and a separate optional GGUF runtime path that can be installed with `INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh`.
+- Refined the three JoyCaption detail modes so they now behave differently on purpose: `Core facts` produces short tag-style output, `Balanced` produces a compact prompt line, and `Full` preserves natural descriptive prose.
+- Improved prompt cleanup and backend prompt instructions so generated text avoids stock lead-ins like `This image shows` and `In this image we can see`, while keeping the most detailed JoyCaption mode in prose instead of flattening it into comma tags.
+- Hardened prompt-generator cache/source detection so Hugging Face cache sentinels do not crash the JoyCaption source check.
+
 ## [1.25.0] - 2026-04-03
 
 - Added a threshold-fit action that moves the cutoff just enough to pull the currently previewed or multi-selected images into the opposite bucket, instead of relying only on manual overrides.
