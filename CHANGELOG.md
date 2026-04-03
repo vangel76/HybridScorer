@@ -4,6 +4,15 @@ All notable changes to this project should be tracked here.
 
 Entries before `1.1.0` were reconstructed from git history and repository snapshots.
 
+## [1.25.0] - 2026-04-03
+
+- Added a threshold-fit action that moves the cutoff just enough to pull the currently previewed or multi-selected images into the opposite bucket, instead of relying only on manual overrides.
+- Added a Florence-2 powered `Prompt from preview image` utility that can generate an editable prompt from the current preview image and feed it back into either PromptMatch or ImageReward when requested.
+- Expanded prompt generation with cached `Core facts`, `Balanced`, and `Full` detail variants, kept the generated prompt in a separate scratch box instead of overwriting the active scoring prompt, and added smarter cleanup for stock lead-ins such as `In this image we can see`.
+- Updated dependencies and runtime compatibility so Florence prompt generation works alongside the existing app stack while keeping ImageReward functional under the newer `transformers` version.
+- Reworked the sidebar flow so scoring stays grouped with the active method prompts, the Florence controls stay together as their own block, and both PromptMatch and ImageReward `Run scoring` buttons are wired correctly.
+- Improved gallery/session behavior by keeping scored results visible while switching methods, preserving prompt-generation state per preview image, and making the multi-selection status text larger and easier to read.
+
 ## [1.1.0] - 2026-04-01
 
 - Unified the separate PromptMatch and ImageReward tools into the single `Hybrid-Scorer.py` app, with updated run scripts, screenshots, and documentation.

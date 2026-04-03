@@ -785,6 +785,10 @@ def normalize_generated_prompt(text):
 
     lowered = text.lower()
     prefixes = (
+        "in this image, we can see ",
+        "in this image we can see ",
+        "in this image, we see ",
+        "in this image we see ",
         "this image shows ",
         "this image depicts ",
         "the image shows ",
