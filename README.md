@@ -9,6 +9,7 @@ Current version: `1.1.0` (`v1.1.0` on GitHub releases)
 `HybridScorer` is built for quick AI assisted human-in-the-loop image scoring.
 
 - `Hybrid-Scorer.py` combines PromptMatch and ImageReward in one UI.
+- The app can also generate a dense editable prompt from the currently previewed image with Florence-2 and drop it into the active method prompt.
 - CUDA is required so scoring stays fast enough to be practical on large folders.
 - Both scoring methods can use cached proxy images to speed up repeat scoring and large-folder browsing.
 - In the end, the app copies the original image files into two output folders: `selected` and `rejected`.
@@ -70,6 +71,7 @@ Model weights are downloaded on first use only for the method and model you actu
 - PromptMatch also supports OpenCLIP ConvNeXt backbones if you want additional alternatives in the same prompt-based workflow.
 - The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
 - `ImageReward` is also downloaded on first use when you switch to that method.
+- Florence prompt generation downloads `florence-community/Florence-2-base` on first use when you click **Generate prompt from preview**.
 - The UI now shows whether a model is being loaded from memory, disk cache, or a likely network download so users are not left guessing.
 
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
@@ -107,10 +109,23 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 - Enter your prompt settings.
 - Click **Run scoring**.
 - Review the `SELECTED` and `REJECTED` galleries.
+- Preview an image and click **Generate prompt from preview** if you want the app to draft a dense prompt you can edit and reuse.
 - Adjust the threshold sliders or click directly on the histogram to refine the split.
 - Leave **Use proxies for gallery display** enabled for large folders if you want much faster gallery refreshes.
 - Manually move exceptions between buckets if needed.
 - Click **Export folders** to losslessly copy the final result into `selected/` and `rejected/`.
+
+### Prompt From Preview Image
+
+Use the Florence utility when you want the app to draft a generation or edit prompt from one image you already like.
+
+- Click any thumbnail so it becomes the current preview image.
+- Click **Generate prompt from preview**.
+- The app writes the result only into the editable **Generated prompt** box.
+- Use **Prompt detail** to switch between core facts, balanced detail, and full Florence detail.
+- Edit that generated prompt if you want to refine wording before scoring again.
+- Click **Insert into active prompt** if you want to copy your edited scratch prompt into the active method field.
+- This utility only targets the active main positive prompt in v1. It does not write into PromptMatch negative prompt or ImageReward penalty prompt.
 
 ### PromptMatch
 

@@ -12,6 +12,7 @@ HybridSelector — PromptMatch + ImageReward in one UI
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import string
@@ -67,13 +68,16 @@ PROMPTMATCH_SLIDER_MAX = 1.0
 IMAGEREWARD_SLIDER_MIN = -5.0
 IMAGEREWARD_SLIDER_MAX = 5.0
 HIST_HEIGHT_SCALE = 0.7
+FLORENCE_MODEL_ID = "florence-community/Florence-2-base"
+FLORENCE_MAX_NEW_TOKENS = 256
+DEFAULT_GENERATED_PROMPT_DETAIL = 2
 
 SEARCH_PROMPT = "woman"
 NEGATIVE_PROMPT = ""
 NEGATIVE_THRESHOLD = 0.14
 IR_PROMPT = (
     "masterpiece, best quality, ultra-detailed, cinematic, "
-    "extremely beautiful woman, dramatic lighting, rim light, chiaroscuro, "
+    "beautiful woman, dramatic lighting, chiaroscuro, "
     "professional studio portrait, 8k, award-winning"
 )
 IMAGEREWARD_THRESHOLD = 0.5
@@ -92,6 +96,17 @@ def get_imagereward_utils():
     module_name = f"{package_name}.utils"
     if module_name in sys.modules:
         return sys.modules[module_name]
+
+    # ImageReward still imports a few helpers from transformers.modeling_utils
+    # that now live in transformers.pytorch_utils in newer transformers builds.
+    try:
+        import transformers.modeling_utils as modeling_utils
+        import transformers.pytorch_utils as pytorch_utils
+        for name in ("apply_chunking_to_forward", "find_pruneable_heads_and_indices", "prune_linear_layer"):
+            if not hasattr(modeling_utils, name) and hasattr(pytorch_utils, name):
+                setattr(modeling_utils, name, getattr(pytorch_utils, name))
+    except Exception:
+        pass
 
     package_dir = None
     for entry in sys.path:
@@ -206,6 +221,14 @@ def describe_imagereward_source():
     model_ok = os.path.isfile(os.path.join(cache_root, "ImageReward.pt"))
     med_ok = os.path.isfile(os.path.join(cache_root, "med_config.json"))
     return "disk cache" if model_ok and med_ok else "network download"
+
+
+def describe_florence_source():
+    cached = huggingface_file_cached(FLORENCE_MODEL_ID, "config.json") and (
+        huggingface_file_cached(FLORENCE_MODEL_ID, "model.safetensors")
+        or huggingface_file_cached(FLORENCE_MODEL_ID, "pytorch_model.bin")
+    )
+    return "disk cache" if cached else "network download"
 
 
 def normalize_folder_identity(folder):
@@ -738,6 +761,80 @@ def slider_step_ceil_exclusive(value, step=0.001):
     return round((math.floor(float(value) / step) + 1) * step, 3)
 
 
+def extract_florence_caption(parsed, raw_text, task_prompt):
+    def _clean(text):
+        text = re.sub(r"<[^>]+>", " ", text or "")
+        return re.sub(r"\s+", " ", text).strip()
+
+    if isinstance(parsed, dict):
+        value = parsed.get(task_prompt)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+            return ", ".join(value)
+    if isinstance(parsed, str):
+        return _clean(parsed)
+
+    return _clean(raw_text)
+
+
+def normalize_generated_prompt(text):
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    prefixes = (
+        "this image shows ",
+        "this image depicts ",
+        "the image shows ",
+        "the image depicts ",
+        "this photo shows ",
+        "this photo depicts ",
+        "a photo of ",
+        "an image of ",
+        "image of ",
+        "photo of ",
+    )
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+
+    text = re.sub(r"\s*[:;]\s*", ", ", text)
+    text = re.sub(r"\.\s*", ", ", text)
+    text = re.sub(r"\s*,\s*", ", ", text)
+    parts = [part.strip(" ,.;:-") for part in text.split(",")]
+    parts = [part for part in parts if part]
+    return ", ".join(parts)
+
+
+def florence_task_is_pure_text(task_prompt):
+    return task_prompt in {
+        "<CAPTION>",
+        "<DETAILED_CAPTION>",
+        "<MORE_DETAILED_CAPTION>",
+        "<REGION_TO_CATEGORY>",
+        "<REGION_TO_DESCRIPTION>",
+        "<REGION_TO_OCR>",
+    }
+
+
+def florence_detail_config(detail_level):
+    try:
+        detail_level = int(detail_level)
+    except Exception:
+        detail_level = DEFAULT_GENERATED_PROMPT_DETAIL
+
+    detail_level = max(1, min(3, detail_level))
+    mapping = {
+        1: ("Core facts", "<CAPTION>"),
+        2: ("Balanced", "<DETAILED_CAPTION>"),
+        3: ("Full", "<MORE_DETAILED_CAPTION>"),
+    }
+    return detail_level, *mapping[detail_level]
+
+
 def status_line(method, left_items, right_items, scores, overrides):
     left_name, right_name, _, _ = method_labels(method)
     if not scores:
@@ -843,6 +940,13 @@ def create_app():
         "ir_cached_negative_prompt": None,
         "ir_cached_base_scores": None,
         "ir_cached_penalty_scores": None,
+        "florence_model": None,
+        "florence_processor": None,
+        "generated_prompt": "",
+        "generated_prompt_source": None,
+        "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
+        "generated_prompt_variants": {},
+        "generated_prompt_status": "Preview an image, then generate a prompt from it.",
     }
 
     def sync_promptmatch_proxy_cache(folder):
@@ -910,6 +1014,16 @@ def create_app():
           const card = event.target.closest("button");
           if (!card || !root.contains(card)) return;
           if (!event.shiftKey) {{
+            const thumbButtons = Array.from(root.querySelectorAll("button")).filter((btn) => {{
+              const img = btn.querySelector("img");
+              const inDialog = !!btn.closest('[role="dialog"], [aria-modal="true"]');
+              const hasCaption = !!(btn.querySelector(".caption-label span") || btn.querySelector('[class*="caption"]'));
+              return !inDialog && !!img && hasCaption;
+            }});
+            const index = thumbButtons.indexOf(card);
+            if (index >= 0) {{
+              pushThumbAction(`preview:${{side}}:${{index}}:${{Date.now()}}`);
+            }}
             setTimeout(scheduleRepaint, 30);
             setTimeout(scheduleRepaint, 140);
             setTimeout(scheduleRepaint, 320);
@@ -926,7 +1040,7 @@ def create_app():
           event.preventDefault();
           event.stopPropagation();
           event.stopImmediatePropagation();
-          pushThumbAction(`${{side}}:${{index}}:${{Date.now()}}`);
+          pushThumbAction(`mark:${{side}}:${{index}}:${{Date.now()}}`);
         }}, true);
         root.dataset.hyShiftHooked = "1";
       }}
@@ -1045,7 +1159,13 @@ def create_app():
         "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor.",
         "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score.",
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
-        "hy-run": "Score the current folder with the selected method and prompts.",
+        "hy-generate-prompt": "Use the currently previewed image to generate a dense editable prompt with Florence-2.",
+        "hy-generated-prompt": "Editable scratch prompt generated from the previewed image. You can tweak it before scoring or reinsert it into the active method.",
+        "hy-generated-prompt-detail": "Choose whether Florence should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
+        "hy-insert-prompt": "Copy the editable generated prompt back into the active method's main prompt field.",
+        "hy-promptgen-status": "Small status readout for Florence prompt generation.",
+        "hy-run-pm": "Score the current folder with the selected method and prompts.",
+        "hy-run-ir": "Score the current folder with the selected method and prompts.",
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
@@ -1065,6 +1185,37 @@ def create_app():
         if state["ir_model"] is None:
             state["ir_model"] = get_imagereward_utils().load("ImageReward-v1.0")
         return state["ir_model"]
+
+    def ensure_florence_model():
+        if state["florence_model"] is not None and state["florence_processor"] is not None:
+            return state["florence_model"], state["florence_processor"]
+
+        try:
+            from transformers import AutoProcessor, Florence2ForConditionalGeneration
+        except ImportError as exc:
+            raise RuntimeError(
+                "Florence prompt generation needs a newer transformers build.\n"
+                "Run setup again after updating requirements."
+            ) from exc
+
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        local_files_only = describe_florence_source() == "disk cache"
+        print(f"[Florence] Loading {FLORENCE_MODEL_ID} …")
+        processor = AutoProcessor.from_pretrained(
+            FLORENCE_MODEL_ID,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+        )
+        model = Florence2ForConditionalGeneration.from_pretrained(
+            FLORENCE_MODEL_ID,
+            dtype=dtype,
+            local_files_only=local_files_only,
+        ).to(device)
+        model.eval()
+        state["florence_processor"] = processor
+        state["florence_model"] = model
+        print("[Florence] Ready.")
+        return model, processor
 
     def gallery_update(items, columns=None):
         update_kwargs = {"value": items, "selected_index": None}
@@ -1277,6 +1428,15 @@ def create_app():
             marked_state_json(),
         )
 
+    def get_preview_image_path():
+        preview_fname = state.get("preview_fname")
+        if not preview_fname:
+            return None, None
+        item = state.get("scores", {}).get(preview_fname)
+        if not item:
+            return None, preview_fname
+        return item.get("path"), preview_fname
+
     def score_imagereward(folder_paths, positive_prompt, negative_prompt, penalty_weight, progress):
         # Optional penalty prompt is implemented as a second pass whose score is subtracted.
         model = ensure_imagereward_model()
@@ -1415,11 +1575,6 @@ def create_app():
         return changed
 
     def configure_controls(method):
-        state["method"] = method
-        state["overrides"] = {}
-        state["left_marked"] = []
-        state["right_marked"] = []
-        state["preview_fname"] = None
         if method == METHOD_PROMPTMATCH:
             return (
                 gr.update(visible=True),
@@ -1580,6 +1735,145 @@ def create_app():
     def update_split(main_threshold, aux_threshold):
         return current_view(main_threshold, aux_threshold)
 
+    def update_generated_prompt_detail(detail_level, current_generated_prompt):
+        detail_level, detail_label, _ = florence_detail_config(detail_level)
+        state["generated_prompt_detail"] = detail_level
+        preview_fname = state.get("generated_prompt_source")
+        prompt_text = state.get("generated_prompt_variants", {}).get(preview_fname, {}).get(detail_level)
+        if prompt_text:
+            state["generated_prompt"] = prompt_text
+            state["generated_prompt_status"] = f"Showing cached {detail_label.lower()} prompt for {preview_fname}."
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=prompt_text),
+            )
+
+        if preview_fname:
+            state["generated_prompt_status"] = f"{detail_label} detail selected. Click generate to create that variant."
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=current_generated_prompt),
+            )
+
+        return (
+            gr.update(),
+            gr.update(value=current_generated_prompt),
+        )
+
+    def generate_prompt_from_preview(method, current_generated_prompt, detail_level, progress=gr.Progress()):
+        detail_level, detail_label, task_prompt = florence_detail_config(detail_level)
+        state["generated_prompt_detail"] = detail_level
+        image_path, preview_fname = get_preview_image_path()
+        if not image_path or not os.path.isfile(image_path):
+            state["generated_prompt_status"] = "Select a preview image first, then generate a prompt."
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=current_generated_prompt),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+            )
+
+        variants = state["generated_prompt_variants"].setdefault(preview_fname, {})
+        if all(level in variants and variants[level] for level in (1, 2, 3)):
+            cached_prompt = variants.get(detail_level)
+            state["generated_prompt"] = cached_prompt
+            state["generated_prompt_source"] = preview_fname
+            state["generated_prompt_status"] = f"Reused cached prompt set for {preview_fname}. Showing {detail_label.lower()} detail."
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=cached_prompt),
+                gr.update(value=detail_level),
+                gr.update(),
+                gr.update(),
+            )
+
+        if state["florence_model"] is None or state["florence_processor"] is None:
+            progress(0, desc=f"Loading Florence prompt model from {describe_florence_source()}: {FLORENCE_MODEL_ID}")
+        else:
+            progress(0, desc=f"Using loaded Florence prompt model from memory: {FLORENCE_MODEL_ID}")
+
+        try:
+            model, processor = ensure_florence_model()
+            with Image.open(image_path) as src_img:
+                image = src_img.convert("RGB")
+
+            for idx, level in enumerate((1, 2, 3), start=1):
+                _, loop_label, loop_task_prompt = florence_detail_config(level)
+                progress(0.2 + (0.7 * ((idx - 1) / 3.0)), desc=f"Generating {loop_label.lower()} prompt from {preview_fname}")
+                inputs = processor(text=loop_task_prompt, images=image, return_tensors="pt")
+                inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
+                if "pixel_values" in inputs:
+                    inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
+
+                with torch.no_grad():
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=FLORENCE_MAX_NEW_TOKENS,
+                        num_beams=3,
+                    )
+
+                raw_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+                if florence_task_is_pure_text(loop_task_prompt):
+                    parsed = raw_text
+                else:
+                    parsed = processor.post_process_generation(
+                        raw_text,
+                        task=loop_task_prompt,
+                        image_size=image.size,
+                    )
+                variants[level] = normalize_generated_prompt(
+                    extract_florence_caption(parsed, raw_text, loop_task_prompt)
+                )
+        except Exception as exc:
+            state["generated_prompt_status"] = f"Prompt generation failed: {exc}"
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=current_generated_prompt),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+            )
+        finally:
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+        prompt_text = variants.get(detail_level, "")
+        if not prompt_text:
+            state["generated_prompt_status"] = f"No usable prompt text was produced for {preview_fname}."
+            return (
+                gr.update(value=state["generated_prompt_status"]),
+                gr.update(value=current_generated_prompt),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+            )
+
+        state["generated_prompt"] = prompt_text
+        state["generated_prompt_source"] = preview_fname
+        ready_count = sum(1 for level in (1, 2, 3) if variants.get(level))
+        state["generated_prompt_status"] = f"Generated {ready_count} prompt detail levels for {preview_fname}. Showing {detail_label.lower()} detail."
+        return (
+            gr.update(value=state["generated_prompt_status"]),
+            gr.update(value=prompt_text),
+            gr.update(value=detail_level),
+            gr.update(),
+            gr.update(),
+        )
+
+    def insert_generated_prompt(method, prompt_text):
+        prompt_text = (prompt_text or "").strip()
+        if not prompt_text:
+            state["generated_prompt_status"] = "Generated prompt is empty. Edit or generate a prompt first."
+            return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update()
+
+        state["generated_prompt"] = prompt_text
+        target_label = "PromptMatch positive prompt" if method == METHOD_PROMPTMATCH else "ImageReward positive prompt"
+        state["generated_prompt_status"] = f"Inserted generated prompt into {target_label}."
+        if method == METHOD_PROMPTMATCH:
+            return gr.update(value=state["generated_prompt_status"]), gr.update(value=prompt_text), gr.update()
+        return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(value=prompt_text)
+
     def update_proxy_display(use_proxy_display, main_threshold, aux_threshold):
         state["use_proxy_display"] = bool(use_proxy_display)
         return current_view(main_threshold, aux_threshold)
@@ -1606,39 +1900,28 @@ def create_app():
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
         )
 
-    def toggle_mark(action, main_threshold, aux_threshold):
-        # Shift-click marks thumbnails for bulk move/clear actions without opening the preview.
+    def handle_thumb_action(action, main_threshold, aux_threshold):
+        # Custom JS reports both normal preview clicks and shift-click bulk marking.
         if not action:
             return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
         try:
-            side, raw_index, _ = str(action).split(":", 2)
+            verb, side, raw_index, _ = str(action).split(":", 3)
             index = int(raw_index)
         except Exception:
             return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         items = left_items if side == "left" else right_items
-        marked_key = "left_marked" if side == "left" else "right_marked"
         if 0 <= index < len(items):
             fname = os.path.basename(items[index][0])
-            if fname in state[marked_key]:
-                state[marked_key] = [name for name in state[marked_key] if name != fname]
+            if verb == "preview":
+                state["preview_fname"] = fname
             else:
-                state[marked_key].append(fname)
+                marked_key = "left_marked" if side == "left" else "right_marked"
+                if fname in state[marked_key]:
+                    state[marked_key] = [name for name in state[marked_key] if name != fname]
+                else:
+                    state[marked_key].append(fname)
         return current_view(main_threshold, aux_threshold)
-
-    def remember_preview(side, main_threshold, aux_threshold, evt: gr.SelectData):
-        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
-        items = left_items if side == "left" else right_items
-        if 0 <= evt.index < len(items):
-            state["preview_fname"] = os.path.basename(items[evt.index][0])
-            return marked_state_json()
-        return gr.update()
-
-    def remember_preview_left(main_threshold, aux_threshold, evt: gr.SelectData):
-        return remember_preview("left", main_threshold, aux_threshold, evt)
-
-    def remember_preview_right(main_threshold, aux_threshold, evt: gr.SelectData):
-        return remember_preview("right", main_threshold, aux_threshold, evt)
 
     def move_right(main_threshold, aux_threshold):
         left_name, right_name, _, _ = method_labels(state["method"])
@@ -1820,16 +2103,17 @@ def create_app():
     .sidebar-box .gr-accordion summary, .sidebar-box .gr-accordion button { font-family:monospace !important; font-size:.9rem !important; color:#d7dbc8 !important; }
     .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:8px; padding:6px 9px; }
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
+    .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
     .hist-img img { cursor:crosshair !important; border-radius:6px; }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
     .grid-wrap .caption-label span, .grid-wrap [class*="caption"] { font-family:monospace !important; font-size:.72em !important; color:#8899aa !important; }
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
     .move-col button { width:100%; }
-    .sel-info p { font-family:monospace !important; font-size:.72em !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
+    .sel-info p { font-family:monospace !important; font-size:1.08em !important; font-weight:700 !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
     #hy-folder textarea, #hy-folder input { min-height:60px !important; font-size:.96rem !important; }
-    #hy-run, #hy-export { border-radius:8px !important; }
-    #hy-run, #hy-run button, #hy-export, #hy-export button {
+    #hy-run-pm, #hy-run-ir, #hy-export { border-radius:8px !important; }
+    #hy-run-pm, #hy-run-pm button, #hy-run-ir, #hy-run-ir button, #hy-export, #hy-export button {
         background:#2f8f45 !important;
         background-image:none !important;
         border:1px solid #58bb73 !important;
@@ -1837,15 +2121,15 @@ def create_app():
         font-weight:700 !important;
         box-shadow:0 0 0 1px rgba(25, 55, 30, 0.15) inset !important;
     }
-    #hy-run button, #hy-export button {
+    #hy-run-pm button, #hy-run-ir button, #hy-export button {
         min-height:40px !important;
         border-radius:8px !important;
     }
-    #hy-run:hover, #hy-run button:hover, #hy-export:hover, #hy-export button:hover {
+    #hy-run-pm:hover, #hy-run-pm button:hover, #hy-run-ir:hover, #hy-run-ir button:hover, #hy-export:hover, #hy-export button:hover {
         background:#38a14f !important;
         background-image:none !important;
     }
-    #hy-run button:disabled, #hy-export button:disabled {
+    #hy-run-pm button:disabled, #hy-run-ir button:disabled, #hy-export button:disabled {
         background:#256d35 !important;
         color:#d8ead8 !important;
     }
@@ -1948,6 +2232,7 @@ def create_app():
                         model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
                         pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
                         neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
+                        promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
 
                     with gr.Group(visible=False) as imagereward_group:
                         ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=3, elem_id="hy-ir-pos")
@@ -1966,8 +2251,32 @@ def create_app():
                             step=0.1,
                             elem_id="hy-ir-weight",
                         )
+                        imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
 
-                    run_btn = gr.Button("Run scoring", elem_id="hy-run", variant="primary")
+                    with gr.Group():
+                        gr.Markdown("Prompt from preview image", elem_classes=["method-note"])
+                        generate_prompt_btn = gr.Button("Generate prompt from preview", elem_id="hy-generate-prompt")
+                        promptgen_status_md = gr.Markdown(
+                            state["generated_prompt_status"],
+                            elem_classes=["promptgen-status"],
+                            elem_id="hy-promptgen-status",
+                        )
+                        generated_prompt_tb = gr.Textbox(
+                            value=state["generated_prompt"],
+                            label="Generated prompt",
+                            lines=4,
+                            placeholder="Preview an image, then generate an editable prompt here.",
+                            elem_id="hy-generated-prompt",
+                        )
+                        generated_prompt_words_slider = gr.Slider(
+                            minimum=1,
+                            maximum=3,
+                            value=DEFAULT_GENERATED_PROMPT_DETAIL,
+                            step=1,
+                            label="Prompt detail",
+                            elem_id="hy-generated-prompt-detail",
+                        )
+                        insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
                 with gr.Accordion("3. Thresholds", open=False):
                     hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
@@ -2011,10 +2320,30 @@ def create_app():
             outputs=[promptmatch_group, imagereward_group, main_slider, aux_slider, method_note],
         )
 
-        run_btn.click(
+        promptmatch_run_btn.click(
             fn=score_folder,
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
+        imagereward_run_btn.click(
+            fn=score_folder,
+            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
+        generate_prompt_btn.click(
+            fn=generate_prompt_from_preview,
+            inputs=[method_dd, generated_prompt_tb, generated_prompt_words_slider],
+            outputs=[promptgen_status_md, generated_prompt_tb, generated_prompt_words_slider, pos_prompt_tb, ir_prompt_tb],
+        )
+        generated_prompt_words_slider.change(
+            fn=update_generated_prompt_detail,
+            inputs=[generated_prompt_words_slider, generated_prompt_tb],
+            outputs=[promptgen_status_md, generated_prompt_tb],
+        )
+        insert_prompt_btn.click(
+            fn=insert_generated_prompt,
+            inputs=[method_dd, generated_prompt_tb],
+            outputs=[promptgen_status_md, pos_prompt_tb, ir_prompt_tb],
         )
 
         main_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
@@ -2039,9 +2368,7 @@ def create_app():
             inputs=[ir_penalty_weight_tb, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
-        left_gallery.select(fn=remember_preview_left, inputs=[main_slider, aux_slider], outputs=[mark_state])
-        right_gallery.select(fn=remember_preview_right, inputs=[main_slider, aux_slider], outputs=[mark_state])
-        thumb_action.change(fn=toggle_mark, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        thumb_action.change(fn=handle_thumb_action, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
