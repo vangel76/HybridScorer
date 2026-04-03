@@ -1,45 +1,39 @@
 # Changelog
 
-All notable changes to this project should be tracked here.
-
-Entries before `1.1.0` were reconstructed from git history and repository snapshots.
-
 ## [1.30.0] - 2026-04-03
 
-- Expanded `Prompt from preview image` into a multi-backend prompt generator with a selector for `Florence-2`, `JoyCaption Beta One`, and optional `JoyCaption Beta One GGUF (Q4_K_M)`.
-- Added JoyCaption-specific prompt generation flows, backend-aware caching per preview image and detail level, and a separate optional GGUF runtime path that can be installed with `INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh`.
-- Refined the three JoyCaption detail modes so they now behave differently on purpose: `Core facts` produces short tag-style output, `Balanced` produces a compact prompt line, and `Full` preserves natural descriptive prose.
-- Improved prompt cleanup and backend prompt instructions so generated text avoids stock lead-ins like `This image shows` and `In this image we can see`, while keeping the most detailed JoyCaption mode in prose instead of flattening it into comma tags.
-- Hardened prompt-generator cache/source detection so Hugging Face cache sentinels do not crash the JoyCaption source check.
+- Added `Prompt from preview image` model selection:
+  `Florence-2`, `JoyCaption Beta One`, and `JoyCaption Beta One GGUF (Q4_K_M)`.
+- JoyCaption now offers 3 clearer output styles:
+  short tags, compact prompt, and detailed prose.
+- Improved generated prompt cleanup and reduced generic lead-ins.
+- Added optional GGUF setup for lower-VRAM JoyCaption use.
+- Fixed prompt-generator cache/source detection issues.
 
 ## [1.25.0] - 2026-04-03
 
-- Added a threshold-fit action that moves the cutoff just enough to pull the currently previewed or multi-selected images into the opposite bucket, instead of relying only on manual overrides.
-- Added a Florence-2 powered `Prompt from preview image` utility that can generate an editable prompt from the current preview image and feed it back into either PromptMatch or ImageReward when requested.
-- Expanded prompt generation with cached `Core facts`, `Balanced`, and `Full` detail variants, kept the generated prompt in a separate scratch box instead of overwriting the active scoring prompt, and added smarter cleanup for stock lead-ins such as `In this image we can see`.
-- Updated dependencies and runtime compatibility so Florence prompt generation works alongside the existing app stack while keeping ImageReward functional under the newer `transformers` version.
-- Reworked the sidebar flow so scoring stays grouped with the active method prompts, the Florence controls stay together as their own block, and both PromptMatch and ImageReward `Run scoring` buttons are wired correctly.
-- Improved gallery/session behavior by keeping scored results visible while switching methods, preserving prompt-generation state per preview image, and making the multi-selection status text larger and easier to read.
+- Added `Fit thresh` to move the threshold so selected images switch sides automatically.
+- Added `Prompt from preview image` to generate editable prompts from the current image.
+- Prompt generation now keeps its own scratch field and no longer overwrites your active scoring prompt.
+- Improved sidebar layout and scoring button placement.
+- Switching between PromptMatch and ImageReward now keeps the current galleries visible.
 
 ## [1.1.0] - 2026-04-01
 
-- Unified the separate PromptMatch and ImageReward tools into the single `Hybrid-Scorer.py` app, with updated run scripts, screenshots, and documentation.
-- Expanded the hybrid UI with hover polish, zoom controls, green/red edge cues, and follow-up interaction fixes across the March 27-29 iteration cycle.
-- Added ConvNeXt-based PromptMatch model options, a proxy-based scoring path for PromptMatch, performance improvements, and stronger negative-prompt and redundancy handling.
-- Hardened fresh Python 3.12 setup with CUDA 12.8 defaults, dependency pinning, `protobuf` support for SigLIP, and an ImageReward install path that avoids broken source-build imports.
-- Added a repo-level `VERSION` file and app-side version loading so the UI and browser title show the current release.
-- Added GitHub-friendly release metadata files with this changelog and a documented tag workflow, and improved proxy logging so the terminal prints the proxy cache directory during runs.
+- Merged PromptMatch and ImageReward into one app.
+- Added better gallery UI, zoom, hover polish, and clearer selection cues.
+- Added more PromptMatch model choices and faster proxy-based scoring.
+- Improved setup for fresh Python 3.12 / CUDA installs.
+- Added version tracking and release files.
 
 ## [1.0.0] - 2026-03-27
 
-- Introduced the first single-app hybrid release by consolidating PromptMatch and ImageReward workflows into one Gradio interface.
-- Removed the separate `promptmatch.py` and `imagereward.py` entrypoints in favor of the shared hybrid app, with updated launcher scripts and README guidance.
-- Added the core hybrid-era UI behavior, including threshold-driven sorting, zoom controls, green/red edge cues, hover polish, and follow-up UI fixes that shaped the first unified app experience.
-- Carried forward the project's CUDA-first image triage workflow, manual review controls, and export-based folder sorting inside the new one-app flow.
+- First single-app HybridScorer release.
+- Combined the old separate tools into one shared interface.
+- Added threshold-based sorting, review controls, and export folders.
 
 ## [pre-1.0] - 2026-03-26
 
-- Preserved the project's earlier experimentation in the `old/` folder, including many PromptMatch and ImageReward prototypes plus prompt-training and sorting utilities that informed the first release.
-- Landed the first working repository structure with setup scripts, dependency lists, run helpers, and the original dual-app architecture built around `promptmatch.py` and `imagereward.py`.
-- Shipped the two-app workflow with semantic matching, aesthetic ranking, sortable galleries, export folders, and multiple PromptMatch model backends across OpenAI CLIP, OpenCLIP, and SigLIP.
-- Rounded out the untagged prototype phase with README cleanup, shell-script standardization from `fish` to `sh`, Windows launcher updates, issue templates, credits, and small UI/script fixes that fed directly into `1.0.0`.
+- Early two-app prototype phase.
+- Built the first PromptMatch and ImageReward workflows.
+- Added setup scripts, sorting, export, and initial UI tooling.
