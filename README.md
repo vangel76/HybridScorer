@@ -21,33 +21,25 @@ Current version: `1.30.0` (`v1.30.0` on GitHub releases)
 | --- | --- | --- | --- |
 | `Hybrid-Scorer.py` | Switching between content matching and aesthetic ranking in one place | PromptMatch with CLIP-family models or ImageReward with optional penalty prompt | `selected` / `rejected` |
 
-## Versioning
-
-This repo now uses a simple release flow:
-
-- `VERSION` is the source of truth for the app version.
-- `CHANGELOG.md` tracks release notes.
-- Git tags should match the app version in `vX.Y.Z` form, for example `v1.30.0`.
-
-For the next release:
-
-```bash
-git add VERSION CHANGELOG.md README.md Hybrid-Scorer.py
-git commit -m "Release v1.30.0"
-git tag -a v1.30.0 -m "HybridScorer v1.30.0"
-git push origin main
-git push origin v1.30.0
-```
-
-After pushing the tag, create the matching GitHub Release from that tag.
 
 ## Install With Setup Scripts
 
 Set up the Python virtual environment first. You need to do this before trying to run the app.
 
+### Windows Setup Script
+
+Use [setup-venv312-windows.bat](setup-venv312-windows.bat) 
+
+to create Python virtual environment needed. It will install Python 3.12 with `winget` if missing:
+
+```bat
+setup-venv312-windows.bat
+```
 ### Linux Setup Script
 
-Use [setup-venv312.sh](setup-venv312.sh) to create `venv312`, install CUDA-enabled PyTorch, install the shared app dependencies plus the ImageReward runtime package, and verify that CUDA is available:
+Use [setup-venv312.sh](setup-venv312.sh)
+
+ To create Python virtual environment needed.
 
 ```bash
 ./setup-venv312.sh
@@ -59,15 +51,27 @@ If you also want the optional JoyCaption GGUF backend, rerun setup with:
 INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh
 ```
 
-If `venv312` was created before the CUDA 12.8 cleanup or copied from another project path, remove it once and rerun setup so the environment can be rebuilt cleanly.
+## Run
 
-### Windows Setup Script
+After the virtual environment is set up, just run the launcher script. The run scripts activate `venv312` automatically.
 
-Use [setup-venv312-windows.bat](setup-venv312-windows.bat) to create `venv312`, install CUDA-enabled PyTorch, install the shared app dependencies plus the ImageReward runtime package, verify that CUDA is available, and attempt to install Python 3.12 and Git automatically with `winget` if they are missing:
+### Windows
 
 ```bat
-setup-venv312-windows.bat
+run-Hybrid-Scorer-windows.bat
 ```
+### Linux
+
+```bash
+./run-Hybrid-Scorer.sh
+```
+
+Opens automaticaly in your browser:
+
+- `http://localhost:7862` for HybridScorer
+
+
+ 
 
 ## Model Downloads
 
@@ -84,25 +88,7 @@ Model weights are downloaded on first use only for the method and model you actu
 
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
 
-## Run
 
-After the virtual environment is set up, just run the launcher script. The run scripts activate `venv312` automatically.
-
-### Linux
-
-```bash
-./run-Hybrid-Scorer.sh
-```
-
-Open:
-
-- `http://localhost:7862` for HybridScorer
-
-### Windows
-
-```bat
-run-Hybrid-Scorer-windows.bat
-```
 
 ## Usage
 

@@ -2588,7 +2588,7 @@ def create_app():
                         elem_id="hy-folder",
                     )
 
-                with gr.Accordion("2. Method settings", open=True):
+                with gr.Accordion("2. SCORING & Method/Settings", open=True):
                     with gr.Group(visible=True) as promptmatch_group:
                         model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
                         pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
@@ -2645,7 +2645,7 @@ def create_app():
                         )
                         insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
-                with gr.Accordion("3. Thresholds", open=False):
+                with gr.Accordion("3. Thresholds", open=True):
                     hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
                     main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
                     aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
