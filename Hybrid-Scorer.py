@@ -2669,6 +2669,7 @@ def create_app():
         thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
         mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
 
+<<<<<<< HEAD
         with gr.Group(elem_classes=["top-controls-shell"]):
             with gr.Tabs(elem_id="hy-top-tabs"):
                 with gr.Tab("Setup"):
@@ -2692,6 +2693,14 @@ def create_app():
                                 placeholder=folder_placeholder(),
                                 elem_id="hy-folder",
                             )
+=======
+                with gr.Accordion("2. SCORING & Method/Settings", open=True):
+                    with gr.Group(visible=True) as promptmatch_group:
+                        model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
+                        pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
+                        neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
+                        promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
+>>>>>>> 1f179c3 (pre update)
 
                 with gr.Tab("Scoring + Prompt from preview"):
                     with gr.Row(equal_height=False):
@@ -2760,6 +2769,7 @@ def create_app():
                                 with gr.Column(scale=2, min_width=170):
                                     insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
+<<<<<<< HEAD
                 with gr.Tab("Export"):
                     with gr.Row(equal_height=False):
                         with gr.Column(scale=0, min_width=180, elem_classes=["tab-panel-card"]):
@@ -2770,6 +2780,9 @@ def create_app():
         with gr.Group(elem_id="hy-threshold-panel", elem_classes=["threshold-strip"]):
             with gr.Row(equal_height=False):
                 with gr.Column(scale=2, min_width=280):
+=======
+                with gr.Accordion("3. Thresholds", open=True):
+>>>>>>> 1f179c3 (pre update)
                     hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
                 with gr.Column(scale=5, min_width=520):
                     with gr.Row(equal_height=False):
