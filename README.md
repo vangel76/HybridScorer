@@ -100,11 +100,11 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 - Choose a method.
 - Use **PromptMatch** for subject, concept, or attribute matching.
 - Use **ImageReward** for aesthetic, style, and overall preference sorting.
-- Enter your prompt settings in the top **Scoring + Prompt from preview** tab.
+- Enter your prompt settings.
 - Click **Run scoring**.
 - Review the `SELECTED` and `REJECTED` galleries.
-- Preview an image, open the top **Scoring + Prompt from preview** tab, and click **Generate prompt from preview** if you want the app to draft a prompt you can edit and reuse.
-- Adjust the always-visible threshold strip or click directly on the histogram to refine the split.
+- Preview an image and click **Generate prompt from preview** if you want the app to draft a prompt you can edit and reuse.
+- Adjust the threshold sliders or click directly on the histogram to refine the split.
 - Leave **Use proxies for gallery display** enabled for large folders if you want much faster gallery refreshes.
 - Manually move exceptions between buckets if needed.
 - Click **Export folders** to losslessly copy the final result into `selected/` and `rejected/`.
@@ -114,7 +114,6 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 Use the prompt-generation utility when you want the app to draft a generation or edit prompt from one image you already like.
 
 - Click any thumbnail so it becomes the current preview image.
-- Open the top **Scoring + Prompt from preview** tab.
 - Choose a **Prompt generator**. `Florence-2` is lighter. `JoyCaption Beta One` is heavier but usually better on NSFW or more explicit content. `JoyCaption Beta One GGUF (Q4_K_M)` is the optional lower-VRAM backend.
 - Click **Generate prompt from preview**.
 - The app writes the result only into the editable **Generated prompt** box.
@@ -269,7 +268,7 @@ CUDA is mandatory for this project. The app is meant to rate and sort many image
 
 ## Screenshots
 
-`Hybrid-Scorer.py` lets you switch between PromptMatch for content matching and ImageReward for aesthetic scoring inside one shared workflow, with prompt drafting shown side by side with scoring in the combined **Scoring + Prompt from preview** tab.
+`Hybrid-Scorer.py` lets you switch between PromptMatch for content matching and ImageReward for aesthetic scoring inside one shared workflow.
 
 ![HybridScorer UI](screenshots/HybridScorer.jpg)
 
