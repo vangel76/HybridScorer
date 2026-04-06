@@ -2457,14 +2457,42 @@ def create_app():
     .gradio-container { max-width: 100% !important; padding: 8px 12px !important; }
     .main { max-width: 100% !important; }
     footer { display: none !important; }
+    .app-header {
+        display:flex;
+        align-items:baseline;
+        justify-content:space-between;
+        gap:12px;
+        margin-bottom:8px;
+        flex-wrap:wrap;
+    }
     h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66; text-transform:uppercase; margin:0; font-size:1.4rem; }
-    .subhead { color:#667755; font-family:monospace; font-size:.78em; margin-top:3px; }
-    .sidebar-box { background:#171722; border:1px solid #2c2c39; border-radius:10px; padding:12px; }
-    .sidebar-box .gr-accordion { margin-bottom:10px !important; border:1px solid #2c2c39 !important; border-radius:8px !important; background:#151520 !important; }
-    .sidebar-box .gr-accordion summary, .sidebar-box .gr-accordion button { font-family:monospace !important; font-size:.9rem !important; color:#d7dbc8 !important; }
-    .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:8px; padding:6px 9px; }
-    .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
-    .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
+    .header-meta {
+        color:#667755;
+        font-family:monospace;
+        font-size:.78rem;
+        white-space:nowrap;
+        margin-left:auto;
+    }
+    .top-controls-shell, .threshold-strip {
+        background:#171722;
+        border:1px solid #2c2c39;
+        border-radius:10px;
+        padding:10px;
+        margin-bottom:10px;
+    }
+    .top-controls-shell .gr-group,
+    .top-controls-shell .block,
+    .threshold-strip .gr-group,
+    .threshold-strip .block { gap:8px !important; }
+    .top-controls-shell .gr-form,
+    .top-controls-shell .gradio-row,
+    .threshold-strip .gr-form,
+    .threshold-strip .gradio-row { gap:8px !important; }
+    .top-controls-shell label span, .threshold-strip label span { font-size:.84rem !important; }
+    .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:8px; padding:5px 8px; margin-bottom:2px !important; }
+    .method-note p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.28 !important; color:#8e9d80 !important; }
+    .promptgen-status { background:#121823; border:1px solid #293449; border-radius:8px; padding:5px 8px; }
+    .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.72rem !important; line-height:1.28 !important; color:#8ec5ff !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
     .hist-img img { cursor:crosshair !important; border-radius:6px; }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
@@ -2472,8 +2500,47 @@ def create_app():
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
     .move-col button { width:100%; }
     .sel-info p { font-family:monospace !important; font-size:1.08em !important; font-weight:700 !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
-    #hy-folder textarea, #hy-folder input { min-height:60px !important; font-size:.96rem !important; }
-    #hy-run-pm, #hy-run-ir, #hy-export { border-radius:8px !important; }
+    #hy-folder textarea, #hy-folder input { min-height:40px !important; font-size:.92rem !important; }
+    #hy-top-tabs {
+        border:1px solid #2b2f3b !important;
+        border-radius:8px !important;
+        background:#11131a !important;
+        padding:8px !important;
+    }
+    #hy-top-tabs .tab-nav {
+        gap:6px !important;
+        padding:0 0 8px 0 !important;
+        border-bottom:1px solid #252b36 !important;
+        margin-bottom:8px !important;
+    }
+    #hy-top-tabs .tab-nav button {
+        font-family:monospace !important;
+        font-size:.78rem !important;
+        line-height:1.1 !important;
+        border-radius:7px !important;
+        border:1px solid #313646 !important;
+        background:#161924 !important;
+        color:#bfc7d4 !important;
+        padding:7px 10px !important;
+        min-height:0 !important;
+    }
+    #hy-top-tabs .tab-nav button.selected {
+        background:#243147 !important;
+        color:#e4efff !important;
+        border-color:#5677a8 !important;
+    }
+    #hy-top-tabs .tabitem { padding:2px 0 0 0 !important; }
+    .tab-panel-card {
+        background:#131722;
+        border:1px solid #262c38;
+        border-radius:8px;
+        padding:8px;
+    }
+    .threshold-strip .gradio-row { align-items:end !important; }
+    #hy-threshold-panel .wrap-inner { gap:8px !important; }
+    .compact-actions { align-items:end !important; }
+    .compact-actions button { width:100%; }
+    #hy-run-pm, #hy-run-ir, #hy-export, #hy-generate-prompt, #hy-insert-prompt { border-radius:8px !important; }
     #hy-run-pm, #hy-run-pm button, #hy-run-ir, #hy-run-ir button, #hy-export, #hy-export button {
         background:#2f8f45 !important;
         background-image:none !important;
@@ -2482,7 +2549,7 @@ def create_app():
         font-weight:700 !important;
         box-shadow:0 0 0 1px rgba(25, 55, 30, 0.15) inset !important;
     }
-    #hy-run-pm button, #hy-run-ir button, #hy-export button {
+    #hy-run-pm button, #hy-run-ir button, #hy-export button, #hy-generate-prompt button, #hy-insert-prompt button {
         min-height:40px !important;
         border-radius:8px !important;
     }
@@ -2493,6 +2560,38 @@ def create_app():
     #hy-run-pm button:disabled, #hy-run-ir button:disabled, #hy-export button:disabled {
         background:#256d35 !important;
         color:#d8ead8 !important;
+    }
+    #hy-generate-prompt, #hy-generate-prompt button {
+        background:#2b6dc9 !important;
+        background-image:none !important;
+        border:1px solid #6ea7ff !important;
+        color:#f4f9ff !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(19, 42, 79, 0.2) inset !important;
+    }
+    #hy-generate-prompt:hover, #hy-generate-prompt button:hover {
+        background:#347ce2 !important;
+        background-image:none !important;
+    }
+    #hy-generate-prompt button:disabled {
+        background:#254f86 !important;
+        color:#d9e8ff !important;
+    }
+    #hy-insert-prompt, #hy-insert-prompt button {
+        background:#8d5a19 !important;
+        background-image:none !important;
+        border:1px solid #d5a257 !important;
+        color:#fff7ec !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(74, 45, 11, 0.2) inset !important;
+    }
+    #hy-insert-prompt:hover, #hy-insert-prompt button:hover {
+        background:#a56b22 !important;
+        background-image:none !important;
+    }
+    #hy-insert-prompt button:disabled {
+        background:#704710 !important;
+        color:#f4e4ce !important;
     }
     #hy-zoom {
         background:transparent !important;
@@ -2561,125 +2660,150 @@ def create_app():
 
     with gr.Blocks(title=APP_WINDOW_TITLE) as demo:
         gr.HTML("""
-<h1>⬡ {title}</h1>
-<div class='subhead'>PromptMatch + ImageReward in one UI &middot; quick image triage &middot; {tag} &middot; created by vangel</div>
-""".format(title=APP_DISPLAY_NAME, tag=APP_GITHUB_TAG))
+<div class='app-header'>
+  <h1>{title}</h1>
+  <div class='header-meta'>{tag} &middot; created by vangel</div>
+</div>
+""".format(title=APP_NAME, tag=APP_GITHUB_TAG))
 
-        with gr.Row(equal_height=False):
-            with gr.Column(scale=1, min_width=330, elem_classes=["sidebar-box"]):
-                thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
-                mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
-                with gr.Accordion("1. Setup", open=True):
-                    method_dd = gr.Dropdown(
-                        choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
-                        value=METHOD_PROMPTMATCH,
-                        label="Method",
-                        elem_id="hy-method",
-                    )
-                    method_note = gr.Markdown(
-                        "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt.",
-                        elem_classes=["method-note"],
-                    )
-                    folder_input = gr.Textbox(
-                        value=source_dir,
-                        label="Image folder - paste a path here",
-                        lines=2,
-                        placeholder=folder_placeholder(),
-                        elem_id="hy-folder",
-                    )
+        thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
+        mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
 
-                with gr.Accordion("2. SCORING & Method/Settings", open=True):
-                    with gr.Group(visible=True) as promptmatch_group:
-                        model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
-                        pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
-                        neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
-                        promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
+        with gr.Group(elem_classes=["top-controls-shell"]):
+            with gr.Tabs(elem_id="hy-top-tabs"):
+                with gr.Tab("Setup"):
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=1, min_width=260, elem_classes=["tab-panel-card"]):
+                            method_dd = gr.Dropdown(
+                                choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
+                                value=METHOD_PROMPTMATCH,
+                                label="Method",
+                                elem_id="hy-method",
+                            )
+                            method_note = gr.Markdown(
+                                "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt.",
+                                elem_classes=["method-note"],
+                            )
+                        with gr.Column(scale=2, min_width=420, elem_classes=["tab-panel-card"]):
+                            folder_input = gr.Textbox(
+                                value=source_dir,
+                                label="Image folder - paste a path here",
+                                lines=1,
+                                placeholder=folder_placeholder(),
+                                elem_id="hy-folder",
+                            )
 
-                    with gr.Group(visible=False) as imagereward_group:
-                        ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=3, elem_id="hy-ir-pos")
-                        ir_negative_prompt_tb = gr.Textbox(
-                            value=DEFAULT_IR_NEGATIVE_PROMPT,
-                            label="Experimental penalty prompt",
-                            lines=2,
-                            placeholder="Optional: undesirable style or mood to subtract",
-                            elem_id="hy-ir-neg",
-                        )
-                        ir_penalty_weight_tb = gr.Slider(
-                            value=DEFAULT_IR_PENALTY_WEIGHT,
-                            label="Penalty weight",
-                            minimum=0.0,
-                            maximum=4.0,
-                            step=0.1,
-                            elem_id="hy-ir-weight",
-                        )
-                        imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
+                with gr.Tab("Scoring + Prompt from preview"):
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=1, min_width=420, elem_classes=["tab-panel-card"]):
+                            with gr.Group(visible=True) as promptmatch_group:
+                                model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
+                                pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
+                                neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
+                                promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
 
-                    with gr.Group():
-                        gr.Markdown("Prompt from preview image", elem_classes=["method-note"])
-                        prompt_generator_dd = gr.Dropdown(
-                            choices=list(PROMPT_GENERATOR_CHOICES),
-                            value=state["prompt_generator"],
-                            label="Prompt generator",
-                            elem_id="hy-prompt-generator",
-                        )
-                        generate_prompt_btn = gr.Button("Generate prompt from preview", elem_id="hy-generate-prompt")
-                        promptgen_status_md = gr.Markdown(
-                            state["generated_prompt_status"],
-                            elem_classes=["promptgen-status"],
-                            elem_id="hy-promptgen-status",
-                        )
-                        generated_prompt_tb = gr.Textbox(
-                            value=state["generated_prompt"],
-                            label="Generated prompt",
-                            lines=4,
-                            placeholder="Preview an image, then generate an editable prompt here.",
-                            elem_id="hy-generated-prompt",
-                        )
-                        generated_prompt_detail_slider = gr.Slider(
-                            minimum=1,
-                            maximum=3,
-                            value=DEFAULT_GENERATED_PROMPT_DETAIL,
-                            step=1,
-                            label="Prompt detail",
-                            elem_id="hy-generated-prompt-detail",
-                        )
-                        insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
+                            with gr.Group(visible=False) as imagereward_group:
+                                ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=2, elem_id="hy-ir-pos")
+                                ir_negative_prompt_tb = gr.Textbox(
+                                    value=DEFAULT_IR_NEGATIVE_PROMPT,
+                                    label="Experimental penalty prompt",
+                                    lines=1,
+                                    placeholder="Optional: undesirable style or mood to subtract",
+                                    elem_id="hy-ir-neg",
+                                )
+                                ir_penalty_weight_tb = gr.Slider(
+                                    value=DEFAULT_IR_PENALTY_WEIGHT,
+                                    label="Penalty weight",
+                                    minimum=0.0,
+                                    maximum=4.0,
+                                    step=0.1,
+                                    elem_id="hy-ir-weight",
+                                )
+                                imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
+                        with gr.Column(scale=1, min_width=420, elem_classes=["tab-panel-card"]):
+                            gr.Markdown(
+                                "Generate an editable prompt from the current preview image, then reinsert it into the active method.",
+                                elem_classes=["method-note"],
+                            )
+                            with gr.Row(equal_height=True, elem_classes=["compact-actions"]):
+                                with gr.Column(scale=3):
+                                    prompt_generator_dd = gr.Dropdown(
+                                        choices=list(PROMPT_GENERATOR_CHOICES),
+                                        value=state["prompt_generator"],
+                                        label="Prompt generator",
+                                        elem_id="hy-prompt-generator",
+                                    )
+                                with gr.Column(scale=2, min_width=170):
+                                    generate_prompt_btn = gr.Button("Generate prompt from preview", elem_id="hy-generate-prompt")
+                            promptgen_status_md = gr.Markdown(
+                                state["generated_prompt_status"],
+                                elem_classes=["promptgen-status"],
+                                elem_id="hy-promptgen-status",
+                            )
+                            generated_prompt_tb = gr.Textbox(
+                                value=state["generated_prompt"],
+                                label="Generated prompt",
+                                lines=3,
+                                placeholder="Preview an image, then generate an editable prompt here.",
+                                elem_id="hy-generated-prompt",
+                            )
+                            with gr.Row(equal_height=True, elem_classes=["compact-actions"]):
+                                with gr.Column(scale=3):
+                                    generated_prompt_detail_slider = gr.Slider(
+                                        minimum=1,
+                                        maximum=3,
+                                        value=DEFAULT_GENERATED_PROMPT_DETAIL,
+                                        step=1,
+                                        label="Prompt detail",
+                                        elem_id="hy-generated-prompt-detail",
+                                    )
+                                with gr.Column(scale=2, min_width=170):
+                                    insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
-                with gr.Accordion("3. Thresholds", open=True):
+                with gr.Tab("Export"):
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=0, min_width=180, elem_classes=["tab-panel-card"]):
+                            export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
+                        with gr.Column(scale=1, min_width=420, elem_classes=["tab-panel-card"]):
+                            export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
+
+        with gr.Group(elem_id="hy-threshold-panel", elem_classes=["threshold-strip"]):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=2, min_width=280):
                     hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
-                    main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
-                    aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
-                    percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
+                with gr.Column(scale=5, min_width=520):
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=1, min_width=180):
+                            main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
+                        with gr.Column(scale=1, min_width=180):
+                            aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
+                        with gr.Column(scale=1, min_width=180):
+                            percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
                     proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
                     status_md = gr.Markdown("", elem_classes=["status-md"])
 
-                with gr.Accordion("4. Export", open=False):
-                    export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
-                    export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
-
-            with gr.Column(scale=5):
-                with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        left_head = gr.Markdown("### SELECTED")
-                    with gr.Column(scale=0, min_width=100):
-                        gr.HTML("")
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
-                            right_head = gr.Markdown("### REJECTED")
-                            with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
-                                gr.Markdown("Tiles #", elem_classes=["zoom-inline-label"])
-                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
-                    with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
-                        sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
-                        move_right_btn = gr.Button("Move →", elem_id="hy-move-right")
-                        fit_threshold_btn = gr.Button("Fit thresh", elem_id="hy-fit-threshold")
-                        move_left_btn = gr.Button("← Move", elem_id="hy-move-left")
-                        clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        right_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
+        with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
+            with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                left_head = gr.Markdown("### SELECTED")
+            with gr.Column(scale=0, min_width=100):
+                gr.HTML("")
+            with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
+                    right_head = gr.Markdown("### REJECTED")
+                    with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
+                        gr.Markdown("Tiles #", elem_classes=["zoom-inline-label"])
+                        zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
+            with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
+                sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
+                move_right_btn = gr.Button("Move →", elem_id="hy-move-right")
+                fit_threshold_btn = gr.Button("Fit thresh", elem_id="hy-fit-threshold")
+                move_left_btn = gr.Button("← Move", elem_id="hy-move-left")
+                clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
+            with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                right_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
 
         method_dd.change(
             fn=configure_controls,
