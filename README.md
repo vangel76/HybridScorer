@@ -103,7 +103,7 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 - Enter your prompt settings.
 - Click **Run scoring**.
 - Review the `SELECTED` and `REJECTED` galleries.
-- Preview an image and click **Generate prompt from preview** if you want the app to draft a prompt you can edit and reuse.
+- Preview an image and use **3. Prompt from preview image** if you want the app to draft a prompt you can edit and reuse.
 - Adjust the threshold sliders or click directly on the histogram to refine the split.
 - Leave **Use proxies for gallery display** enabled for large folders if you want much faster gallery refreshes.
 - Manually move exceptions between buckets if needed.
@@ -114,6 +114,7 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 Use the prompt-generation utility when you want the app to draft a generation or edit prompt from one image you already like.
 
 - Click any thumbnail so it becomes the current preview image.
+- Open **3. Prompt from preview image** in the sidebar.
 - Choose a **Prompt generator**. `Florence-2` is lighter. `JoyCaption Beta One` is heavier but usually better on NSFW or more explicit content. `JoyCaption Beta One GGUF (Q4_K_M)` is the optional lower-VRAM backend.
 - Click **Generate prompt from preview**.
 - The app writes the result only into the editable **Generated prompt** box.

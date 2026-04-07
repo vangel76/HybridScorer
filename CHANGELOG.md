@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.40.0] - 2026-04-07
+
+- Compacted the sidebar UI to remove wasted padding, borders, gutters, and empty space.
+- Simplified the header so it shows `HybridScorer` with version and creator on one line.
+- Moved `Prompt from preview image` into its own dedicated collapsible section under scoring.
+- Improved button clarity with stronger color coding for prompt generation, insert, move, fit-threshold, and clear-status actions.
+- Added distinct accordion header colors so sidebar sections are easier to scan.
+- Enlarged and clarified the manual move button arrows.
+- Made the galleries use more of the viewport height and reduced excess outer page margins.
+- Added drag-and-drop moving between the `SELECTED` and `REJECTED` galleries.
+
 ## [1.30.0] - 2026-04-03
 
 - Added `Prompt from preview image` model selection:

@@ -1101,6 +1101,7 @@ def create_app():
         "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
         "generated_prompt_variants": {},
         "generated_prompt_status": "Preview an image, then generate a prompt from it.",
+        "zoom_columns": 5,
     }
 
     def sync_promptmatch_proxy_cache(folder):
@@ -1145,6 +1146,7 @@ def create_app():
     }}
   }};
   let repaintTimers = [];
+  let activeDrag = null;
   const scheduleRepaint = () => {{
     // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
     ensureThumbBehavior();
@@ -1160,6 +1162,11 @@ def create_app():
     const markedState = readMarkedState();
     const allMarked = new Set([...(markedState.left || []), ...(markedState.right || [])]);
     const heldSet = new Set(markedState.held || []);
+    const clearDropTarget = (root) => {{
+      if (!root) return;
+      root.style.boxShadow = "";
+      root.style.borderColor = "";
+    }};
     for (const [galleryId, side] of [["hy-left-gallery", "left"], ["hy-right-gallery", "right"]]) {{
       const root = document.getElementById(galleryId);
       if (!root) continue;
@@ -1198,30 +1205,91 @@ def create_app():
         }}, true);
         root.dataset.hyShiftHooked = "1";
       }}
+      if (!root.dataset.hyDropHooked) {{
+        root.addEventListener("dragenter", (event) => {{
+          if (!activeDrag || activeDrag.side === side) return;
+          event.preventDefault();
+          root.style.boxShadow = "0 0 0 3px rgba(125, 168, 255, 0.35)";
+          root.style.borderColor = "#7da8ff";
+        }});
+        root.addEventListener("dragover", (event) => {{
+          if (!activeDrag || activeDrag.side === side) return;
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        }});
+        root.addEventListener("dragleave", (event) => {{
+          if (!root.contains(event.relatedTarget)) {{
+            clearDropTarget(root);
+          }}
+        }});
+        root.addEventListener("drop", (event) => {{
+          if (!activeDrag || activeDrag.side === side) return;
+          event.preventDefault();
+          clearDropTarget(root);
+          pushThumbAction(`dropjson:${{JSON.stringify({{
+            source_side: activeDrag.side,
+            source_index: activeDrag.index,
+            target_side: side,
+            fnames: activeDrag.fnames || [],
+            ts: Date.now(),
+          }})}}`);
+          activeDrag = null;
+          scheduleRepaint();
+        }});
+        root.dataset.hyDropHooked = "1";
+      }}
       const thumbButtons = Array.from(root.querySelectorAll("button")).filter((btn) => {{
         const img = btn.querySelector("img");
         const inDialog = !!btn.closest('[role="dialog"], [aria-modal="true"]');
         const hasCaption = !!(btn.querySelector(".caption-label span") || btn.querySelector('[class*="caption"]'));
         return !inDialog && !!img && hasCaption;
       }});
-      for (const card of thumbButtons) {{
+      thumbButtons.forEach((card, index) => {{
         const img = card.querySelector("img");
-        if (!img) continue;
+        if (!img) return;
         const captionEl = card.querySelector(".caption-label span") || card.querySelector('[class*="caption"]');
         const captionText = captionEl ? (captionEl.textContent || "") : "";
         const held = captionText.includes("✋ ");
         const parts = captionText.split("|");
         const fname = parts.length ? parts[parts.length - 1].trim() : "";
         const marked = (markedState[side] || []).includes(fname);
-        if (!card) continue;
         card.style.position = "relative";
         card.style.boxSizing = "border-box";
         card.style.outline = marked ? "3px solid #58bb73" : (held ? "3px solid #dd3322" : "");
         card.style.outlineOffset = (marked || held) ? "-3px" : "";
         card.style.boxShadow = marked ? "inset 0 0 0 1px rgba(88,187,115,0.35)" : "";
+        card.style.cursor = "grab";
+        card.draggable = true;
+        card.dataset.hySide = side;
+        card.dataset.hyIndex = String(index);
+        card.dataset.hyFname = fname;
+        if (!card.dataset.hyDragHooked) {{
+          card.addEventListener("dragstart", (event) => {{
+            const dragSide = card.dataset.hySide || side;
+            const dragIndex = Number.parseInt(card.dataset.hyIndex || String(index), 10);
+            const dragFname = card.dataset.hyFname || fname;
+            const currentMarkedState = readMarkedState();
+            const markedNames = Array.isArray(currentMarkedState[dragSide]) ? currentMarkedState[dragSide] : [];
+            const isMarked = markedNames.includes(dragFname);
+            const dragNames = isMarked && markedNames.length > 1 ? markedNames.slice() : [dragFname];
+            activeDrag = {{ side: dragSide, index: dragIndex, fnames: dragNames }};
+            card.style.opacity = "0.55";
+            if (event.dataTransfer) {{
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", dragNames.join("\\n"));
+            }}
+          }});
+          card.addEventListener("dragend", () => {{
+            card.style.opacity = "";
+            activeDrag = null;
+            clearDropTarget(document.getElementById("hy-left-gallery"));
+            clearDropTarget(document.getElementById("hy-right-gallery"));
+          }});
+          card.dataset.hyDragHooked = "1";
+        }}
         img.style.outline = "";
         img.style.outlineOffset = "";
-      }}
+      }});
     }}
     for (const el of document.querySelectorAll('[data-hy-preview-border="1"]')) {{
       el.style.outline = "";
@@ -1328,8 +1396,8 @@ def create_app():
         "hy-use-proxy-display": "Show gallery images from cached proxies for faster browsing on large folders.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
-        "hy-left-gallery": "Images currently in the left bucket. Click one to select it.",
-        "hy-right-gallery": "Images currently in the right bucket. Click one to select it.",
+        "hy-left-gallery": "Images currently in the left bucket. Click one to select it, Shift+click to mark, or drag an image to the other gallery.",
+        "hy-right-gallery": "Images currently in the right bucket. Click one to select it, Shift+click to mark, or drag an image to the other gallery.",
         "hy-move-right": "Move all marked SELECTED images into REJECTED as manual overrides.",
         "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
         "hy-fit-threshold": "Adjust the score threshold just enough so the marked images flip to the other bucket. Uses the previewed image if nothing is marked.",
@@ -1487,7 +1555,7 @@ def create_app():
         left_count = len(state.get("left_marked", []))
         right_count = len(state.get("right_marked", []))
         if not left_count and not right_count:
-            return "Shift+click thumbnails to mark multiple images."
+            return "Shift+click to mark multiple images, or drag one image or a marked batch between galleries."
         return f"Marked: **{left_count}** in SELECTED, **{right_count}** in REJECTED"
 
     def marked_state_json():
@@ -2262,15 +2330,44 @@ def create_app():
         )
 
     def handle_thumb_action(action, main_threshold, aux_threshold):
-        # Custom JS reports both normal preview clicks and shift-click bulk marking.
+        # Custom JS reports preview clicks, shift-click bulk marking, and drag-drop moves.
         if not action:
             return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        if str(action).startswith("dropjson:"):
+            try:
+                payload = json.loads(str(action)[9:])
+                side = payload["source_side"]
+                index = int(payload["source_index"])
+                target_side = payload["target_side"]
+                drop_fnames = [str(name) for name in payload.get("fnames", []) if str(name)]
+            except Exception:
+                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
+            items = left_items if side == "left" else right_items
+            if 0 <= index < len(items) and target_side in ("left", "right") and target_side != side:
+                fallback_fname = os.path.basename(items[index][0])
+                move_fnames = drop_fnames or [fallback_fname]
+                available_names = {os.path.basename(path) for path, _ in items}
+                move_fnames = [fname for fname in move_fnames if fname in available_names]
+                if not move_fnames:
+                    move_fnames = [fallback_fname]
+                left_name, right_name, _, _ = method_labels(state["method"])
+                target_label = left_name if target_side == "left" else right_name
+                for fname in move_fnames:
+                    state["overrides"][fname] = target_label
+                state["left_marked"] = [name for name in state["left_marked"] if name not in move_fnames]
+                state["right_marked"] = [name for name in state["right_marked"] if name not in move_fnames]
+                state["preview_fname"] = move_fnames[0]
+            return current_view(main_threshold, aux_threshold)
+        parts = str(action).split(":")
+        verb = parts[0] if parts else ""
+        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
+
         try:
-            verb, side, raw_index, _ = str(action).split(":", 3)
+            _, side, raw_index, _ = parts
             index = int(raw_index)
         except Exception:
             return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
-        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         items = left_items if side == "left" else right_items
         if 0 <= index < len(items):
             fname = os.path.basename(items[index][0])
@@ -2378,9 +2475,10 @@ def create_app():
         return (*current_view(new_threshold, aux_threshold), gr.update(value=new_threshold))
 
     def update_zoom(zoom_value, main_threshold, aux_threshold):
-        # Gallery zoom is implemented by changing the number of columns in both galleries.
+        # Invert the slider so dragging right makes thumbnails larger by reducing columns.
         try:
-            state["zoom_columns"] = max(2, min(10, int(zoom_value)))
+            slider_value = max(2, min(10, int(zoom_value)))
+            state["zoom_columns"] = 12 - slider_value
         except Exception:
             state["zoom_columns"] = 5
         left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(main_threshold, aux_threshold)
@@ -2453,16 +2551,76 @@ def create_app():
 
     css = """
     body, .gradio-container { background:#0d0d11 !important; color:#ddd8cc !important; }
+    body { margin:0 !important; }
     .gr-block,.gr-box,.panel { background:#14141c !important; border-color:#252530 !important; }
-    .gradio-container { max-width: 100% !important; padding: 8px 12px !important; }
-    .main { max-width: 100% !important; }
+    .gradio-container { max-width: 100% !important; margin:0 !important; padding: 6px 2px !important; }
+    .main { max-width: 100% !important; padding:0 !important; }
+    .main > .gradio-row { gap:6px !important; }
     footer { display: none !important; }
+    .app-header {
+        display:flex;
+        align-items:baseline;
+        justify-content:space-between;
+        gap:12px;
+        margin-bottom:8px;
+        flex-wrap:wrap;
+    }
     h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66; text-transform:uppercase; margin:0; font-size:1.4rem; }
-    .subhead { color:#667755; font-family:monospace; font-size:.78em; margin-top:3px; }
-    .sidebar-box { background:#171722; border:1px solid #2c2c39; border-radius:10px; padding:12px; }
-    .sidebar-box .gr-accordion { margin-bottom:10px !important; border:1px solid #2c2c39 !important; border-radius:8px !important; background:#151520 !important; }
+    .header-meta { color:#667755; font-family:monospace; font-size:.78rem; white-space:nowrap; margin-left:auto; }
+    .sidebar-box { background:#171722; border:1px solid #2c2c39; border-radius:6px; padding:3px; }
+    .sidebar-box .gr-accordion { margin-bottom:2px !important; border:1px solid #2c2c39 !important; border-radius:4px !important; background:#151520 !important; }
     .sidebar-box .gr-accordion summary, .sidebar-box .gr-accordion button { font-family:monospace !important; font-size:.9rem !important; color:#d7dbc8 !important; }
-    .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:8px; padding:6px 9px; }
+    .sidebar-box .gr-accordion summary { padding-top:2px !important; padding-bottom:2px !important; min-height:0 !important; }
+    .sidebar-box .gr-accordion .label-wrap { padding-top:0 !important; padding-bottom:0 !important; }
+    .sidebar-box .gr-accordion .content { padding-top:2px !important; padding-bottom:2px !important; }
+    .sidebar-box .gr-accordion summary,
+    .sidebar-box .gr-accordion .label-wrap,
+    .sidebar-box .gr-accordion button {
+        background:linear-gradient(180deg, rgba(38, 43, 56, 0.95), rgba(27, 31, 41, 0.95)) !important;
+        border-bottom:1px solid rgba(255, 255, 255, 0.04) !important;
+    }
+    #hy-acc-setup {
+        border-color:#455774 !important;
+        box-shadow:inset 3px 0 0 #7da8ff !important;
+    }
+    #hy-acc-setup summary, #hy-acc-setup .label-wrap, #hy-acc-setup button {
+        background:linear-gradient(180deg, rgba(39, 49, 66, 0.98), rgba(26, 33, 46, 0.98)) !important;
+    }
+    #hy-acc-scoring {
+        border-color:#53684e !important;
+        box-shadow:inset 3px 0 0 #7fb06d !important;
+    }
+    #hy-acc-scoring summary, #hy-acc-scoring .label-wrap, #hy-acc-scoring button {
+        background:linear-gradient(180deg, rgba(42, 57, 46, 0.98), rgba(28, 38, 31, 0.98)) !important;
+    }
+    #hy-acc-prompt {
+        border-color:#2f6971 !important;
+        box-shadow:inset 3px 0 0 #58c7d6 !important;
+    }
+    #hy-acc-prompt summary, #hy-acc-prompt .label-wrap, #hy-acc-prompt button {
+        background:linear-gradient(180deg, rgba(22, 56, 60, 0.98), rgba(14, 38, 41, 0.98)) !important;
+    }
+    #hy-acc-thresholds {
+        border-color:#67507e !important;
+        box-shadow:inset 3px 0 0 #b590e8 !important;
+    }
+    #hy-acc-thresholds summary, #hy-acc-thresholds .label-wrap, #hy-acc-thresholds button {
+        background:linear-gradient(180deg, rgba(49, 36, 58, 0.98), rgba(33, 24, 39, 0.98)) !important;
+    }
+    #hy-acc-export {
+        border-color:#7a6930 !important;
+        box-shadow:inset 3px 0 0 #d9c06a !important;
+    }
+    #hy-acc-export summary, #hy-acc-export .label-wrap, #hy-acc-export button {
+        background:linear-gradient(180deg, rgba(61, 54, 24, 0.98), rgba(43, 38, 17, 0.98)) !important;
+    }
+    .sidebar-box .gr-group, .sidebar-box .block { gap:2px !important; }
+    .sidebar-box .gr-form, .sidebar-box .gradio-row { gap:2px !important; }
+    .sidebar-box label { margin-bottom:1px !important; }
+    .sidebar-box label span { margin-bottom:0 !important; line-height:1.05 !important; }
+    .sidebar-box .form > *, .sidebar-box .wrap > * { margin-top:0 !important; margin-bottom:0 !important; }
+    .sidebar-box .gradio-container-4-0, .sidebar-box .gradio-container-3-0 { gap:2px !important; }
+    .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:4px; padding:2px 4px; }
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
     .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
@@ -2471,9 +2629,58 @@ def create_app():
     .grid-wrap .caption-label span, .grid-wrap [class*="caption"] { font-family:monospace !important; font-size:.72em !important; color:#8899aa !important; }
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
     .move-col button { width:100%; }
+    #hy-move-left button, #hy-move-right button {
+        font-size:1.12rem !important;
+        line-height:1.05 !important;
+        letter-spacing:.01em !important;
+    }
+    #hy-move-left, #hy-move-left button {
+        background:#2f8f45 !important;
+        background-image:none !important;
+        border:1px solid #58bb73 !important;
+        color:#f3fff2 !important;
+        font-weight:700 !important;
+    }
+    #hy-move-left:hover, #hy-move-left button:hover {
+        background:#38a14f !important;
+        background-image:none !important;
+    }
+    #hy-move-right, #hy-move-right button {
+        background:#aa3a3a !important;
+        background-image:none !important;
+        border:1px solid #dc7c7c !important;
+        color:#fff2f2 !important;
+        font-weight:700 !important;
+    }
+    #hy-move-right:hover, #hy-move-right button:hover {
+        background:#bf4747 !important;
+        background-image:none !important;
+    }
+    #hy-fit-threshold, #hy-fit-threshold button {
+        background:#7fbf6a !important;
+        background-image:none !important;
+        border:1px solid #b2e39d !important;
+        color:#10230f !important;
+        font-weight:700 !important;
+    }
+    #hy-fit-threshold:hover, #hy-fit-threshold button:hover {
+        background:#92cf7b !important;
+        background-image:none !important;
+    }
+    #hy-clear-status, #hy-clear-status button {
+        background:#d2b44a !important;
+        background-image:none !important;
+        border:1px solid #ecd98d !important;
+        color:#2d2408 !important;
+        font-weight:700 !important;
+    }
+    #hy-clear-status:hover, #hy-clear-status button:hover {
+        background:#dfc35a !important;
+        background-image:none !important;
+    }
     .sel-info p { font-family:monospace !important; font-size:1.08em !important; font-weight:700 !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
-    #hy-folder textarea, #hy-folder input { min-height:60px !important; font-size:.96rem !important; }
-    #hy-run-pm, #hy-run-ir, #hy-export { border-radius:8px !important; }
+    #hy-folder textarea, #hy-folder input { min-height:36px !important; font-size:.96rem !important; }
+    #hy-run-pm, #hy-run-ir, #hy-export, #hy-generate-prompt, #hy-insert-prompt { border-radius:6px !important; }
     #hy-run-pm, #hy-run-pm button, #hy-run-ir, #hy-run-ir button, #hy-export, #hy-export button {
         background:#2f8f45 !important;
         background-image:none !important;
@@ -2482,9 +2689,9 @@ def create_app():
         font-weight:700 !important;
         box-shadow:0 0 0 1px rgba(25, 55, 30, 0.15) inset !important;
     }
-    #hy-run-pm button, #hy-run-ir button, #hy-export button {
-        min-height:40px !important;
-        border-radius:8px !important;
+    #hy-run-pm button, #hy-run-ir button, #hy-export button, #hy-generate-prompt button, #hy-insert-prompt button {
+        min-height:34px !important;
+        border-radius:6px !important;
     }
     #hy-run-pm:hover, #hy-run-pm button:hover, #hy-run-ir:hover, #hy-run-ir button:hover, #hy-export:hover, #hy-export button:hover {
         background:#38a14f !important;
@@ -2493,6 +2700,38 @@ def create_app():
     #hy-run-pm button:disabled, #hy-run-ir button:disabled, #hy-export button:disabled {
         background:#256d35 !important;
         color:#d8ead8 !important;
+    }
+    #hy-generate-prompt, #hy-generate-prompt button {
+        background:#2b6dc9 !important;
+        background-image:none !important;
+        border:1px solid #6ea7ff !important;
+        color:#f4f9ff !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(19, 42, 79, 0.2) inset !important;
+    }
+    #hy-generate-prompt:hover, #hy-generate-prompt button:hover {
+        background:#347ce2 !important;
+        background-image:none !important;
+    }
+    #hy-generate-prompt button:disabled {
+        background:#254f86 !important;
+        color:#d9e8ff !important;
+    }
+    #hy-insert-prompt, #hy-insert-prompt button {
+        background:#8d5a19 !important;
+        background-image:none !important;
+        border:1px solid #d5a257 !important;
+        color:#fff7ec !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(74, 45, 11, 0.2) inset !important;
+    }
+    #hy-insert-prompt:hover, #hy-insert-prompt button:hover {
+        background:#a56b22 !important;
+        background-image:none !important;
+    }
+    #hy-insert-prompt button:disabled {
+        background:#704710 !important;
+        color:#f4e4ce !important;
     }
     #hy-zoom {
         background:transparent !important;
@@ -2543,9 +2782,9 @@ def create_app():
     .zoom-inline-wrap { align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; }
     .zoom-inline-label {
         flex:0 0 auto;
-        overflow:hidden !important;
-        min-width:34px !important;
-        max-width:34px !important;
+        overflow:visible !important;
+        min-width:65px !important;
+        max-width:65px !important;
         line-height:1 !important;
     }
     .zoom-inline-label p {
@@ -2561,15 +2800,17 @@ def create_app():
 
     with gr.Blocks(title=APP_WINDOW_TITLE) as demo:
         gr.HTML("""
-<h1>⬡ {title}</h1>
-<div class='subhead'>PromptMatch + ImageReward in one UI &middot; quick image triage &middot; {tag} &middot; created by vangel</div>
-""".format(title=APP_DISPLAY_NAME, tag=APP_GITHUB_TAG))
+<div class='app-header'>
+  <h1>{title}</h1>
+  <div class='header-meta'>{tag} &middot; created by vangel</div>
+</div>
+""".format(title=APP_NAME, tag=APP_GITHUB_TAG))
 
         with gr.Row(equal_height=False):
-            with gr.Column(scale=1, min_width=330, elem_classes=["sidebar-box"]):
+            with gr.Column(scale=1, min_width=300, elem_classes=["sidebar-box"]):
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
-                with gr.Accordion("1. Setup", open=True):
+                with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
                     method_dd = gr.Dropdown(
                         choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
                         value=METHOD_PROMPTMATCH,
@@ -2588,7 +2829,7 @@ def create_app():
                         elem_id="hy-folder",
                     )
 
-                with gr.Accordion("2. SCORING & Method/Settings", open=True):
+                with gr.Accordion("2. SCORING & Method/Settings", open=True, elem_id="hy-acc-scoring"):
                     with gr.Group(visible=True) as promptmatch_group:
                         model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
                         pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
@@ -2614,8 +2855,8 @@ def create_app():
                         )
                         imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
 
+                with gr.Accordion("3. Prompt from preview image", open=False, elem_id="hy-acc-prompt"):
                     with gr.Group():
-                        gr.Markdown("Prompt from preview image", elem_classes=["method-note"])
                         prompt_generator_dd = gr.Dropdown(
                             choices=list(PROMPT_GENERATOR_CHOICES),
                             value=state["prompt_generator"],
@@ -2645,7 +2886,7 @@ def create_app():
                         )
                         insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
-                with gr.Accordion("3. Thresholds", open=True):
+                with gr.Accordion("4. Thresholds", open=True, elem_id="hy-acc-thresholds"):
                     hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
                     main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
                     aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
@@ -2653,7 +2894,7 @@ def create_app():
                     proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
                     status_md = gr.Markdown("", elem_classes=["status-md"])
 
-                with gr.Accordion("4. Export", open=False):
+                with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export"):
                     export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
                     export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
 
@@ -2667,19 +2908,19 @@ def create_app():
                         with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
                             right_head = gr.Markdown("### REJECTED")
                             with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
-                                gr.Markdown("Tiles #", elem_classes=["zoom-inline-label"])
-                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=5, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
+                                gr.Markdown("Tile Size", elem_classes=["zoom-inline-label"])
+                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=7, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        left_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
+                        left_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
                         sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
-                        move_right_btn = gr.Button("Move →", elem_id="hy-move-right")
+                        move_right_btn = gr.Button("Move >>", elem_id="hy-move-right")
                         fit_threshold_btn = gr.Button("Fit thresh", elem_id="hy-fit-threshold")
-                        move_left_btn = gr.Button("← Move", elem_id="hy-move-left")
+                        move_left_btn = gr.Button("<< Move", elem_id="hy-move-left")
                         clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        right_gallery = gr.Gallery(show_label=False, columns=5, height="80vh", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
+                        right_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
 
         method_dd.change(
             fn=configure_controls,
