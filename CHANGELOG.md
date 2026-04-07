@@ -10,6 +10,9 @@
 - Enlarged and clarified the manual move button arrows.
 - Made the galleries use more of the viewport height and reduced excess outer page margins.
 - Added drag-and-drop moving between the `SELECTED` and `REJECTED` galleries.
+- Dragging a marked thumbnail now moves the full marked batch between galleries, not just one image.
+- Inverted the upper-right tile-size slider so dragging right makes thumbnails larger.
+- Renamed the gallery zoom label to `Tile Size` and fixed the toolbar spacing so the full label is visible.
 
 ## [1.30.0] - 2026-04-03
 
