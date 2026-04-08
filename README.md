@@ -4,6 +4,12 @@ Interactive Gradio application for rating and sorting images with GPU-accelerate
 
 Current version: `1.30.0` (`v1.30.0` on GitHub releases)
 
+## Screenshot
+
+`Hybrid-Scorer.py` lets you switch between PromptMatch for content matching and ImageReward for aesthetic scoring inside one shared workflow.
+
+![HybridScorer UI](screenshots/HybridScorer.jpg)
+
 ## What This Is
 
 `HybridScorer` is built for quick AI assisted human-in-the-loop image scoring.
@@ -266,12 +272,6 @@ CUDA is mandatory for this project. The app is meant to rate and sort many image
 - If PyTorch cannot see a CUDA device, the app exits immediately.
 - The setup scripts install pinned CUDA 12.8 PyTorch wheels by default.
 - If your machine needs a different supported PyTorch CUDA wheel, set `PYTORCH_CUDA_INDEX_URL` before setup and update the pinned PyTorch versions if needed.
-
-## Screenshots
-
-`Hybrid-Scorer.py` lets you switch between PromptMatch for content matching and ImageReward for aesthetic scoring inside one shared workflow.
-
-![HybridScorer UI](screenshots/HybridScorer.jpg)
 
 ## Architecture
 
