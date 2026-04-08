@@ -143,7 +143,7 @@ Opens automaticaly in your browser:
 Model weights are downloaded on first use only for the method and model you actually choose.
 
 - The default PromptMatch model is `SigLIP so400m-patch14-384`, which is about **3.3 GB** downloaded and is a good balance of quality and size.
-- PromptMatch also supports OpenCLIP ConvNeXt backbones if you want additional alternatives in the same prompt-based workflow.
+- PromptMatch focuses on SigLIP plus OpenCLIP ViT and ConvNeXt backbones chosen for practical NSFW-oriented use across different GPU tiers.
 - The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
 - `ImageReward` is also downloaded on first use when you switch to that method.
 - Florence prompt generation downloads `florence-community/Florence-2-base` on first use when you choose that prompt generator.
@@ -154,6 +154,38 @@ Model weights are downloaded on first use only for the method and model you actu
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
 
 
+
+## PromptMatch Models
+
+The current PromptMatch model list is intentionally trimmed to a smaller set that covers lower-VRAM cards, stronger general-purpose matching, and heavier NSFW-oriented matching without filling the dropdown with near-duplicates.
+
+### NSFW Note
+
+For explicit, erotic, or otherwise NSFW-heavy folders, the most useful models in this app are usually the **OpenCLIP LAION** variants. In practical use they tend to be the strongest choices when the prompt needs to distinguish explicit attributes, poses, outfits, or scene details more reliably.
+
+`SigLIP` is still useful, especially on smaller GPUs, but it is best thought of as the lighter fallback or balanced default rather than the strongest high-end NSFW option.
+
+These are practical recommendations for this workflow, not a guarantee that one model will always win on every dataset. Prompt wording, image style, render realism, censorship, and subject matter still change results.
+
+The VRAM numbers below are practical working ranges for this app, not hard minimums. PromptMatch uses `1024px` proxies and auto-reduces batch size on OOM, so real usage can be lower than rough model-family heuristics suggest.
+
+### Model Guide
+
+- `SigLIP base-patch16-224` `[~5 GB]`: the smallest PromptMatch option. Best for lower-VRAM GPUs and basic subject matching when you still want the app to remain usable on tighter hardware. For NSFW folders, treat it as the entry-level fallback, not the highest-precision choice.
+- `SigLIP so400m-patch14-384` `[<8 GB]`: the default and best-balanced option. Good first choice when you want solid quality without paying the cost of the heavier OpenCLIP models. For NSFW use, this is the practical starting point when you want a stronger SigLIP model without needing a large amount of VRAM.
+- `OpenCLIP ViT-L-14 laion2b` `[<6 GB]`: the first stronger OpenCLIP step up for users who want better NSFW matching than the lighter SigLIP options usually provide. Good all-around choice when you have enough VRAM for a more capable model but do not want the weight of `ViT-H` or `ViT-bigG`.
+- `OpenCLIP ConvNeXt-Base-W laion2b` `[<8 GB]`: an alternative mid-range OpenCLIP backbone. Useful if you want to compare a ConvNeXt-style encoder against `ViT-L-14` on your own folders. Not always better, but worth keeping as a second family with similarly low observed VRAM use.
+- `OpenCLIP ViT-H-14 laion2b` `[<10 GB]`: a strong upper-mid option for NSFW-heavy folders when you want more matching headroom without going to the absolute largest model.
+- `OpenCLIP ConvNeXt-Large-D-320 laion2b` `[16+ GB]`: the larger ConvNeXt alternative and, in practice, one of the few models here that clearly wants more than about 16 GB. Best used as an A/B option against `ViT-H-14` if your prompts or image style seem to respond better to ConvNeXt than ViT.
+- `OpenCLIP ViT-bigG-14 laion2b` `[14-16 GB]`: the heaviest PromptMatch download in the app and the strongest high-end CLIP option in this list. In this workflow it can still run in roughly the same VRAM range as `ViT-H-14`, so it is much more practical on 14 GB to 16 GB cards than a raw model-family guess might imply.
+
+### Quick Recommendations
+
+- `5-6 GB GPU`: use `SigLIP base-patch16-224`.
+- `8 GB GPU`: use `SigLIP so400m-patch14-384`, then try `OpenCLIP ViT-L-14 laion2b` or `OpenCLIP ConvNeXt-Base-W laion2b`.
+- `10 GB GPU`: `OpenCLIP ViT-H-14 laion2b` becomes a realistic option.
+- `14-16 GB GPU`: `OpenCLIP ViT-bigG-14 laion2b` is realistic, while `OpenCLIP ConvNeXt-Large-D-320 laion2b` is still the model here that most clearly wants more headroom.
+- `16+ GB GPU`: `OpenCLIP ConvNeXt-Large-D-320 laion2b` becomes a more comfortable option.
 
 ## Usage
 
@@ -199,7 +231,7 @@ Use PromptMatch when you want to find images that match a text description.
 - PromptMatch supports fragment weights like `beautiful (blonde:1.2) woman` when you want one part of the prompt to matter more. Values above `1.0` emphasize a fragment and values below `1.0` soften it. The same syntax also works in the negative prompt. This weighting syntax is PromptMatch-only; ImageReward still treats it as plain text.
 - In the PromptMatch positive and negative prompt boxes, select text and press `Ctrl` + `+` or `Ctrl` + `-` to wrap it in weighting syntax or nudge an existing weight by `0.1` at a time.
 - In both PromptMatch and ImageReward prompt boxes, press `Ctrl` + `Return` to run scoring.
-- Choose the PromptMatch model from the dropdown. Available families include SigLIP, OpenCLIP ViT, OpenCLIP ConvNeXt, and OpenAI CLIP.
+- Choose the PromptMatch model from the dropdown. The labels include rough VRAM guidance so it is easier to pick a model that fits your GPU.
 - PromptMatch shows proxy preparation, model loading source, and scoring autobatch size in the progress UI.
 - Use the **main threshold** to control how strong the positive match must be.
 - If you use a negative prompt, use the **negative threshold** to control how strongly that negative signal is allowed to pass.
@@ -391,6 +423,6 @@ Dependency notes:
 - `requirements.txt` also includes the pinned `transformers` version, a current `timm` for ConvNeXt-backed OpenCLIP models, and the runtime extras used by SigLIP and ImageReward.
 - The setup scripts install `image-reward==1.5` separately with `--no-deps` to avoid pip resolving down to the broken `image-reward==1.0` source package on clean Python 3.12 installs.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
-- Model weights are not stored in this repository. ImageReward, OpenCLIP, SigLIP, and OpenAI CLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
+- Model weights are not stored in this repository. ImageReward, OpenCLIP, and SigLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
 
 Place your images in a folder named `images` in the root of the repository to have them loaded at startup. You can also load images from any other folder using the UI.

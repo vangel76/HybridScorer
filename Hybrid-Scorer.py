@@ -805,18 +805,13 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
 
 
 MODEL_CHOICES = [
-    ("SigLIP  so400m-patch14-384  ★ recommended", "siglip", {"siglip_model": "google/siglip-so400m-patch14-384"}),
-    ("SigLIP  large-patch16-384", "siglip", {"siglip_model": "google/siglip-large-patch16-384"}),
-    ("SigLIP  base-patch16-224", "siglip", {"siglip_model": "google/siglip-base-patch16-224"}),
-    ("OpenCLIP  ViT-bigG-14  laion2b  ★ best CLIP", "openclip", {"openclip_model": "ViT-bigG-14", "openclip_pretrained": "laion2b_s39b_b160k"}),
-    ("OpenCLIP  ViT-H-14  laion2b", "openclip", {"openclip_model": "ViT-H-14", "openclip_pretrained": "laion2b_s32b_b79k"}),
-    ("OpenCLIP  ViT-L-14  laion2b", "openclip", {"openclip_model": "ViT-L-14", "openclip_pretrained": "laion2b_s32b_b82k"}),
-    ("OpenCLIP  ConvNeXt-Base-W  laion2b", "openclip", {"openclip_model": "convnext_base_w", "openclip_pretrained": "laion2b_s13b_b82k"}),
-    ("OpenCLIP  ConvNeXt-Large-D-320  laion2b", "openclip", {"openclip_model": "convnext_large_d_320", "openclip_pretrained": "laion2b_s29b_b131k_ft"}),
-    ("OpenCLIP  ConvNeXt-XXLarge  laion2b", "openclip", {"openclip_model": "convnext_xxlarge", "openclip_pretrained": "laion2b_s34b_b82k_augreg"}),
-    ("OpenAI CLIP  ViT-L/14@336px", "openai", {"clip_model": "ViT-L/14@336px"}),
-    ("OpenAI CLIP  ViT-L/14", "openai", {"clip_model": "ViT-L/14"}),
-    ("OpenAI CLIP  ViT-B/32  (fastest)", "openai", {"clip_model": "ViT-B/32"}),
+    ("SigLIP  base-patch16-224  [~5 GB]", "siglip", {"siglip_model": "google/siglip-base-patch16-224"}),
+    ("SigLIP  so400m-patch14-384  [<8 GB]  ★ recommended", "siglip", {"siglip_model": "google/siglip-so400m-patch14-384"}),
+    ("OpenCLIP  ViT-L-14  laion2b  [<6 GB]", "openclip", {"openclip_model": "ViT-L-14", "openclip_pretrained": "laion2b_s32b_b82k"}),
+    ("OpenCLIP  ConvNeXt-Base-W  laion2b  [<8 GB]", "openclip", {"openclip_model": "convnext_base_w", "openclip_pretrained": "laion2b_s13b_b82k"}),
+    ("OpenCLIP  ViT-H-14  laion2b  [<10 GB]", "openclip", {"openclip_model": "ViT-H-14", "openclip_pretrained": "laion2b_s32b_b79k"}),
+    ("OpenCLIP  ConvNeXt-Large-D-320  laion2b  [16+ GB]", "openclip", {"openclip_model": "convnext_large_d_320", "openclip_pretrained": "laion2b_s29b_b131k_ft"}),
+    ("OpenCLIP  ViT-bigG-14  laion2b  [14-16 GB]  ★ best CLIP", "openclip", {"openclip_model": "ViT-bigG-14", "openclip_pretrained": "laion2b_s39b_b160k"}),
 ]
 MODEL_LABELS = [choice[0] for choice in MODEL_CHOICES]
 
@@ -1599,7 +1594,7 @@ def create_app():
     tooltips = {
         "hy-method": "Choose whether to sort by PromptMatch or ImageReward.",
         "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
-        "hy-model": "Choose the PromptMatch model family and size.",
+        "hy-model": "Choose the PromptMatch model. Labels include rough VRAM guidance for picking a model that fits your GPU.",
         "hy-pos": "Describe what you want to find in the images. PromptMatch also supports fragment weights like beautiful (blonde:1.2) woman. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
         "hy-neg": "Optional PromptMatch negative prompt that counts against a match. Weighted fragments like (text:1.3) also work here. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
         "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor. Press Ctrl+Enter to run scoring.",

@@ -5,6 +5,10 @@
 - The setup scripts now try a safe git refresh automatically on every run before updating `venv312`.
 - Renamed the setup scripts to `setup_update-linux.sh` and `setup_update-windows.bat`.
 - Updated launcher hints and README instructions to match the new setup script names and update workflow.
+- Trimmed the PromptMatch model list to a smaller NSFW-focused set and added VRAM guidance directly to the model labels.
+- Adjusted the PromptMatch VRAM guidance to match observed real-world usage more closely instead of the earlier conservative estimates.
+- Tightened the SigLIP VRAM guidance again to reflect measured usage more accurately.
+- Updated the `OpenCLIP ViT-L-14` VRAM guidance to reflect its lower observed usage as well.
 
 ## [1.42.0] - 2026-04-08
 
