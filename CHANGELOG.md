@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.6.0] - 2026-04-09
+
+- Added PromptMatch image-embedding caching per folder and model, so rerunning with changed positive or negative prompts can reuse the expensive image pass and feel much faster.
+- Refined the PromptMatch model lineup for practical NSFW-oriented use and updated the VRAM guidance to match observed real-world usage more closely.
+- Expanded the README with detailed PromptMatch model descriptions, NSFW notes, and GPU-tier recommendations.
+
 ## [1.5.0] - 2026-04-08
 
 - The setup scripts now try a safe git refresh automatically on every run before updating `venv312`.
@@ -9,6 +15,7 @@
 - Adjusted the PromptMatch VRAM guidance to match observed real-world usage more closely instead of the earlier conservative estimates.
 - Tightened the SigLIP VRAM guidance again to reflect measured usage more accurately.
 - Updated the `OpenCLIP ViT-L-14` VRAM guidance to reflect its lower observed usage as well.
+- PromptMatch now caches image embeddings per folder and model so prompt-only reruns can reuse the expensive image pass.
 
 ## [1.42.0] - 2026-04-08
 

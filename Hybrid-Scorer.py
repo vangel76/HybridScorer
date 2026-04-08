@@ -804,6 +804,121 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
     return results
 
 
+def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_resolver=None):
+    # Cacheable PromptMatch path: encode image features once, then reuse them for prompt changes.
+    feature_paths = []
+    feature_rows = []
+    failed_paths = []
+    failed_seen = set()
+    total = len(image_paths)
+    done = 0
+    batch_size = get_auto_batch_size(backend.device, backend)
+    print(f"[PromptMatch] Using batch size {batch_size}")
+
+    def _mark_failed(original_path):
+        if original_path not in failed_seen:
+            failed_seen.add(original_path)
+            failed_paths.append(original_path)
+
+    def _encode_items(valid_items):
+        pil_imgs = []
+        loaded = []
+        for original_path, scoring_path in valid_items:
+            try:
+                with Image.open(scoring_path) as src_img:
+                    pil_imgs.append(src_img.convert("RGB"))
+                loaded.append((original_path, scoring_path))
+            except Exception as exc:
+                print(f"  [WARN] {original_path}: {exc}")
+                _mark_failed(original_path)
+        if not pil_imgs:
+            return
+
+        feat = backend.encode_images_batch(pil_imgs).detach().cpu()
+        for (original_path, _), row in zip(loaded, feat):
+            feature_paths.append(original_path)
+            feature_rows.append(row)
+
+    while done < total:
+        current_size = min(batch_size, total - done)
+        batch = image_paths[done:done + current_size]
+        batch_start = done + 1
+        batch_end = done + len(batch)
+        print(f"[PromptMatch] Batch {batch_start}-{batch_end}/{total} ({len(batch)} images)")
+        valid = []
+        for original_path in batch:
+            try:
+                scoring_path = proxy_resolver(original_path) if proxy_resolver is not None else original_path
+                valid.append((original_path, scoring_path))
+            except Exception as exc:
+                print(f"  [WARN] {original_path}: {exc}")
+                _mark_failed(original_path)
+        if valid:
+            try:
+                _encode_items(valid)
+            except Exception as exc:
+                if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
+                    batch_size = max(1, current_size // 2)
+                    print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
+                    torch.cuda.empty_cache()
+                    if progress_cb:
+                        progress_cb(done, total, batch_size, True)
+                    continue
+                print(f"  [WARN] batch error, retrying individually: {exc}")
+                recovered = 0
+                failed = 0
+                for item in valid:
+                    original_path, _ = item
+                    before_count = len(feature_paths)
+                    before_failed = len(failed_paths)
+                    try:
+                        _encode_items([item])
+                        if len(feature_paths) > before_count:
+                            recovered += 1
+                        elif len(failed_paths) > before_failed:
+                            failed += 1
+                    except Exception as single_exc:
+                        print(f"  [WARN] single-image error for {original_path}: {single_exc}")
+                        _mark_failed(original_path)
+                        failed += 1
+                print(f"[PromptMatch] Individual retry result: {recovered} recovered, {failed} failed")
+            if backend.device == "cuda":
+                torch.cuda.empty_cache()
+        done += len(batch)
+        if progress_cb:
+            progress_cb(done, total, batch_size, False)
+
+    feature_tensor = torch.stack(feature_rows) if feature_rows else torch.empty((0, 0), dtype=torch.float32)
+    return feature_paths, feature_tensor, failed_paths
+
+
+def score_promptmatch_cached_features(feature_paths, image_features, failed_paths, pos_emb, neg_emb):
+    results = {}
+    pos_emb_cpu = pos_emb.detach().float().cpu()
+    neg_emb_cpu = neg_emb.detach().float().cpu() if neg_emb is not None else None
+
+    if feature_paths and image_features.numel():
+        pos_sims = (image_features @ pos_emb_cpu.T).squeeze(1).tolist()
+        neg_sims = (image_features @ neg_emb_cpu.T).squeeze(1).tolist() if neg_emb_cpu is not None else [None] * len(feature_paths)
+        for original_path, pos_score, neg_score in zip(feature_paths, pos_sims, neg_sims):
+            results[os.path.basename(original_path)] = {
+                "pos": float(pos_score),
+                "neg": float(neg_score) if neg_score is not None else None,
+                "path": original_path,
+                "failed": False,
+            }
+
+    for original_path in failed_paths:
+        results[os.path.basename(original_path)] = {
+            "pos": 0.0,
+            "neg": None,
+            "path": original_path,
+            "failed": True,
+        }
+
+    return results
+
+
 MODEL_CHOICES = [
     ("SigLIP  base-patch16-224  [~5 GB]", "siglip", {"siglip_model": "google/siglip-base-patch16-224"}),
     ("SigLIP  so400m-patch14-384  [<8 GB]  ★ recommended", "siglip", {"siglip_model": "google/siglip-so400m-patch14-384"}),
@@ -1191,6 +1306,11 @@ def create_app():
         "proxy_map": {},
         "use_proxy_display": True,
         "ir_penalty_weight": DEFAULT_IR_PENALTY_WEIGHT,
+        "pm_cached_signature": None,
+        "pm_cached_model_label": None,
+        "pm_cached_feature_paths": None,
+        "pm_cached_image_features": None,
+        "pm_cached_failed_paths": None,
         "ir_cached_signature": None,
         "ir_cached_positive_prompt": None,
         "ir_cached_negative_prompt": None,
@@ -1214,6 +1334,11 @@ def create_app():
             state["proxy_folder_key"] = folder_key
             state["proxy_cache_dir"] = get_promptmatch_proxy_cache_dir(folder)
             state["proxy_map"] = {}
+            state["pm_cached_signature"] = None
+            state["pm_cached_model_label"] = None
+            state["pm_cached_feature_paths"] = None
+            state["pm_cached_image_features"] = None
+            state["pm_cached_failed_paths"] = None
             state["ir_cached_signature"] = None
             state["ir_cached_positive_prompt"] = None
             state["ir_cached_negative_prompt"] = None
@@ -2304,6 +2429,7 @@ def create_app():
         image_paths = scan_image_paths(folder)
         if not image_paths:
             return empty_result(f"No images found in {folder}", method)
+        image_signature = get_image_paths_signature(image_paths)
 
         state["method"] = method
         sync_promptmatch_proxy_cache(folder)
@@ -2333,9 +2459,20 @@ def create_app():
             else:
                 progress(0, desc=f"Using loaded PromptMatch model from memory: {model_label}")
 
+            can_reuse_promptmatch_cache = (
+                state.get("pm_cached_signature") == image_signature
+                and state.get("pm_cached_model_label") == model_label
+                and state.get("pm_cached_feature_paths") is not None
+                and state.get("pm_cached_image_features") is not None
+                and state.get("pm_cached_failed_paths") is not None
+            )
+
             proxy_map = {}
             cache_dir = state.get("proxy_cache_dir")
-            if cache_dir:
+            if can_reuse_promptmatch_cache:
+                proxy_map = dict(state.get("proxy_map") or {})
+                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached PromptMatch image embeddings for {len(image_paths)} images")
+            elif cache_dir:
                 print(f"[PromptMatch] Proxy cache dir: {cache_dir}")
                 def _proxy_prep_cb(done, total, generated, reused):
                     desc = f"Preparing PromptMatch proxies {done}/{total}"
@@ -2356,29 +2493,48 @@ def create_app():
             neg_prompt = (neg_prompt or "").strip()
             pos_emb = state["backend"].encode_text(pos_prompt)
             neg_emb = state["backend"].encode_text(neg_prompt) if neg_prompt else None
-            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(image_paths)} images with PromptMatch...")
-
-            def _cb(done, total, batch_size, oom_retry):
-                label = f"PromptMatch {done}/{total} (autobatch {batch_size})"
-                if oom_retry:
-                    label = f"PromptMatch OOM, retrying autobatch {batch_size}"
-                progress(
-                    PROMPTMATCH_PROXY_PROGRESS_SHARE
-                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (done / max(total, 1))),
-                    desc=label,
+            if can_reuse_promptmatch_cache:
+                state["scores"] = score_promptmatch_cached_features(
+                    state["pm_cached_feature_paths"],
+                    state["pm_cached_image_features"],
+                    state["pm_cached_failed_paths"],
+                    pos_emb,
+                    neg_emb,
                 )
+            else:
+                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(image_paths)} images with PromptMatch...")
 
-            def _proxy_resolver(original_path):
-                return proxy_map.get(original_path, original_path)
+                def _cb(done, total, batch_size, oom_retry):
+                    label = f"PromptMatch {done}/{total} (autobatch {batch_size})"
+                    if oom_retry:
+                        label = f"PromptMatch OOM, retrying autobatch {batch_size}"
+                    progress(
+                        PROMPTMATCH_PROXY_PROGRESS_SHARE
+                        + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (done / max(total, 1))),
+                        desc=label,
+                    )
 
-            state["scores"] = score_all(
-                image_paths,
-                state["backend"],
-                pos_emb,
-                neg_emb,
-                progress_cb=_cb,
-                proxy_resolver=_proxy_resolver,
-            )
+                def _proxy_resolver(original_path):
+                    return proxy_map.get(original_path, original_path)
+
+                feature_paths, image_features, failed_paths = encode_all_promptmatch_images(
+                    image_paths,
+                    state["backend"],
+                    progress_cb=_cb,
+                    proxy_resolver=_proxy_resolver,
+                )
+                state["pm_cached_signature"] = image_signature
+                state["pm_cached_model_label"] = model_label
+                state["pm_cached_feature_paths"] = list(feature_paths)
+                state["pm_cached_image_features"] = image_features
+                state["pm_cached_failed_paths"] = list(failed_paths)
+                state["scores"] = score_promptmatch_cached_features(
+                    feature_paths,
+                    image_features,
+                    failed_paths,
+                    pos_emb,
+                    neg_emb,
+                )
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(pos_mid, neg_mid)
             return (

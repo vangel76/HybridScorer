@@ -2,7 +2,13 @@
 
 Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
-Current version: `1.5.0` (`v1.5.0` on GitHub releases)
+Current version: `1.6.0` (`v1.6.0` on GitHub releases)
+
+## Latest Updates
+
+- PromptMatch reruns on the same folder and model are now MUCH faster because image embeddings are cached.
+- The PromptMatch model list was trimmed and cleaned up for more practical normal/NSFW-oriented use.
+- The README now includes clearer PromptMatch model notes, VRAM guidance, and GPU-tier recommendations.
 
 ## Screenshot
 
@@ -232,6 +238,7 @@ Use PromptMatch when you want to find images that match a text description.
 - In the PromptMatch positive and negative prompt boxes, select text and press `Ctrl` + `+` or `Ctrl` + `-` to wrap it in weighting syntax or nudge an existing weight by `0.1` at a time.
 - In both PromptMatch and ImageReward prompt boxes, press `Ctrl` + `Return` to run scoring.
 - Choose the PromptMatch model from the dropdown. The labels include rough VRAM guidance so it is easier to pick a model that fits your GPU.
+- When you rerun PromptMatch on the same folder and model, the app now reuses cached image embeddings, so changing only the positive or negative prompt is much faster than a full rescore.
 - PromptMatch shows proxy preparation, model loading source, and scoring autobatch size in the progress UI.
 - Use the **main threshold** to control how strong the positive match must be.
 - If you use a negative prompt, use the **negative threshold** to control how strongly that negative signal is allowed to pass.
