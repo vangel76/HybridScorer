@@ -1,6 +1,6 @@
 # HybridScorer
 
-Interactive Gradio application for rating and sorting images with GPU-accelerated AI models. Windows/Linux
+Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
 Current version: `1.42.0` (`v1.42.0` on GitHub releases)
 
@@ -10,16 +10,34 @@ Current version: `1.42.0` (`v1.42.0` on GitHub releases)
 
 ![HybridScorer UI](screenshots/HybridScorer.jpg)
 
+## Too Many Images?
+
+If you generate a lot of images, collect references, or review large image folders, the slow part is rarely making the images. The slow part is deciding what to keep.
+
+- Hundreds or thousands of files are too much to rank by hand.
+- Near-duplicates and weak variations waste time.
+- It is hard to filter for a specific subject, look, pose, mood, or quality level consistently.
+- Manual curation gets even worse when you want to keep the best images without touching the originals.
+
+`HybridScorer` is built to solve exactly that workflow: score a folder, split it into likely keepers and rejects, quickly fix the edge cases yourself, and export a clean result.
+
 ## What This Is
 
-`HybridScorer` is built for quick AI assisted human-in-the-loop image scoring.
+`HybridScorer` is a practical human-in-the-loop image triage tool for people who need to review a lot of images quickly without giving up control.
 
-- `Hybrid-Scorer.py` combines PromptMatch and ImageReward in one UI.
-- The app can also generate an editable prompt from the currently previewed image with multiple caption backends, including Florence-2 and JoyCaption Beta One.
-- CUDA is required so scoring stays fast enough to be practical on large folders.
-- Both scoring methods can use cached proxy images to speed up repeat scoring and large-folder browsing.
-- In the end, the app copies the original image files into two output folders: `selected` and `rejected`.
-- The source images are not recompressed or edited. The sources remains untouched and in place.
+- Use **PromptMatch** to find images that match a concept, subject, outfit, pose, expression, or visual trait.
+- Use **ImageReward** to sort for taste, aesthetic quality, style, and overall appeal.
+- Review the split in one interface, then manually correct the few exceptions instead of sorting everything by hand.
+- Generate a reusable prompt from any image you like while you review.
+- Keep the original files untouched. Export is a lossless copy into `selected/` and `rejected/`.
+- CUDA keeps scoring fast enough to stay useful on large folders, and proxy caching speeds up repeat work and browsing.
+
+### Why People Use It
+
+- AI image generations: cut thousands of outputs down to the few worth keeping.
+- Reference boards and collected folders: find the images that actually match the idea in your head.
+- Aesthetic filtering: separate strong images from weak ones faster than manual pass-after-pass review.
+- Prompt iteration: find one image that works, generate a prompt from it, and rescore again.
 
 ### Prompt From Image
 
