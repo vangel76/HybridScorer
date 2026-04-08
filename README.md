@@ -56,7 +56,14 @@ If you find an image you like while reviewing, `HybridScorer` can turn that prev
 
 ## Install With Setup Scripts
 
-Set up the Python virtual environment first. You need to do this before trying to run the app.
+The easiest way to start is:
+
+```bash
+git clone https://github.com/vangel76/HybridScorer.git
+cd HybridScorer
+```
+
+Then set up the Python virtual environment before trying to run the app.
 
 ### Windows Setup Script
 
@@ -219,6 +226,13 @@ Export does a **lossless file copy** of the originals.
 ## Manual Install
 
 If you do not want to use the setup scripts, you can set up the environment manually.
+
+Clone the repo first if you have not already:
+
+```bash
+git clone https://github.com/vangel76/HybridScorer.git
+cd HybridScorer
+```
 
 `requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers`, a modern `timm` for ConvNeXt-backed OpenCLIP models, plus the runtime extras needed by SigLIP and ImageReward. The setup scripts install `image-reward==1.5` separately with `--no-deps` so pip does not backtrack into the broken `image-reward==1.0` source build on fresh Python 3.12 environments.
 
