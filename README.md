@@ -2,7 +2,7 @@
 
 Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
-Current version: `1.42.0` (`v1.42.0` on GitHub releases)
+Current version: `1.5.0` (`v1.5.0` on GitHub releases)
 
 ## Screenshot
 
@@ -67,54 +67,54 @@ Then set up the Python virtual environment before trying to run the app.
 
 ### Windows Setup Script
 
-Use [setup-hybridscorer-windows.bat](setup-hybridscorer-windows.bat) 
+Use [setup_update-windows.bat](setup_update-windows.bat) 
 
 to create the Python virtual environment needed. It will install Python 3.12 with `winget` if missing:
 
 ```bat
-setup-hybridscorer-windows.bat
+setup_update-windows.bat
 ```
 ### Linux Setup Script
 
-Use [setup-hybridscorer-linux.sh](setup-hybridscorer-linux.sh)
+Use [setup_update-linux.sh](setup_update-linux.sh)
 
 to create the Python virtual environment needed.
 
 ```bash
-./setup-hybridscorer-linux.sh
+./setup_update-linux.sh
 ```
 
 If you also want the optional JoyCaption GGUF backend, rerun setup with:
 
 ```bash
-INSTALL_JOYCAPTION_GGUF=1 ./setup-hybridscorer-linux.sh
+INSTALL_JOYCAPTION_GGUF=1 ./setup_update-linux.sh
 ```
 
 ## Update
 
-When you already have the repo cloned and want to refresh both the code and `venv312`, rerun the setup script with `--update`.
+The setup scripts already try a safe git refresh automatically before they update `venv312`, so you usually just rerun the normal setup command.
 
 ### Windows Update
 
-Use [setup-hybridscorer-windows.bat](setup-hybridscorer-windows.bat)
+Use [setup_update-windows.bat](setup_update-windows.bat)
 
 ```bat
-setup-hybridscorer-windows.bat --update
+setup_update-windows.bat
 ```
 
 ### Linux Update
 
-Use [setup-hybridscorer-linux.sh](setup-hybridscorer-linux.sh)
+Use [setup_update-linux.sh](setup_update-linux.sh)
 
 ```bash
-./setup-hybridscorer-linux.sh --update
+./setup_update-linux.sh
 ```
 
-With `--update`, the setup scripts:
+On each run, the setup scripts:
 
-- `git pull --ff-only` to fetch the latest fast-forwardable changes
+- try `git pull --ff-only` when the checkout is clean and has an upstream branch
 - refresh `venv312` so the virtual environment picks up dependency updates
-- stop early if tracked local changes would make the update unsafe
+- skip the git refresh automatically when local changes would make it unsafe
 
 ## Run
 
@@ -330,7 +330,7 @@ For the Windows scripts to work end-to-end, the user needs:
 After that, the intended Windows flow is:
 
 ```bat
-setup-hybridscorer-windows.bat
+setup_update-windows.bat
 run-Hybrid-Scorer-windows.bat
 ```
 
@@ -369,12 +369,12 @@ This app combines PromptMatch and ImageReward into one UI and lets you switch sc
 
 Windows scripts:
 
-- `setup-hybridscorer-windows.bat`
+- `setup_update-windows.bat`
 - `run-Hybrid-Scorer-windows.bat`
 
 Linux scripts:
 
-- `setup-hybridscorer-linux.sh`
+- `setup_update-linux.sh`
 - `run-Hybrid-Scorer.sh`
 
 Main cross-platform app:

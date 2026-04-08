@@ -3,20 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv312"
-UPDATE_GIT=0
 PYTORCH_CUDA_INDEX_URL="${PYTORCH_CUDA_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
 PYTORCH_TORCH_VERSION="${PYTORCH_TORCH_VERSION:-2.9.1}"
 PYTORCH_TORCHVISION_VERSION="${PYTORCH_TORCHVISION_VERSION:-0.24.1}"
 
 usage() {
-  echo "Usage: ./setup-hybridscorer-linux.sh [--update]" >&2
+  echo "Usage: ./setup_update-linux.sh" >&2
   exit 1
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --update)
-      UPDATE_GIT=1
+      echo "Note: --update is no longer required; setup_update-linux.sh already checks for a safe git refresh."
       ;;
     -h|--help)
       usage
@@ -40,39 +39,40 @@ fi
 
 echo "Using Python: $PYTHON_BIN"
 
-update_git_checkout() {
+maybe_update_git_checkout() {
   if ! command -v git >/dev/null 2>&1; then
-    echo "git was not found in PATH." >&2
-    exit 1
+    echo "git was not found in PATH. Skipping automatic git refresh."
+    return
   fi
 
   cd "$SCRIPT_DIR"
 
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "This folder is not a git working tree:" >&2
-    echo "  $SCRIPT_DIR" >&2
-    exit 1
+    echo "This folder is not a git working tree. Skipping automatic git refresh."
+    return
   fi
 
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "Tracked local changes were detected." >&2
-    echo "Commit or stash them before running ./setup-hybridscorer-linux.sh --update." >&2
-    exit 1
+    echo "Tracked local changes were detected. Skipping automatic git refresh."
+    return
   fi
 
   if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-    echo "No upstream branch is configured for this checkout." >&2
-    echo "Set a tracking branch first, then rerun ./setup-hybridscorer-linux.sh --update." >&2
-    exit 1
+    echo "No upstream branch is configured. Skipping automatic git refresh."
+    return
   fi
 
   local current_branch
   current_branch="$(git branch --show-current 2>/dev/null || true)"
   if [ -n "$current_branch" ]; then
-    echo "Updating branch: $current_branch"
+    echo "Checking for git updates on branch: $current_branch"
   fi
 
-  git pull --ff-only
+  if git pull --ff-only; then
+    echo "Git checkout is up to date."
+  else
+    echo "Automatic git refresh failed. Continuing with venv setup."
+  fi
   echo
 }
 
@@ -83,7 +83,7 @@ validate_existing_venv() {
   if ! "$venv_python" -m pip --version >/dev/null 2>&1; then
     echo "Existing venv312 is not healthy." >&2
     echo "python -m pip failed inside $VENV_DIR." >&2
-    echo "Delete venv312 and run ./setup-hybridscorer-linux.sh again." >&2
+    echo "Delete venv312 and run ./setup_update-linux.sh again." >&2
     exit 1
   fi
 
@@ -91,15 +91,13 @@ validate_existing_venv() {
     echo "Existing venv312 appears to have been copied or moved from another path." >&2
     echo "Expected to find this project path in $pyvenv_cfg:" >&2
     echo "  $VENV_DIR" >&2
-    echo "Delete venv312 and run ./setup-hybridscorer-linux.sh again." >&2
+    echo "Delete venv312 and run ./setup_update-linux.sh again." >&2
     exit 1
   fi
 }
 
-if [ "$UPDATE_GIT" = "1" ]; then
-  echo "Updating git checkout before refreshing venv312..."
-  update_git_checkout
-fi
+echo "Checking whether a safe git refresh is needed..."
+maybe_update_git_checkout
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
   echo "Creating virtual environment at $VENV_DIR"
@@ -136,7 +134,7 @@ else
   echo
   echo "Skipping optional JoyCaption GGUF runtime."
   echo "To enable it later, rerun:"
-  echo "  INSTALL_JOYCAPTION_GGUF=1 ./setup-hybridscorer-linux.sh"
+  echo "  INSTALL_JOYCAPTION_GGUF=1 ./setup_update-linux.sh"
 fi
 
 python - <<'PY'

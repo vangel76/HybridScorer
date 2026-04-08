@@ -2,13 +2,12 @@
 setlocal
 cd /d "%~dp0"
 
-set "UPDATE_GIT=0"
 if /i "%~1"=="--update" (
-    set "UPDATE_GIT=1"
+    echo Note: --update is no longer required; setup_update-windows.bat already checks for a safe git refresh.
     shift
 )
 if not "%~1"=="" (
-    echo Usage: setup-hybridscorer-windows.bat [--update]
+    echo Usage: setup_update-windows.bat
     exit /b 1
 )
 
@@ -38,7 +37,7 @@ if errorlevel 1 (
     where py >nul 2>nul
     if errorlevel 1 (
         echo Python 3.12 installation finished, but the py launcher is still not available in this shell.
-        echo Close this window, open a new one, and run setup-hybridscorer-windows.bat again.
+        echo Close this window, open a new one, and run setup_update-windows.bat again.
         exit /b 1
     )
 )
@@ -64,53 +63,52 @@ if errorlevel 1 (
     where git >nul 2>nul
     if errorlevel 1 (
         echo Git installation finished, but git is still not available in this shell.
-        echo Close this window, open a new one, and run setup-hybridscorer-windows.bat again.
+        echo Close this window, open a new one, and run setup_update-windows.bat again.
         exit /b 1
     )
 )
 
-if "%UPDATE_GIT%"=="1" (
-    echo Updating git checkout before refreshing venv312...
+echo Checking whether a safe git refresh is needed...
 
-    git rev-parse --is-inside-work-tree >nul 2>nul
-    if errorlevel 1 (
-        echo This folder is not a git working tree:
-        echo   %CD%
-        exit /b 1
-    )
-
-    git diff --quiet
-    if errorlevel 1 (
-        echo Tracked local changes were detected.
-        echo Commit or stash them before running setup-hybridscorer-windows.bat --update.
-        exit /b 1
-    )
-
-    git diff --cached --quiet
-    if errorlevel 1 (
-        echo Tracked local changes were detected.
-        echo Commit or stash them before running setup-hybridscorer-windows.bat --update.
-        exit /b 1
-    )
-
-    git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>nul
-    if errorlevel 1 (
-        echo No upstream branch is configured for this checkout.
-        echo Set a tracking branch first, then rerun setup-hybridscorer-windows.bat --update.
-        exit /b 1
-    )
-
-    set "CURRENT_BRANCH="
-    for /f "delims=" %%I in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%I"
-    if not "%CURRENT_BRANCH%"=="" (
-        echo Updating branch: %CURRENT_BRANCH%
-    )
-
-    git pull --ff-only
-    if errorlevel 1 exit /b 1
-
-    echo.
+git rev-parse --is-inside-work-tree >nul 2>nul
+if errorlevel 1 (
+    echo This folder is not a git working tree. Skipping automatic git refresh.
+    goto after_git_refresh
 )
+
+git diff --quiet
+if errorlevel 1 (
+    echo Tracked local changes were detected. Skipping automatic git refresh.
+    goto after_git_refresh
+)
+
+git diff --cached --quiet
+if errorlevel 1 (
+    echo Tracked local changes were detected. Skipping automatic git refresh.
+    goto after_git_refresh
+)
+
+git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>nul
+if errorlevel 1 (
+    echo No upstream branch is configured. Skipping automatic git refresh.
+    goto after_git_refresh
+)
+
+set "CURRENT_BRANCH="
+for /f "delims=" %%I in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%I"
+if not "%CURRENT_BRANCH%"=="" (
+    echo Checking for git updates on branch: %CURRENT_BRANCH%
+)
+
+git pull --ff-only
+if errorlevel 1 (
+    echo Automatic git refresh failed. Continuing with venv setup.
+) else (
+    echo Git checkout is up to date.
+)
+
+echo.
+:after_git_refresh
 
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo Creating virtual environment at "%VENV_DIR%"...
@@ -126,7 +124,7 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
     if errorlevel 1 (
         echo Existing venv312 is not healthy.
         echo python -m pip failed inside "%VENV_DIR%".
-        echo Delete venv312 and run setup-hybridscorer-windows.bat again.
+        echo Delete venv312 and run setup_update-windows.bat again.
         exit /b 1
     )
 
@@ -136,7 +134,7 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
             echo Existing venv312 appears to have been copied or moved from another path.
             echo Expected to find this project path in "%VENV_DIR%\pyvenv.cfg":
             echo   %VENV_DIR%
-            echo Delete venv312 and run setup-hybridscorer-windows.bat again.
+            echo Delete venv312 and run setup_update-windows.bat again.
             exit /b 1
         )
     )

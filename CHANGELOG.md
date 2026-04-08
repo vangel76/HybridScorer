@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.0] - 2026-04-08
+
+- The setup scripts now try a safe git refresh automatically on every run before updating `venv312`.
+- Renamed the setup scripts to `setup_update-linux.sh` and `setup_update-windows.bat`.
+- Updated launcher hints and README instructions to match the new setup script names and update workflow.
+
 ## [1.42.0] - 2026-04-08
 
 - Added PromptMatch weighted fragment syntax like `(blonde:1.2)` for both positive and negative prompts.
