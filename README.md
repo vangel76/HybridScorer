@@ -2,7 +2,7 @@
 
 Interactive Gradio application for rating and sorting images with GPU-accelerated AI models. Windows/Linux
 
-Current version: `1.30.0` (`v1.30.0` on GitHub releases)
+Current version: `1.42.0` (`v1.42.0` on GitHub releases)
 
 ## Screenshot
 
@@ -145,6 +145,9 @@ Use PromptMatch when you want to find images that match a text description.
 
 - Set a **positive prompt** for what you want.
 - Optionally set a **negative prompt** for what should count against a match.
+- PromptMatch supports fragment weights like `beautiful (blonde:1.2) woman` when you want one part of the prompt to matter more. Values above `1.0` emphasize a fragment and values below `1.0` soften it. The same syntax also works in the negative prompt. This weighting syntax is PromptMatch-only; ImageReward still treats it as plain text.
+- In the PromptMatch positive and negative prompt boxes, select text and press `Ctrl` + `+` or `Ctrl` + `-` to wrap it in weighting syntax or nudge an existing weight by `0.1` at a time.
+- In both PromptMatch and ImageReward prompt boxes, press `Ctrl` + `Return` to run scoring.
 - Choose the PromptMatch model from the dropdown. Available families include SigLIP, OpenCLIP ViT, OpenCLIP ConvNeXt, and OpenAI CLIP.
 - PromptMatch shows proxy preparation, model loading source, and scoring autobatch size in the progress UI.
 - Use the **main threshold** to control how strong the positive match must be.

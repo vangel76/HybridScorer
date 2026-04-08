@@ -105,6 +105,65 @@ MAX_BATCH_SIZE = 128
 PROMPTMATCH_PROXY_MAX_EDGE = 1024
 PROMPTMATCH_PROXY_CACHE_ROOT = "HybridScorerPromptMatchProxyCache"
 PROMPTMATCH_PROXY_PROGRESS_SHARE = 0.25
+EXPLICIT_PROMPT_WEIGHT_RE = re.compile(r"\(([^()]*?)\s*:\s*([0-9]*\.?[0-9]+)\)")
+
+
+def normalize_prompt_text(text):
+    text = (text or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([(\[])\s+", r"\1", text)
+    text = re.sub(r"\s+([)\]])", r"\1", text)
+    return text.strip(" ,")
+
+
+def render_promptmatch_segments(segments, skip_weighted_index=None):
+    rendered = []
+    for index, segment in enumerate(segments):
+        if segment["kind"] == "weighted" and index == skip_weighted_index:
+            continue
+        rendered.append(segment["text"])
+    return normalize_prompt_text("".join(rendered))
+
+
+def parse_promptmatch_weighted_prompt(prompt):
+    prompt = prompt or ""
+    segments = []
+    weighted_fragments = []
+    last_end = 0
+
+    for match in EXPLICIT_PROMPT_WEIGHT_RE.finditer(prompt):
+        start, end = match.span()
+        if start > last_end:
+            segments.append({"kind": "text", "text": prompt[last_end:start]})
+
+        fragment_text = normalize_prompt_text(match.group(1))
+        try:
+            fragment_weight = float(match.group(2))
+        except ValueError:
+            fragment_text = ""
+            fragment_weight = 0.0
+
+        if fragment_text and fragment_weight > 0:
+            segment_index = len(segments)
+            segments.append({"kind": "weighted", "text": fragment_text, "weight": fragment_weight})
+            weighted_fragments.append(
+                {
+                    "segment_index": segment_index,
+                    "text": fragment_text,
+                    "weight": fragment_weight,
+                }
+            )
+        else:
+            segments.append({"kind": "text", "text": match.group(0)})
+        last_end = end
+
+    if last_end < len(prompt):
+        segments.append({"kind": "text", "text": prompt[last_end:]})
+
+    return render_promptmatch_segments(segments), weighted_fragments, segments
 
 
 def get_imagereward_utils():
@@ -584,7 +643,8 @@ class ModelBackend:
         self._model.eval()
         print("[SigLIP] Ready.")
 
-    def encode_text(self, prompt):
+    def _encode_text_plain(self, prompt):
+        prompt = normalize_prompt_text(prompt)
         # Average a few prompt phrasings to make matching a little less brittle.
         phrases = [f"a photo of a {prompt}", f"a photo of {prompt}", prompt]
         with torch.no_grad():
@@ -599,6 +659,54 @@ class ModelBackend:
                 feat = self._model.get_text_features(**inputs)
             feat = F.normalize(feat.float(), dim=-1)
             return F.normalize(feat.mean(dim=0, keepdim=True), dim=-1)
+
+    def _blend_text_embeddings(self, weighted_prompts):
+        mixed = None
+        total_weight = 0.0
+
+        for prompt_text, weight in weighted_prompts:
+            prompt_text = normalize_prompt_text(prompt_text)
+            weight = float(weight)
+            if not prompt_text or weight <= 0:
+                continue
+            emb = self._encode_text_plain(prompt_text)
+            mixed = (emb * weight) if mixed is None else (mixed + (emb * weight))
+            total_weight += weight
+
+        if mixed is None:
+            fallback = normalize_prompt_text(weighted_prompts[0][0]) if weighted_prompts else ""
+            return self._encode_text_plain(fallback)
+
+        if total_weight > 0:
+            mixed = mixed / total_weight
+        return F.normalize(mixed, dim=-1)
+
+    def encode_text(self, prompt):
+        base_prompt, weighted_fragments, segments = parse_promptmatch_weighted_prompt(prompt)
+        base_prompt = base_prompt or normalize_prompt_text(prompt)
+        if not weighted_fragments or not base_prompt:
+            return self._encode_text_plain(base_prompt or prompt)
+
+        weighted_prompts = [(base_prompt, 1.0)]
+        summary = []
+        for fragment in weighted_fragments:
+            frag_text = fragment["text"]
+            frag_weight = fragment["weight"]
+            if frag_weight > 1.0:
+                weighted_prompts.append((frag_text, frag_weight - 1.0))
+                summary.append(f"{frag_text} x{frag_weight:g}")
+            elif frag_weight < 1.0:
+                reduced_prompt = render_promptmatch_segments(
+                    segments,
+                    skip_weighted_index=fragment["segment_index"],
+                )
+                if reduced_prompt and reduced_prompt != base_prompt:
+                    weighted_prompts.append((reduced_prompt, 1.0 - frag_weight))
+                    summary.append(f"{frag_text} x{frag_weight:g}")
+
+        if summary:
+            print(f"[PromptMatch] Weighted prompt fragments: {', '.join(summary)}")
+        return self._blend_text_embeddings(weighted_prompts)
 
     def encode_images_batch(self, pil_images):
         with torch.no_grad():
@@ -1134,6 +1242,15 @@ def create_app():
     input.dispatchEvent(new Event("input", {{ bubbles: true }}));
     input.dispatchEvent(new Event("change", {{ bubbles: true }}));
   }};
+  const pushShortcutAction = (value) => {{
+    const root = document.getElementById("hy-shortcut-action");
+    if (!root) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    input.value = value;
+    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
   const readMarkedState = () => {{
     const root = document.getElementById("hy-mark-state");
     if (!root) return {{ left: [], right: [] }};
@@ -1147,6 +1264,111 @@ def create_app():
   }};
   let repaintTimers = [];
   let activeDrag = null;
+  const findWeightedPromptSpan = (value, selectionStart, selectionEnd) => {{
+    const weightedRe = /\\(([^()]*?)\\s*:\\s*([0-9]*\\.?[0-9]+)\\)/g;
+    let match;
+    while ((match = weightedRe.exec(value)) !== null) {{
+      const fullStart = match.index;
+      const fullEnd = fullStart + match[0].length;
+      const hasSelection = selectionStart !== selectionEnd;
+      const insideMatch = hasSelection
+        ? (selectionStart >= fullStart && selectionEnd <= fullEnd)
+        : (selectionStart >= fullStart && selectionStart <= fullEnd);
+      if (!insideMatch) continue;
+      return {{
+        fullStart,
+        fullEnd,
+        text: match[1],
+        weight: Number.parseFloat(match[2]),
+      }};
+    }}
+    return null;
+  }};
+  const formatPromptWeight = (weight) => {{
+    const rounded = Math.round(weight * 10) / 10;
+    return rounded.toFixed(1);
+  }};
+  const dispatchTextboxEvents = (input) => {{
+    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const getPromptRootForElement = (element) => {{
+    if (!element || typeof element.closest !== "function") return null;
+    return element.closest("#hy-pos, #hy-neg, #hy-ir-pos, #hy-ir-neg");
+  }};
+  const adjustPromptWeight = (input, delta) => {{
+    if (!input) return false;
+    const value = input.value || "";
+    const selectionStart = input.selectionStart ?? 0;
+    const selectionEnd = input.selectionEnd ?? selectionStart;
+    const weighted = findWeightedPromptSpan(value, selectionStart, selectionEnd);
+    if (weighted) {{
+      const newWeight = Math.max(0.1, (weighted.weight || 1.0) + delta);
+      const replacement = Math.abs(newWeight - 1.0) < 1e-9
+        ? weighted.text
+        : `(${{weighted.text}}:${{formatPromptWeight(newWeight)}})`;
+      input.value = value.slice(0, weighted.fullStart) + replacement + value.slice(weighted.fullEnd);
+      const innerStart = weighted.fullStart + (replacement === weighted.text ? 0 : 1);
+      const innerEnd = innerStart + weighted.text.length;
+      input.setSelectionRange(innerStart, innerEnd);
+      dispatchTextboxEvents(input);
+      return true;
+    }}
+    if (selectionStart === selectionEnd) return false;
+    const selectedText = value.slice(selectionStart, selectionEnd);
+    const leadingWs = (selectedText.match(/^\\s*/) || [""])[0];
+    const trailingWs = (selectedText.match(/\\s*$/) || [""])[0];
+    const coreText = selectedText.slice(leadingWs.length, selectedText.length - trailingWs.length);
+    if (!coreText) return false;
+    const baseWeight = delta >= 0 ? 1.1 : 0.9;
+    const replacement = `${{leadingWs}}(${{coreText}}:${{formatPromptWeight(baseWeight)}})${{trailingWs}}`;
+    input.value = value.slice(0, selectionStart) + replacement + value.slice(selectionEnd);
+    const innerStart = selectionStart + leadingWs.length + 1;
+    const innerEnd = innerStart + coreText.length;
+    input.setSelectionRange(innerStart, innerEnd);
+    dispatchTextboxEvents(input);
+    return true;
+  }};
+  const hookPromptWeightHotkeys = () => {{
+    for (const id of ["hy-pos", "hy-neg"]) {{
+      const root = document.getElementById(id);
+      if (!root) continue;
+      const input = root.querySelector("input, textarea");
+      if (!input || input.dataset.hyWeightHooked) continue;
+      input.addEventListener("keydown", (event) => {{
+        if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+        let delta = null;
+        const key = event.key || "";
+        const code = event.code || "";
+        if (key === "+" || key === "=" || code === "NumpadAdd") {{
+          delta = 0.1;
+        }} else if (key === "-" || key === "_" || code === "NumpadSubtract") {{
+          delta = -0.1;
+        }}
+        if (delta === null) return;
+        if (!adjustPromptWeight(input, delta)) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }});
+      input.dataset.hyWeightHooked = "1";
+    }}
+  }};
+  const hookRunScoringHotkeys = () => {{
+    if (document.body.dataset.hyRunHotkeyHooked) return;
+    document.addEventListener("keydown", (event) => {{
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key || "";
+      const code = event.code || "";
+      if (key !== "Enter" && code !== "NumpadEnter") return;
+      const promptRoot = getPromptRootForElement(event.target) || getPromptRootForElement(document.activeElement);
+      const promptId = promptRoot ? promptRoot.id : "";
+      if (!promptId) return;
+      pushShortcutAction(`run:${{promptId}}:${{Date.now()}}`);
+      event.preventDefault();
+      event.stopPropagation();
+    }}, true);
+    document.body.dataset.hyRunHotkeyHooked = "1";
+  }};
   const scheduleRepaint = () => {{
     // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
     ensureThumbBehavior();
@@ -1349,6 +1571,8 @@ def create_app():
         el.setAttribute("aria-label", text);
       }}
     }}
+    hookRunScoringHotkeys();
+    hookPromptWeightHotkeys();
     ensureThumbBehavior();
   }};
   const hookMarkState = () => {{
@@ -1376,10 +1600,10 @@ def create_app():
         "hy-method": "Choose whether to sort by PromptMatch or ImageReward.",
         "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
         "hy-model": "Choose the PromptMatch model family and size.",
-        "hy-pos": "Describe what you want to find in the images.",
-        "hy-neg": "Optional PromptMatch negative prompt that counts against a match.",
-        "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor.",
-        "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score.",
+        "hy-pos": "Describe what you want to find in the images. PromptMatch also supports fragment weights like beautiful (blonde:1.2) woman. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
+        "hy-neg": "Optional PromptMatch negative prompt that counts against a match. Weighted fragments like (text:1.3) also work here. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
+        "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor. Press Ctrl+Enter to run scoring.",
+        "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score. Press Ctrl+Enter to run scoring.",
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
         "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
         "hy-generate-prompt": "Use the currently previewed image to generate a dense editable prompt with the selected caption backend.",
@@ -1387,8 +1611,8 @@ def create_app():
         "hy-generated-prompt-detail": "Choose whether the caption backend should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
         "hy-insert-prompt": "Copy the editable generated prompt back into the active method's main prompt field.",
         "hy-promptgen-status": "Small status readout for prompt generation.",
-        "hy-run-pm": "Score the current folder with the selected method and prompts.",
-        "hy-run-ir": "Score the current folder with the selected method and prompts.",
+        "hy-run-pm": "Score the current folder with the selected method and prompts. Ctrl+Enter from a PromptMatch prompt box does the same.",
+        "hy-run-ir": "Score the current folder with the selected method and prompts. Ctrl+Enter from an ImageReward prompt box does the same.",
         "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
         "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
@@ -2051,7 +2275,7 @@ def create_app():
                 gr.update(visible=False),
                 gr.update(label="Primary thresh (>=  SELECTED)", value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(label="Neg threshold (< -> passes)", visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-                gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt."),
+                gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
             )
         return (
             gr.update(visible=False),
@@ -2200,6 +2424,29 @@ def create_app():
             mark_state,
             gr.update(minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX, value=mid, label="Primary thresh (>=  SELECTED)"),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+        )
+
+    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, progress=gr.Progress()):
+        action = (action or "").strip()
+        if not action.startswith("run:"):
+            return empty_result("Shortcut action ignored.", method)
+
+        prompt_id = action.split(":", 2)[1] if ":" in action else ""
+        if prompt_id in ("hy-pos", "hy-neg"):
+            method = METHOD_PROMPTMATCH
+        elif prompt_id in ("hy-ir-pos", "hy-ir-neg"):
+            method = METHOD_IMAGEREWARD
+
+        return score_folder(
+            method,
+            folder,
+            model_label,
+            pos_prompt,
+            neg_prompt,
+            ir_prompt,
+            ir_negative_prompt,
+            ir_penalty_weight,
+            progress=progress,
         )
 
     def update_split(main_threshold, aux_threshold):
@@ -2809,6 +3056,7 @@ def create_app():
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=300, elem_classes=["sidebar-box"]):
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
+                shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
                 with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
                     method_dd = gr.Dropdown(
@@ -2818,7 +3066,7 @@ def create_app():
                         elem_id="hy-method",
                     )
                     method_note = gr.Markdown(
-                        "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt.",
+                        "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported.",
                         elem_classes=["method-note"],
                     )
                     folder_input = gr.Textbox(
@@ -2979,6 +3227,11 @@ def create_app():
         ir_penalty_weight_tb.change(
             fn=update_imagereward_penalty_weight,
             inputs=[ir_penalty_weight_tb, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
+        shortcut_action.change(
+            fn=handle_shortcut_action,
+            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
         thumb_action.change(fn=handle_thumb_action, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])

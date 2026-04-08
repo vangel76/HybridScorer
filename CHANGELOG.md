@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.42.0] - 2026-04-08
+
+- Added PromptMatch weighted fragment syntax like `(blonde:1.2)` for both positive and negative prompts.
+- Added PromptMatch keyboard shortcuts to wrap selected prompt text with weights and nudge weights up or down by `0.1`.
+- Returning a weighted fragment to `1.0` now removes the wrapper and restores plain prompt text automatically.
+- Added `Ctrl+Enter` scoring shortcuts from the PromptMatch and ImageReward prompt boxes.
+- Updated the README and in-app help text to document the new prompt weighting and keyboard shortcut workflow.
+
 ## [1.40.0] - 2026-04-07
 
 - Compacted the sidebar UI to remove wasted padding, borders, gutters, and empty space.
