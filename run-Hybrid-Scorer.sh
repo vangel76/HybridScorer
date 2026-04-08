@@ -10,7 +10,7 @@ echo "=== Hybrid-Scorer ==="
 
 if [ ! -x "$PYTHON_BIN" ]; then
   echo "venv312 was not found."
-  echo "Run ./setup-venv312.sh first."
+  echo "Run ./setup-hybridscorer-linux.sh first."
   exit 1
 fi
 

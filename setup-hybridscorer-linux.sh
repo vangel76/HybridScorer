@@ -3,9 +3,31 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv312"
+UPDATE_GIT=0
 PYTORCH_CUDA_INDEX_URL="${PYTORCH_CUDA_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
 PYTORCH_TORCH_VERSION="${PYTORCH_TORCH_VERSION:-2.9.1}"
 PYTORCH_TORCHVISION_VERSION="${PYTORCH_TORCHVISION_VERSION:-0.24.1}"
+
+usage() {
+  echo "Usage: ./setup-hybridscorer-linux.sh [--update]" >&2
+  exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --update)
+      UPDATE_GIT=1
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      ;;
+  esac
+  shift
+done
 
 if command -v python3.12 >/dev/null 2>&1; then
   PYTHON_BIN="python3.12"
@@ -18,6 +40,42 @@ fi
 
 echo "Using Python: $PYTHON_BIN"
 
+update_git_checkout() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git was not found in PATH." >&2
+    exit 1
+  fi
+
+  cd "$SCRIPT_DIR"
+
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "This folder is not a git working tree:" >&2
+    echo "  $SCRIPT_DIR" >&2
+    exit 1
+  fi
+
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "Tracked local changes were detected." >&2
+    echo "Commit or stash them before running ./setup-hybridscorer-linux.sh --update." >&2
+    exit 1
+  fi
+
+  if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+    echo "No upstream branch is configured for this checkout." >&2
+    echo "Set a tracking branch first, then rerun ./setup-hybridscorer-linux.sh --update." >&2
+    exit 1
+  fi
+
+  local current_branch
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  if [ -n "$current_branch" ]; then
+    echo "Updating branch: $current_branch"
+  fi
+
+  git pull --ff-only
+  echo
+}
+
 validate_existing_venv() {
   local venv_python="$VENV_DIR/bin/python"
   local pyvenv_cfg="$VENV_DIR/pyvenv.cfg"
@@ -25,7 +83,7 @@ validate_existing_venv() {
   if ! "$venv_python" -m pip --version >/dev/null 2>&1; then
     echo "Existing venv312 is not healthy." >&2
     echo "python -m pip failed inside $VENV_DIR." >&2
-    echo "Delete venv312 and run ./setup-venv312.sh again." >&2
+    echo "Delete venv312 and run ./setup-hybridscorer-linux.sh again." >&2
     exit 1
   fi
 
@@ -33,10 +91,15 @@ validate_existing_venv() {
     echo "Existing venv312 appears to have been copied or moved from another path." >&2
     echo "Expected to find this project path in $pyvenv_cfg:" >&2
     echo "  $VENV_DIR" >&2
-    echo "Delete venv312 and run ./setup-venv312.sh again." >&2
+    echo "Delete venv312 and run ./setup-hybridscorer-linux.sh again." >&2
     exit 1
   fi
 }
+
+if [ "$UPDATE_GIT" = "1" ]; then
+  echo "Updating git checkout before refreshing venv312..."
+  update_git_checkout
+fi
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
   echo "Creating virtual environment at $VENV_DIR"
@@ -73,7 +136,7 @@ else
   echo
   echo "Skipping optional JoyCaption GGUF runtime."
   echo "To enable it later, rerun:"
-  echo "  INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh"
+  echo "  INSTALL_JOYCAPTION_GGUF=1 ./setup-hybridscorer-linux.sh"
 fi
 
 python - <<'PY'

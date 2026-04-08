@@ -67,28 +67,54 @@ Then set up the Python virtual environment before trying to run the app.
 
 ### Windows Setup Script
 
-Use [setup-venv312-windows.bat](setup-venv312-windows.bat) 
+Use [setup-hybridscorer-windows.bat](setup-hybridscorer-windows.bat) 
 
-to create Python virtual environment needed. It will install Python 3.12 with `winget` if missing:
+to create the Python virtual environment needed. It will install Python 3.12 with `winget` if missing:
 
 ```bat
-setup-venv312-windows.bat
+setup-hybridscorer-windows.bat
 ```
 ### Linux Setup Script
 
-Use [setup-venv312.sh](setup-venv312.sh)
+Use [setup-hybridscorer-linux.sh](setup-hybridscorer-linux.sh)
 
- To create Python virtual environment needed.
+to create the Python virtual environment needed.
 
 ```bash
-./setup-venv312.sh
+./setup-hybridscorer-linux.sh
 ```
 
 If you also want the optional JoyCaption GGUF backend, rerun setup with:
 
 ```bash
-INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh
+INSTALL_JOYCAPTION_GGUF=1 ./setup-hybridscorer-linux.sh
 ```
+
+## Update
+
+When you already have the repo cloned and want to refresh both the code and `venv312`, rerun the setup script with `--update`.
+
+### Windows Update
+
+Use [setup-hybridscorer-windows.bat](setup-hybridscorer-windows.bat)
+
+```bat
+setup-hybridscorer-windows.bat --update
+```
+
+### Linux Update
+
+Use [setup-hybridscorer-linux.sh](setup-hybridscorer-linux.sh)
+
+```bash
+./setup-hybridscorer-linux.sh --update
+```
+
+With `--update`, the setup scripts:
+
+- `git pull --ff-only` to fetch the latest fast-forwardable changes
+- refresh `venv312` so the virtual environment picks up dependency updates
+- stop early if tracked local changes would make the update unsafe
 
 ## Run
 
@@ -304,7 +330,7 @@ For the Windows scripts to work end-to-end, the user needs:
 After that, the intended Windows flow is:
 
 ```bat
-setup-venv312-windows.bat
+setup-hybridscorer-windows.bat
 run-Hybrid-Scorer-windows.bat
 ```
 
@@ -343,12 +369,12 @@ This app combines PromptMatch and ImageReward into one UI and lets you switch sc
 
 Windows scripts:
 
-- `setup-venv312-windows.bat`
+- `setup-hybridscorer-windows.bat`
 - `run-Hybrid-Scorer-windows.bat`
 
 Linux scripts:
 
-- `setup-venv312.sh`
+- `setup-hybridscorer-linux.sh`
 - `run-Hybrid-Scorer.sh`
 
 Main cross-platform app:

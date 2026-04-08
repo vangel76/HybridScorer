@@ -7,7 +7,7 @@ set "APP_PY=%CD%\Hybrid-Scorer.py"
 
 if not exist "%VENV_PY%" (
     echo venv312 was not found.
-    echo Run setup-venv312-windows.bat first.
+    echo Run setup-hybridscorer-windows.bat first.
     exit /b 1
 )
 
