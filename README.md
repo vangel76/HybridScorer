@@ -63,7 +63,7 @@ git clone https://github.com/vangel76/HybridScorer.git
 cd HybridScorer
 ```
 
-Then set up the Python virtual environment before trying to run the app.
+The setup scripts install everything into an isolated virtual environment, so you do not have to fight with system Python or risk breaking other tools on your machine.
 
 ### Windows Setup Script
 
