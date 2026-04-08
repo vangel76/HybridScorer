@@ -21,6 +21,14 @@ Current version: `1.30.0` (`v1.30.0` on GitHub releases)
 - In the end, the app copies the original image files into two output folders: `selected` and `rejected`.
 - The source images are not recompressed or edited. The sources remains untouched and in place.
 
+### Prompt From Image
+
+If you find an image you like while reviewing, `HybridScorer` can turn that preview image into an editable prompt you can reuse right away.
+
+- Generate a prompt from the currently previewed image.
+- Choose between lighter `Florence-2` captions or stronger `JoyCaption` variants.
+- Edit the generated text, then insert it back into the active scoring prompt.
+
 ## Main App
 
 | App | Best for | How it scores | Output buckets |
