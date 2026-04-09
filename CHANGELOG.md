@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.6.23] - 2026-04-09
+
+- Disabled image-to-image navigation inside the zoom dialog so it no longer acts like a carousel.
+- Hid the zoom dialog's thumbnail strip, blocked left/right navigation keys there, and prevented clicks inside the zoomed media area from stepping to neighboring images.
+
+## [1.6.22] - 2026-04-09
+
+- Reworked zoom-dialog actions to send the chosen filename and action together in one backend event instead of relying on a separate preview update to land first.
+- Stopped tiny-thumb clicks from immediately pushing a guessed filename; the dialog now re-syncs from the visible zoom metadata after Gradio updates the preview.
+- Made the dialog's filename/status line above the thumbnail strip the primary source of truth for the currently zoomed image during actions.
+
+## [1.6.21] - 2026-04-09
+
+- Applied a direct one-slot correction to the zoom-dialog thumbnail-strip index used for actions, so clicking a tiny thumb no longer targets the next image to the right.
+
+## [1.6.20] - 2026-04-09
+
+- Made zoom-dialog actions prefer the actually selected tiny preview thumb in the bottom strip, including Gradio's active markers and visible highlight styling, before falling back to caption/image inference.
+
+## [1.6.19] - 2026-04-09
+
+- Tightened zoom-dialog thumbnail tracking to index only the actual bottom thumbnail strip row, fixing the consistent "one image to the right" offset caused by extra small dialog images being counted ahead of the real strip.
+
+## [1.6.18] - 2026-04-09
+
+- Made `Fit thresh`, `Move >>`, and `<< Move` hand off cleanly from the zoom dialog by resolving the currently shown preview image, closing the dialog, and then replaying the action from the normal gallery state instead of acting inside the unstable zoom view.
+
 ## [1.6.17] - 2026-04-09
 
 - Made `Move >>` and `<< Move` follow the active zoomed preview image when nothing is explicitly marked, matching the same target-selection behavior already used by `Fit thresh`.
@@ -79,7 +106,7 @@
 - Updated the `OpenCLIP ViT-L-14` VRAM guidance to reflect its lower observed usage as well.
 - PromptMatch now caches image embeddings per folder and model so prompt-only reruns can reuse the expensive image pass.
 
-## [1.42.0] - 2026-04-08
+## [1.4.2] - 2026-04-08
 
 - Added PromptMatch weighted fragment syntax like `(blonde:1.2)` for both positive and negative prompts.
 - Added PromptMatch keyboard shortcuts to wrap selected prompt text with weights and nudge weights up or down by `0.1`.
@@ -87,7 +114,7 @@
 - Added `Ctrl+Enter` scoring shortcuts from the PromptMatch and ImageReward prompt boxes.
 - Updated the README and in-app help text to document the new prompt weighting and keyboard shortcut workflow.
 
-## [1.40.0] - 2026-04-07
+## [1.4.0] - 2026-04-07
 
 - Compacted the sidebar UI to remove wasted padding, borders, gutters, and empty space.
 - Simplified the header so it shows `HybridScorer` with version and creator on one line.
@@ -101,7 +128,7 @@
 - Inverted the upper-right tile-size slider so dragging right makes thumbnails larger.
 - Renamed the gallery zoom label to `Tile Size` and fixed the toolbar spacing so the full label is visible.
 
-## [1.30.0] - 2026-04-03
+## [1.3.0] - 2026-04-03
 
 - Added `Prompt from preview image` model selection:
   `Florence-2`, `JoyCaption Beta One`, and `JoyCaption Beta One GGUF (Q4_K_M)`.
@@ -111,7 +138,7 @@
 - Added optional GGUF setup for lower-VRAM JoyCaption use.
 - Fixed prompt-generator cache/source detection issues.
 
-## [1.25.0] - 2026-04-03
+## [1.2.5] - 2026-04-03
 
 - Added `Fit thresh` to move the threshold so selected images switch sides automatically.
 - Added `Prompt from preview image` to generate editable prompts from the current image.

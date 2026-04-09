@@ -1539,18 +1539,26 @@ def create_app():
       if (!(target instanceof Element)) return;
       const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
       if (!dialogRoot) return;
-      const markedState = readMarkedState();
-      const thumbFname = resolveDialogThumbSelection(target, markedState);
-      if (thumbFname) {{
-        activeDialogPreviewFname = thumbFname;
-        pushPreviewFname(thumbFname);
+      disablePreviewDialogNavigation(dialogRoot);
+      if (shouldBlockDialogNavigationClick(target, dialogRoot)) {{
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+      }}
+      const thumbInfo = getDialogThumbTargetInfo(target);
+      if (thumbInfo) {{
+        setTimeout(syncDialogPreviewTarget, 40);
+        setTimeout(syncDialogPreviewTarget, 140);
+        setTimeout(syncDialogPreviewTarget, 280);
         return;
       }}
       setTimeout(syncDialogPreviewTarget, 40);
       setTimeout(syncDialogPreviewTarget, 140);
     }}, true);
     document.addEventListener("keydown", (event) => {{
-      if (!document.querySelector('[role="dialog"], [aria-modal="true"]')) return;
+      const dialogRoot = document.querySelector('[role="dialog"], [aria-modal="true"]');
+      if (!dialogRoot) return;
       const key = event.key || "";
       const deltas = {{
         ArrowLeft: -1,
@@ -1559,23 +1567,46 @@ def create_app():
         ArrowRight: 1,
         ArrowDown: 1,
         PageDown: 1,
+        Home: 0,
+        End: 0,
       }};
       if (!(key in deltas)) return;
-      const markedState = readMarkedState();
-      const order = getDialogOrder(markedState, activeDialogSelection.side);
-      if (order.length && activeDialogSelection.index >= 0) {{
-        const nextIndex = Math.max(0, Math.min(order.length - 1, activeDialogSelection.index + deltas[key]));
-        const fname = order[nextIndex];
-        if (fname) {{
-          activeDialogSelection = {{ side: activeDialogSelection.side, index: nextIndex }};
-          activeDialogPreviewFname = fname;
-          pushPreviewFname(fname);
-        }}
-      }}
-      setTimeout(syncDialogPreviewTarget, 40);
-      setTimeout(syncDialogPreviewTarget, 140);
+      disablePreviewDialogNavigation(dialogRoot);
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
     }}, true);
     document.body.dataset.hyPreviewTrackHooked = "1";
+  }};
+  const hookInlinePreviewNavigationLock = () => {{
+    if (document.body.dataset.hyInlinePreviewLockHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const previewNavTarget = target.closest(
+        "#hy-left-gallery .preview .media-button, #hy-right-gallery .preview .media-button, " +
+        "#hy-left-gallery .preview .thumbnail-small, #hy-right-gallery .preview .thumbnail-small"
+      );
+      if (!previewNavTarget) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }}, true);
+    document.addEventListener("keydown", (event) => {{
+      const key = event.key || "";
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(key)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const active = document.activeElement instanceof Element ? document.activeElement : null;
+      const inPreview = !!(
+        target?.closest?.("#hy-left-gallery .preview, #hy-right-gallery .preview")
+        || active?.closest?.("#hy-left-gallery .preview, #hy-right-gallery .preview")
+      );
+      if (!inPreview) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }}, true);
+    document.body.dataset.hyInlinePreviewLockHooked = "1";
   }};
   const hookHistogramResize = () => {{
     const root = document.getElementById("hy-hist");
@@ -1651,6 +1682,67 @@ def create_app():
     }}
     return "";
   }};
+  const extractFnameFromDialogText = (dialogRoot, markedState) => {{
+    if (!dialogRoot) return "";
+    const knownNames = [
+      ...(Array.isArray(markedState.left_order) ? markedState.left_order : []),
+      ...(Array.isArray(markedState.right_order) ? markedState.right_order : []),
+    ];
+    if (!knownNames.length) return "";
+    const sortedNames = knownNames.slice().sort((a, b) => b.length - a.length);
+    const dialogRect = dialogRoot.getBoundingClientRect();
+    const thumbs = getDialogThumbImages(dialogRoot);
+    const stripTop = thumbs.length
+      ? Math.min(...thumbs.map((img) => img.getBoundingClientRect().top))
+      : Number.POSITIVE_INFINITY;
+    let bestFname = "";
+    let bestScore = -Infinity;
+    for (const node of Array.from(dialogRoot.querySelectorAll("div, span, p, figcaption, label"))) {{
+      if (!(node instanceof Element)) continue;
+      if (node.closest("button, [role='button']")) continue;
+      if (node.querySelector("img")) continue;
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      if (
+        rect.width <= 0
+        || rect.height <= 0
+        || style.display === "none"
+        || style.visibility === "hidden"
+        || style.opacity === "0"
+      ) continue;
+      const text = (node.textContent || "").trim();
+      if (!text || text.length > 300) continue;
+      let fname = "";
+      const parsed = extractFnameFromCaption(text);
+      if (parsed && knownNames.includes(parsed)) {{
+        fname = parsed;
+      }} else {{
+        for (const candidate of sortedNames) {{
+          if (text.includes(candidate)) {{
+            fname = candidate;
+            break;
+          }}
+        }}
+      }}
+      if (!fname) continue;
+      const centerX = rect.left + (rect.width / 2);
+      const dialogCenterX = dialogRect.left + (dialogRect.width / 2);
+      let score = 0;
+      if (text.includes("|")) score += 800;
+      if (Number.isFinite(stripTop) && rect.bottom <= stripTop + 18) {{
+        score += 500;
+        score -= Math.abs(stripTop - rect.bottom);
+      }}
+      if (rect.width < dialogRect.width * 0.9) score += 80;
+      score += rect.top / 6;
+      score -= Math.abs(centerX - dialogCenterX) / 4;
+      if (score > bestScore) {{
+        bestScore = score;
+        bestFname = fname;
+      }}
+    }}
+    return bestFname;
+  }};
   const getDialogOrder = (markedState, side) => {{
     if (side === "left") return Array.isArray(markedState.left_order) ? markedState.left_order : [];
     if (side === "right") return Array.isArray(markedState.right_order) ? markedState.right_order : [];
@@ -1681,7 +1773,7 @@ def create_app():
   const getDialogThumbImages = (dialogRoot) => {{
     const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
     if (!root) return [];
-    return Array.from(root.querySelectorAll("img")).filter((img) => {{
+    const candidates = Array.from(root.querySelectorAll("img")).filter((img) => {{
       const rect = img.getBoundingClientRect();
       const style = window.getComputedStyle(img);
       return rect.width > 12
@@ -1692,42 +1784,255 @@ def create_app():
         && style.visibility !== "hidden"
         && style.opacity !== "0";
     }});
+    if (candidates.length <= 1) return candidates;
+    const rows = [];
+    for (const img of candidates) {{
+      const rect = img.getBoundingClientRect();
+      const centerY = rect.top + (rect.height / 2);
+      let row = rows.find((entry) => Math.abs(entry.centerY - centerY) <= 22);
+      if (!row) {{
+        row = {{ centerY, images: [] }};
+        rows.push(row);
+      }}
+      row.images.push(img);
+      row.centerY = row.images.reduce((sum, entry) => {{
+        const entryRect = entry.getBoundingClientRect();
+        return sum + entryRect.top + (entryRect.height / 2);
+      }}, 0) / row.images.length;
+    }}
+    rows.sort((a, b) => {{
+      if (b.images.length !== a.images.length) return b.images.length - a.images.length;
+      return b.centerY - a.centerY;
+    }});
+    const strip = rows[0]?.images || [];
+    strip.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    return strip;
   }};
-  const resolveDialogThumbSelection = (target, markedState) => {{
+  const getDialogThumbTargetInfo = (target) => {{
     const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
-    if (!dialogRoot) return "";
+    if (!dialogRoot) return null;
     const targetImg = target instanceof HTMLImageElement ? target : target.querySelector?.("img");
-    if (!(targetImg instanceof HTMLImageElement)) return "";
+    if (!(targetImg instanceof HTMLImageElement)) return null;
     const thumbs = getDialogThumbImages(dialogRoot);
     const idx = thumbs.indexOf(targetImg);
-    if (idx < 0) return "";
-    let side = activeDialogSelection.side || "";
-    if (!side) {{
-      side = updateDialogSelectionFromFname(markedState, markedState.preview || "") ? activeDialogSelection.side : "";
+    if (idx < 0) return null;
+    return {{ dialogRoot, targetImg, idx }};
+  }};
+  const getDialogControlLabel = (element) => {{
+    if (!(element instanceof Element)) return "";
+    return `${{element.getAttribute("aria-label") || ""}} ${{element.getAttribute("title") || ""}} ${{(element.textContent || "").trim()}}`.trim().toLowerCase();
+  }};
+  const hideDialogThumbStrip = (dialogRoot) => {{
+    const thumbs = getDialogThumbImages(dialogRoot);
+    if (!thumbs.length) return;
+    const parentCounts = new Map();
+    for (const img of thumbs) {{
+      const host = img.closest("button, [role='button'], .thumbnail-item, .gallery-item") || img;
+      host.style.display = "none";
+      host.style.pointerEvents = "none";
+      host.setAttribute("aria-hidden", "true");
+      if (host.parentElement) {{
+        parentCounts.set(host.parentElement, (parentCounts.get(host.parentElement) || 0) + 1);
+      }}
     }}
-    const order = getDialogOrder(markedState, side);
-    if (idx < order.length) {{
-      activeDialogSelection = {{ side, index: idx }};
-      return order[idx] || "";
+    for (const [parent, count] of parentCounts.entries()) {{
+      if (count >= Math.max(3, Math.ceil(thumbs.length * 0.5))) {{
+        parent.style.display = "none";
+        parent.setAttribute("aria-hidden", "true");
+      }}
     }}
-    return "";
+  }};
+  const disablePreviewDialogNavigation = (dialogRoot) => {{
+    const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (!root) return;
+    hideDialogThumbStrip(root);
+    const mainImg = getActiveDialogImage();
+    if (mainImg) {{
+      const host = mainImg.closest("button, [role='button']") || mainImg;
+      host.style.pointerEvents = "none";
+      host.style.cursor = "default";
+      mainImg.style.pointerEvents = "none";
+      mainImg.style.cursor = "default";
+    }}
+  }};
+  const shouldBlockDialogNavigationClick = (target, dialogRoot) => {{
+    if (!(target instanceof Element) || !dialogRoot) return false;
+    if (target === dialogRoot) return false;
+    const control = target.closest("button, a");
+    if (control) {{
+      const label = getDialogControlLabel(control);
+      const rect = control.getBoundingClientRect();
+      const dialogRect = dialogRoot.getBoundingClientRect();
+      if (rect.top <= dialogRect.top + 80) return false;
+      if (
+        label === "x"
+        || label === "×"
+        || label.includes("close")
+        || label.includes("download")
+        || label.includes("share")
+        || label.includes("fullscreen")
+        || label.includes("expand")
+      ) {{
+        return false;
+      }}
+    }}
+    return true;
+  }};
+  const parseCssColor = (value) => {{
+    const match = String(value || "").match(/rgba?\\(([^)]+)\\)/i);
+    if (!match) return null;
+    const parts = match[1].split(",").map((part) => Number.parseFloat(part.trim()));
+    if (parts.length < 3 || parts.some((part) => !Number.isFinite(part))) return null;
+    return {{
+      r: parts[0],
+      g: parts[1],
+      b: parts[2],
+      a: Number.isFinite(parts[3]) ? parts[3] : 1,
+    }};
+  }};
+  const thumbSelectionScore = (img) => {{
+    const host = img.closest("button, [role='button'], .thumbnail-item, .gallery-item") || img;
+    const hostStyle = window.getComputedStyle(host);
+    const imgStyle = window.getComputedStyle(img);
+    const hostClasses = String(host.className || "").toLowerCase();
+    const imgClasses = String(img.className || "").toLowerCase();
+    let score = 0;
+    if (host.getAttribute("aria-selected") === "true" || img.getAttribute("aria-selected") === "true") score += 1000;
+    if (host.getAttribute("aria-current") === "true" || img.getAttribute("aria-current") === "true") score += 1000;
+    if (host.dataset.selected === "true" || img.dataset.selected === "true") score += 1000;
+    if (/(^|\\s)(selected|active|current)(\\s|$)/.test(hostClasses)) score += 300;
+    if (/(^|\\s)(selected|active|current)(\\s|$)/.test(imgClasses)) score += 300;
+    const outlineWidth = Number.parseFloat(hostStyle.outlineWidth || "0") || 0;
+    const borderWidth = Number.parseFloat(hostStyle.borderTopWidth || "0") || 0;
+    const boxShadow = `${{hostStyle.boxShadow || ""}} ${{imgStyle.boxShadow || ""}}`.toLowerCase();
+    if (outlineWidth > 0) score += outlineWidth * 25;
+    if (borderWidth > 0) score += borderWidth * 15;
+    if (boxShadow && boxShadow !== "none") score += 30;
+    const colors = [
+      parseCssColor(hostStyle.outlineColor),
+      parseCssColor(hostStyle.borderTopColor),
+      parseCssColor(hostStyle.boxShadow),
+      parseCssColor(imgStyle.outlineColor),
+      parseCssColor(imgStyle.borderTopColor),
+      parseCssColor(imgStyle.boxShadow),
+    ].filter(Boolean);
+    for (const color of colors) {{
+      const blueBias = color.b - Math.max(color.r, color.g);
+      const cyanBias = Math.min(color.g, color.b) - color.r;
+      if (blueBias > 20) score += 40 + blueBias;
+      if (cyanBias > 20) score += 40 + cyanBias;
+      score += (color.a || 0) * 10;
+    }}
+    return score;
+  }};
+  const getSelectedDialogThumbIndex = (dialogRoot) => {{
+    const thumbs = getDialogThumbImages(dialogRoot);
+    if (!thumbs.length) return -1;
+    let bestIndex = -1;
+    let bestScore = -1;
+    thumbs.forEach((img, idx) => {{
+      const score = thumbSelectionScore(img);
+      if (score > bestScore) {{
+        bestScore = score;
+        bestIndex = idx;
+      }}
+    }});
+    return bestScore > 0 ? bestIndex : -1;
   }};
   const syncDialogPreviewTarget = () => {{
+    const dialogRoot = document.querySelector('[role="dialog"], [aria-modal="true"]');
     const dialogImg = getActiveDialogImage();
     const markedState = readMarkedState();
     if (!activeDialogSelection.side) {{
       updateDialogSelectionFromFname(markedState, markedState.preview || "");
     }}
-    if (!dialogImg) {{
+    if (!dialogRoot || !dialogImg) {{
       activeDialogPreviewFname = "";
       activeDialogSelection = {{ side: "", index: -1 }};
       return;
     }}
-    const fname = extractFnameFromDialogImage(dialogImg, markedState);
+    disablePreviewDialogNavigation(dialogRoot);
+    const fname = extractFnameFromDialogText(dialogRoot, markedState) || extractFnameFromDialogImage(dialogImg, markedState);
     if (!fname || fname === activeDialogPreviewFname) return;
     updateDialogSelectionFromFname(markedState, fname);
     activeDialogPreviewFname = fname;
     pushPreviewFname(fname);
+  }};
+  const resolveDialogPreviewFnameForAction = (dialogRoot, markedState) => {{
+    const fromText = extractFnameFromDialogText(dialogRoot, markedState);
+    if (fromText) {{
+      updateDialogSelectionFromFname(markedState, fromText);
+      return fromText;
+    }}
+    const dialogImg = getActiveDialogImage();
+    const fromImage = extractFnameFromDialogImage(dialogImg, markedState);
+    if (fromImage) {{
+      updateDialogSelectionFromFname(markedState, fromImage);
+      return fromImage;
+    }}
+    const selectedThumbIndex = getSelectedDialogThumbIndex(dialogRoot);
+    if (selectedThumbIndex >= 0) {{
+      let side = activeDialogSelection.side || "";
+      if (!side) {{
+        side = updateDialogSelectionFromFname(markedState, markedState.preview || "") ? activeDialogSelection.side : "";
+      }}
+      const order = getDialogOrder(markedState, side);
+      if (selectedThumbIndex < order.length) {{
+        activeDialogSelection = {{ side, index: selectedThumbIndex }};
+        return order[selectedThumbIndex] || "";
+      }}
+    }}
+    const order = getDialogOrder(markedState, activeDialogSelection.side);
+    if (order.length && activeDialogSelection.index >= 0 && activeDialogSelection.index < order.length) {{
+      return order[activeDialogSelection.index] || "";
+    }}
+    return activeDialogPreviewFname || markedState.preview || "";
+  }};
+  const closePreviewDialog = (dialogRoot) => {{
+    const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (!root) return false;
+    const closeButton = Array.from(root.querySelectorAll("button")).find((button) => {{
+      const label = `${{button.getAttribute("aria-label") || ""}} ${{button.getAttribute("title") || ""}} ${{(button.textContent || "").trim()}}`.trim().toLowerCase();
+      return label === "x" || label === "×" || label.includes("close");
+    }});
+    if (closeButton) {{
+      closeButton.click();
+      return true;
+    }}
+    const escapeEvent = new KeyboardEvent("keydown", {{
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+    }});
+    document.dispatchEvent(escapeEvent);
+    return true;
+  }};
+  const hookDialogActionHandoff = () => {{
+    if (document.body.dataset.hyDialogActionHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const actionRoot = target.closest("#hy-fit-threshold, #hy-move-right, #hy-move-left");
+      if (!actionRoot) return;
+      const dialogRoot = document.querySelector('[role="dialog"], [aria-modal="true"]');
+      if (!dialogRoot) return;
+      const markedState = readMarkedState();
+      const fname = resolveDialogPreviewFnameForAction(dialogRoot, markedState);
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      closePreviewDialog(dialogRoot);
+      pushThumbAction(`dialogactionjson:${{JSON.stringify({{
+        action: actionRoot.id || "",
+        fname: fname || "",
+        ts: Date.now(),
+      }})}}`);
+      setTimeout(scheduleRepaint, 40);
+      setTimeout(scheduleRepaint, 140);
+    }}, true);
+    document.body.dataset.hyDialogActionHooked = "1";
   }};
   const getHoverScores = (markedState) => {{
     if (!activeHoverInfo || !activeHoverInfo.fname) return null;
@@ -1801,17 +2106,21 @@ def create_app():
     hookHistogramResize();
     syncHistogramHoverLine();
     syncDialogPreviewTarget();
+    disablePreviewDialogNavigation();
     for (const timer of repaintTimers) clearTimeout(timer);
     repaintTimers = [
       setTimeout(ensureThumbBehavior, 40),
       setTimeout(syncHistogramHoverLine, 60),
       setTimeout(syncDialogPreviewTarget, 80),
+      setTimeout(disablePreviewDialogNavigation, 100),
       setTimeout(ensureThumbBehavior, 140),
       setTimeout(syncHistogramHoverLine, 170),
       setTimeout(syncDialogPreviewTarget, 200),
+      setTimeout(disablePreviewDialogNavigation, 220),
       setTimeout(ensureThumbBehavior, 320),
       setTimeout(syncHistogramHoverLine, 350),
       setTimeout(syncDialogPreviewTarget, 380),
+      setTimeout(disablePreviewDialogNavigation, 400),
     ];
   }};
   const ensureThumbBehavior = () => {{
@@ -2051,6 +2360,8 @@ def create_app():
   hookMarkState();
   hookHistogramResize();
   hookPreviewDialogTracking();
+  hookInlinePreviewNavigationLock();
+  hookDialogActionHandoff();
   scheduleRepaint();
   new MutationObserver((mutations) => {{
     let dialogMutation = false;
@@ -2068,12 +2379,16 @@ def create_app():
     if (dialogMutation) {{
       setTimeout(syncDialogPreviewTarget, 30);
       setTimeout(syncDialogPreviewTarget, 120);
+      setTimeout(disablePreviewDialogNavigation, 45);
+      setTimeout(disablePreviewDialogNavigation, 135);
     }}
     if (!relevantMutation) return;
     applyTooltips();
     hookMarkState();
     hookHistogramResize();
     hookPreviewDialogTracking();
+    hookInlinePreviewNavigationLock();
+    hookDialogActionHandoff();
     scheduleRepaint();
   }}).observe(document.body, {{ childList: true, subtree: true }});
 }})();
@@ -2315,7 +2630,7 @@ def create_app():
             "right_order": right_order,
         })
 
-    def active_targets(main_threshold, aux_threshold):
+    def active_targets(main_threshold, aux_threshold, preview_override=None):
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
         )
@@ -2326,7 +2641,7 @@ def create_app():
         if left_marked or right_marked:
             return left_marked, right_marked
 
-        preview_fname = state.get("preview_fname")
+        preview_fname = preview_override or state.get("preview_fname")
         if preview_fname in left_names:
             return [preview_fname], []
         if preview_fname in right_names:
@@ -3245,16 +3560,34 @@ def create_app():
 
     def handle_thumb_action(action, main_threshold, aux_threshold):
         # Custom JS reports preview clicks, shift-click bulk marking, and drag-drop moves.
+        noop = (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        with_slider_skips = lambda view: (*view, gr.skip(), gr.skip())
         if not action:
-            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            return noop
         if str(action).startswith("previewfname:"):
             try:
                 _, fname, _ = str(action).split(":", 2)
             except Exception:
-                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+                return noop
             if fname and fname in state.get("scores", {}):
                 state["preview_fname"] = fname
-            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            return noop
+        if str(action).startswith("dialogactionjson:"):
+            try:
+                payload = json.loads(str(action)[17:])
+                action_id = str(payload.get("action", "") or "")
+                fname = str(payload.get("fname", "") or "")
+            except Exception:
+                return noop
+            if fname and fname in state.get("scores", {}):
+                state["preview_fname"] = fname
+            if action_id == "hy-move-right":
+                return with_slider_skips(move_right(main_threshold, aux_threshold, preview_override=fname))
+            if action_id == "hy-move-left":
+                return with_slider_skips(move_left(main_threshold, aux_threshold, preview_override=fname))
+            if action_id == "hy-fit-threshold":
+                return fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=fname)
+            return noop
         if str(action).startswith("dropjson:"):
             try:
                 payload = json.loads(str(action)[9:])
@@ -3263,7 +3596,7 @@ def create_app():
                 target_side = payload["target_side"]
                 drop_fnames = [str(name) for name in payload.get("fnames", []) if str(name)]
             except Exception:
-                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+                return noop
             left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
             items = left_items if side == "left" else right_items
             if 0 <= index < len(items) and target_side in ("left", "right") and target_side != side:
@@ -3280,7 +3613,7 @@ def create_app():
                 state["left_marked"] = [name for name in state["left_marked"] if name not in move_fnames]
                 state["right_marked"] = [name for name in state["right_marked"] if name not in move_fnames]
                 state["preview_fname"] = move_fnames[0]
-            return current_view(main_threshold, aux_threshold)
+            return with_slider_skips(current_view(main_threshold, aux_threshold))
         parts = str(action).split(":")
         verb = parts[0] if parts else ""
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
@@ -3289,20 +3622,20 @@ def create_app():
             _, side, raw_index, _ = parts
             index = int(raw_index)
         except Exception:
-            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            return noop
         items = left_items if side == "left" else right_items
         if 0 <= index < len(items):
             fname = os.path.basename(items[index][0])
             if verb == "preview":
                 state["preview_fname"] = fname
-                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+                return noop
             else:
                 marked_key = "left_marked" if side == "left" else "right_marked"
                 if fname in state[marked_key]:
                     state[marked_key] = [name for name in state[marked_key] if name != fname]
                 else:
                     state[marked_key].append(fname)
-        return current_view(main_threshold, aux_threshold)
+        return with_slider_skips(current_view(main_threshold, aux_threshold))
 
     def handle_hist_width(width_value, main_threshold, aux_threshold):
         try:
@@ -3314,9 +3647,9 @@ def create_app():
         state["hist_width"] = next_width
         return render_histogram(state["method"], state["scores"], main_threshold, aux_threshold)
 
-    def move_right(main_threshold, aux_threshold):
+    def move_right(main_threshold, aux_threshold, preview_override=None):
         left_name, right_name, _, _ = method_labels(state["method"])
-        left_targets, _ = active_targets(main_threshold, aux_threshold)
+        left_targets, _ = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = left_targets or list(state.get("left_marked", []))
         for fname in targets:
             state["overrides"][fname] = right_name
@@ -3324,9 +3657,9 @@ def create_app():
         state["right_marked"] = []
         return current_view(main_threshold, aux_threshold)
 
-    def move_left(main_threshold, aux_threshold):
+    def move_left(main_threshold, aux_threshold, preview_override=None):
         left_name, right_name, _, _ = method_labels(state["method"])
-        _, right_targets = active_targets(main_threshold, aux_threshold)
+        _, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = right_targets or list(state.get("right_marked", []))
         for fname in targets:
             state["overrides"][fname] = left_name
@@ -3341,8 +3674,8 @@ def create_app():
         state["right_marked"] = []
         return current_view(main_threshold, aux_threshold)
 
-    def fit_threshold_to_targets(main_threshold, aux_threshold):
-        left_targets, right_targets = active_targets(main_threshold, aux_threshold)
+    def fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=None):
+        left_targets, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = left_targets or right_targets
         if not targets or (left_targets and right_targets) or not state["scores"]:
             return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
@@ -3719,6 +4052,40 @@ def create_app():
         background:#254f86 !important;
         color:#d9e8ff !important;
     }
+    #hy-left-gallery .preview .thumbnails,
+    #hy-right-gallery .preview .thumbnails,
+    #hy-left-gallery .preview .thumbnail-small,
+    #hy-right-gallery .preview .thumbnail-small {
+        display:none !important;
+        pointer-events:none !important;
+    }
+    #hy-left-gallery .preview,
+    #hy-right-gallery .preview {
+        display:flex !important;
+        flex-direction:column !important;
+    }
+    #hy-left-gallery .preview .media-button,
+    #hy-right-gallery .preview .media-button {
+        pointer-events:none !important;
+        cursor:default !important;
+        height:auto !important;
+        flex:1 1 auto !important;
+        min-height:0 !important;
+    }
+    #hy-left-gallery .preview [data-testid="detailed-image"],
+    #hy-right-gallery .preview [data-testid="detailed-image"],
+    #hy-left-gallery .preview [data-testid="detailed-video"],
+    #hy-right-gallery .preview [data-testid="detailed-video"] {
+        cursor:default !important;
+        pointer-events:none !important;
+    }
+    [role="dialog"] .thumbnail-item,
+    [aria-modal="true"] .thumbnail-item,
+    [role="dialog"] [data-testid*="thumbnail"],
+    [aria-modal="true"] [data-testid*="thumbnail"] {
+        display:none !important;
+        pointer-events:none !important;
+    }
     #hy-insert-prompt, #hy-insert-prompt button {
         background:#8d5a19 !important;
         background-image:none !important;
@@ -4049,7 +4416,11 @@ def create_app():
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
         hist_width_tb.change(fn=handle_hist_width, inputs=[hist_width_tb, main_slider, aux_slider], outputs=[hist_plot])
-        thumb_action.change(fn=handle_thumb_action, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        thumb_action.change(
+            fn=handle_thumb_action,
+            inputs=[thumb_action, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
         move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
