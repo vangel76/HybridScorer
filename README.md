@@ -431,6 +431,7 @@ Main cross-platform app:
 - `Hybrid-Scorer.py`
 - `VERSION`
 - `CHANGELOG.md`
+- `LICENSE` (`GPL-3.0`)
 
 There are no separate Windows-only Python app files. Both operating systems use the same `Hybrid-Scorer.py`.
 
