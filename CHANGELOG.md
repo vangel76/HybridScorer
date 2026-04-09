@@ -1,5 +1,59 @@
 # Changelog
 
+## [1.6.17] - 2026-04-09
+
+- Made `Move >>` and `<< Move` follow the active zoomed preview image when nothing is explicitly marked, matching the same target-selection behavior already used by `Fit thresh`.
+
+## [1.6.16] - 2026-04-09
+
+- Switched zoom-dialog thumbnail tracking from filename/source guessing to direct thumbnail-strip index matching against the known gallery order, fixing wrong-image offsets when clicking the small preview thumbs under the zoomed image.
+
+## [1.6.15] - 2026-04-09
+
+- Improved zoom-dialog preview tracking again by following gallery order for keyboard navigation and resolving clicks on the small dialog thumbnails back to scored filenames, so actions can stay synced with the image actually selected inside the zoom view.
+
+## [1.6.14] - 2026-04-09
+
+- Made the zoomed preview dialog keep the active preview image in sync while stepping through images by resolving the currently visible dialog image back to its scored filename, so `Fit thresh` and move actions now target the image actually shown in the zoom view instead of the thumbnail that originally opened it.
+
+## [1.6.13] - 2026-04-09
+
+- Stopped thumbnail preview clicks from forcing a full gallery and histogram rerender just to remember the active preview image for prompt generation and fit-threshold actions.
+
+## [1.6.12] - 2026-04-09
+
+- Fixed histogram hover markers reading stale gallery-card data after rerenders, which could make the positive or negative marker jump to the wrong side or bounce while moving across consecutive images.
+
+## [1.6.11] - 2026-04-09
+
+- Moved the thumbnail-hover histogram marker fully into frontend overlay code so hovering no longer forces the graph to be regenerated through Gradio.
+- Reduced the histogram's fixed left/right padding and switched tick placement to explicit left/center/right alignment so the chart uses more width and no longer carries that oversized left gutter.
+
+## [1.6.10] - 2026-04-09
+
+- Removed the main-threshold `Auto` button because it was more confusing than helpful in practice.
+- Stopped the custom gallery repaint observer from reacting to Gradio preview-dialog mutations, which was causing the UI to visibly refresh when zooming into an image.
+
+## [1.6.9] - 2026-04-09
+
+- Added a faint hover marker line in the histogram so moving over gallery thumbnails shows that image's current score against the stronger threshold line.
+- Made the histogram width follow the available threshold-panel width so browser resizing no longer leaves large empty side gutters around a fixed-size graph.
+
+## [1.6.8] - 2026-04-09
+
+- Fixed the PromptMatch histogram so both positive and negative charts now show the full score range instead of incorrectly clipping everything below `0`.
+- Re-aligned the main `Auto` threshold helper with that full PromptMatch score range so its guess matches the corrected graph.
+
+## [1.6.7] - 2026-04-09
+
+- Fixed the main `Auto` threshold guess for PromptMatch so it now uses the same nonnegative positive-score data shown in the graph instead of being pulled down by hidden negative similarities.
+- Tweaked the auto-threshold fallback order so a real score-gap split wins more often before falling back to the softer Otsu-style estimate.
+
+## [1.6.6] - 2026-04-09
+
+- Added an `Auto` button above the main threshold `50%` button so the positive keep-threshold can guess a split from the current score distribution.
+- The new auto-threshold logic looks for a strong gap between neighboring sorted scores and falls back to an Otsu-style histogram split when the graph does not show one clear valley.
+
 ## [1.6.5] - 2026-04-09
 
 - Manual PromptMatch/ImageReward pinning now survives rescoring the same folder and only clears automatically when an image leaves that folder or you switch folders.

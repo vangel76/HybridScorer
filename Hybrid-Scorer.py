@@ -1324,6 +1324,7 @@ def create_app():
         "backend": prompt_backend,
         "ir_model": None,
         "hist_geom": None,
+        "hist_width": 300,
         "proxy_folder_key": None,
         "proxy_cache_dir": None,
         "proxy_map": {},
@@ -1394,6 +1395,21 @@ def create_app():
     input.dispatchEvent(new Event("input", {{ bubbles: true }}));
     input.dispatchEvent(new Event("change", {{ bubbles: true }}));
   }};
+  const pushHistWidth = (value) => {{
+    const root = document.getElementById("hy-hist-width");
+    if (!root) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    const normalized = String(value);
+    if (input.value === normalized) return;
+    input.value = normalized;
+    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const pushPreviewFname = (fname) => {{
+    if (!fname) return;
+    pushThumbAction(`previewfname:${{fname}}:${{Date.now()}}`);
+  }};
   const readMarkedState = () => {{
     const root = document.getElementById("hy-mark-state");
     if (!root) return {{ left: [], right: [] }};
@@ -1407,6 +1423,10 @@ def create_app():
   }};
   let repaintTimers = [];
   let activeDrag = null;
+  let histResizeObserver = null;
+  let activeHoverInfo = null;
+  let activeDialogPreviewFname = "";
+  let activeDialogSelection = {{ side: "", index: -1 }};
   const findWeightedPromptSpan = (value, selectionStart, selectionEnd) => {{
     const weightedRe = /\\(([^()]*?)\\s*:\\s*([0-9]*\\.?[0-9]+)\\)/g;
     let match;
@@ -1512,14 +1532,286 @@ def create_app():
     }}, true);
     document.body.dataset.hyRunHotkeyHooked = "1";
   }};
+  const hookPreviewDialogTracking = () => {{
+    if (document.body.dataset.hyPreviewTrackHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
+      if (!dialogRoot) return;
+      const markedState = readMarkedState();
+      const thumbFname = resolveDialogThumbSelection(target, markedState);
+      if (thumbFname) {{
+        activeDialogPreviewFname = thumbFname;
+        pushPreviewFname(thumbFname);
+        return;
+      }}
+      setTimeout(syncDialogPreviewTarget, 40);
+      setTimeout(syncDialogPreviewTarget, 140);
+    }}, true);
+    document.addEventListener("keydown", (event) => {{
+      if (!document.querySelector('[role="dialog"], [aria-modal="true"]')) return;
+      const key = event.key || "";
+      const deltas = {{
+        ArrowLeft: -1,
+        ArrowUp: -1,
+        PageUp: -1,
+        ArrowRight: 1,
+        ArrowDown: 1,
+        PageDown: 1,
+      }};
+      if (!(key in deltas)) return;
+      const markedState = readMarkedState();
+      const order = getDialogOrder(markedState, activeDialogSelection.side);
+      if (order.length && activeDialogSelection.index >= 0) {{
+        const nextIndex = Math.max(0, Math.min(order.length - 1, activeDialogSelection.index + deltas[key]));
+        const fname = order[nextIndex];
+        if (fname) {{
+          activeDialogSelection = {{ side: activeDialogSelection.side, index: nextIndex }};
+          activeDialogPreviewFname = fname;
+          pushPreviewFname(fname);
+        }}
+      }}
+      setTimeout(syncDialogPreviewTarget, 40);
+      setTimeout(syncDialogPreviewTarget, 140);
+    }}, true);
+    document.body.dataset.hyPreviewTrackHooked = "1";
+  }};
+  const hookHistogramResize = () => {{
+    const root = document.getElementById("hy-hist");
+    if (!root) return;
+    const measure = () => {{
+      const rect = root.getBoundingClientRect();
+      const width = Math.max(220, Math.round(rect.width || root.clientWidth || 300) - 2);
+      pushHistWidth(width);
+      syncHistogramHoverLine();
+    }};
+    if (!histResizeObserver) {{
+      histResizeObserver = new ResizeObserver(() => {{
+        window.requestAnimationFrame(measure);
+      }});
+    }}
+    if (root.dataset.hyResizeHooked !== "1") {{
+      histResizeObserver.observe(root);
+      root.dataset.hyResizeHooked = "1";
+    }}
+    measure();
+  }};
+  const parseMainScoreFromCaption = (captionText) => {{
+    const cleaned = (captionText || "").replace(/^✋\s*/, "").trim();
+    const match = cleaned.match(/^-?\d+(?:\.\d+)?/);
+    return match ? Number.parseFloat(match[0]) : null;
+  }};
+  const extractFnameFromCaption = (captionText) => {{
+    const text = (captionText || "").trim();
+    if (!text) return "";
+    const parts = text.split("|");
+    return parts.length ? parts[parts.length - 1].trim() : "";
+  }};
+  const resolveImageSourceTokens = (src) => {{
+    const tokens = new Set();
+    if (!src) return tokens;
+    const raw = String(src);
+    const decoded = (() => {{
+      try {{
+        return decodeURIComponent(raw);
+      }} catch {{
+        return raw;
+      }}
+    }})();
+    for (const candidate of [raw, decoded]) {{
+      if (!candidate) continue;
+      tokens.add(candidate);
+      for (const part of candidate.split(/[/?#&=]+/)) {{
+        const clean = (part || "").trim();
+        if (clean) tokens.add(clean);
+      }}
+      const slashParts = candidate.split("/");
+      const tail = slashParts.length ? slashParts[slashParts.length - 1] : "";
+      if (tail) tokens.add(tail);
+    }}
+    return tokens;
+  }};
+  const extractFnameFromDialogImage = (img, markedState) => {{
+    if (!img) return "";
+    const direct = extractFnameFromCaption(
+      img.getAttribute("alt")
+      || img.getAttribute("aria-label")
+      || img.getAttribute("title")
+      || ""
+    );
+    if (direct) return direct;
+    const mediaLookup = markedState.media_lookup || {{}};
+    const sourceTokens = new Set([
+      ...resolveImageSourceTokens(img.currentSrc || ""),
+      ...resolveImageSourceTokens(img.src || ""),
+    ]);
+    for (const token of sourceTokens) {{
+      if (mediaLookup[token]) return mediaLookup[token];
+    }}
+    return "";
+  }};
+  const getDialogOrder = (markedState, side) => {{
+    if (side === "left") return Array.isArray(markedState.left_order) ? markedState.left_order : [];
+    if (side === "right") return Array.isArray(markedState.right_order) ? markedState.right_order : [];
+    return [];
+  }};
+  const updateDialogSelectionFromFname = (markedState, fname) => {{
+    if (!fname) return false;
+    for (const side of ["left", "right"]) {{
+      const order = getDialogOrder(markedState, side);
+      const idx = order.indexOf(fname);
+      if (idx >= 0) {{
+        activeDialogSelection = {{ side, index: idx }};
+        return true;
+      }}
+    }}
+    return false;
+  }};
+  const getActiveDialogImage = () => {{
+    const candidates = Array.from(document.querySelectorAll('[role="dialog"] img, [aria-modal="true"] img')).filter((img) => {{
+      const rect = img.getBoundingClientRect();
+      const style = window.getComputedStyle(img);
+      return rect.width >= 220 && rect.height >= 220 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    }});
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height) - (a.getBoundingClientRect().width * a.getBoundingClientRect().height));
+    return candidates[0];
+  }};
+  const getDialogThumbImages = (dialogRoot) => {{
+    const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (!root) return [];
+    return Array.from(root.querySelectorAll("img")).filter((img) => {{
+      const rect = img.getBoundingClientRect();
+      const style = window.getComputedStyle(img);
+      return rect.width > 12
+        && rect.height > 12
+        && rect.width <= 180
+        && rect.height <= 180
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && style.opacity !== "0";
+    }});
+  }};
+  const resolveDialogThumbSelection = (target, markedState) => {{
+    const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
+    if (!dialogRoot) return "";
+    const targetImg = target instanceof HTMLImageElement ? target : target.querySelector?.("img");
+    if (!(targetImg instanceof HTMLImageElement)) return "";
+    const thumbs = getDialogThumbImages(dialogRoot);
+    const idx = thumbs.indexOf(targetImg);
+    if (idx < 0) return "";
+    let side = activeDialogSelection.side || "";
+    if (!side) {{
+      side = updateDialogSelectionFromFname(markedState, markedState.preview || "") ? activeDialogSelection.side : "";
+    }}
+    const order = getDialogOrder(markedState, side);
+    if (idx < order.length) {{
+      activeDialogSelection = {{ side, index: idx }};
+      return order[idx] || "";
+    }}
+    return "";
+  }};
+  const syncDialogPreviewTarget = () => {{
+    const dialogImg = getActiveDialogImage();
+    const markedState = readMarkedState();
+    if (!activeDialogSelection.side) {{
+      updateDialogSelectionFromFname(markedState, markedState.preview || "");
+    }}
+    if (!dialogImg) {{
+      activeDialogPreviewFname = "";
+      activeDialogSelection = {{ side: "", index: -1 }};
+      return;
+    }}
+    const fname = extractFnameFromDialogImage(dialogImg, markedState);
+    if (!fname || fname === activeDialogPreviewFname) return;
+    updateDialogSelectionFromFname(markedState, fname);
+    activeDialogPreviewFname = fname;
+    pushPreviewFname(fname);
+  }};
+  const getHoverScores = (markedState) => {{
+    if (!activeHoverInfo || !activeHoverInfo.fname) return null;
+    const lookup = markedState.score_lookup || {{}};
+    const scored = lookup[activeHoverInfo.fname] || null;
+    if (scored) return scored;
+    if (Number.isFinite(activeHoverInfo.main)) {{
+      return {{
+        main: activeHoverInfo.main,
+        neg: Number.isFinite(activeHoverInfo.neg) ? activeHoverInfo.neg : null,
+      }};
+    }}
+    return null;
+  }};
+  const syncHistogramHoverLine = () => {{
+    const root = document.getElementById("hy-hist");
+    if (!root) return;
+    root.style.position = "relative";
+    const markedState = readMarkedState();
+    const geom = markedState.hist_geom || null;
+    const img = root.querySelector("img");
+    let line = root.querySelector(".hy-hover-line-main");
+    if (!line) {{
+      line = document.createElement("div");
+      line.className = "hy-hover-line hy-hover-line-main";
+      root.appendChild(line);
+    }}
+    let negLine = root.querySelector(".hy-hover-line-neg");
+    if (!negLine) {{
+      negLine = document.createElement("div");
+      negLine.className = "hy-hover-line hy-hover-line-neg";
+      root.appendChild(negLine);
+    }}
+    const hoverScores = getHoverScores(markedState);
+    if (!geom || !img || !hoverScores || !Number.isFinite(hoverScores.main)) {{
+      line.style.opacity = "0";
+      negLine.style.opacity = "0";
+      return;
+    }}
+    const chartLo = geom.method === "PromptMatch" ? geom.pos_lo : geom.lo;
+    const chartHi = geom.method === "PromptMatch" ? geom.pos_hi : geom.hi;
+    if (!Number.isFinite(chartLo) || !Number.isFinite(chartHi) || Math.abs(chartHi - chartLo) < 1e-9) {{
+      line.style.opacity = "0";
+      negLine.style.opacity = "0";
+      return;
+    }}
+    const scaleX = img.clientWidth / Math.max(geom.W || 1, 1);
+    const scaleY = img.clientHeight / Math.max(geom.H || 1, 1);
+    const chartX = (geom.PAD_L + (((hoverScores.main - chartLo) / (chartHi - chartLo)) * (geom.W - geom.PAD_L - geom.PAD_R))) * scaleX;
+    const clampedX = Math.max(geom.PAD_L * scaleX, Math.min((geom.W - geom.PAD_R) * scaleX, chartX));
+    const chartTop = (geom.PAD_TOP || 0) * scaleY;
+    const chartHeight = (geom.method === "PromptMatch" ? geom.CH : (geom.H - geom.PAD_TOP - geom.PAD_BOT)) * scaleY;
+    line.style.left = `${{Math.round(img.offsetLeft + clampedX)}}px`;
+    line.style.top = `${{Math.round(img.offsetTop + chartTop)}}px`;
+    line.style.height = `${{Math.max(12, Math.round(chartHeight))}}px`;
+    line.style.opacity = "1";
+    negLine.style.opacity = "0";
+    if (geom.method === "PromptMatch" && geom.has_neg && Number.isFinite(hoverScores.neg) && Number.isFinite(geom.neg_lo) && Number.isFinite(geom.neg_hi) && Math.abs(geom.neg_hi - geom.neg_lo) >= 1e-9) {{
+      const negX = (geom.PAD_L + (((hoverScores.neg - geom.neg_lo) / (geom.neg_hi - geom.neg_lo)) * (geom.W - geom.PAD_L - geom.PAD_R))) * scaleX;
+      const clampedNegX = Math.max(geom.PAD_L * scaleX, Math.min((geom.W - geom.PAD_R) * scaleX, negX));
+      const negTop = (geom.PAD_TOP + geom.CH + geom.GAP) * scaleY;
+      negLine.style.left = `${{Math.round(img.offsetLeft + clampedNegX)}}px`;
+      negLine.style.top = `${{Math.round(img.offsetTop + negTop)}}px`;
+      negLine.style.height = `${{Math.max(12, Math.round(geom.CH * scaleY))}}px`;
+      negLine.style.opacity = "1";
+    }}
+  }};
   const scheduleRepaint = () => {{
     // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
     ensureThumbBehavior();
+    hookHistogramResize();
+    syncHistogramHoverLine();
+    syncDialogPreviewTarget();
     for (const timer of repaintTimers) clearTimeout(timer);
     repaintTimers = [
       setTimeout(ensureThumbBehavior, 40),
+      setTimeout(syncHistogramHoverLine, 60),
+      setTimeout(syncDialogPreviewTarget, 80),
       setTimeout(ensureThumbBehavior, 140),
+      setTimeout(syncHistogramHoverLine, 170),
+      setTimeout(syncDialogPreviewTarget, 200),
       setTimeout(ensureThumbBehavior, 320),
+      setTimeout(syncHistogramHoverLine, 350),
+      setTimeout(syncDialogPreviewTarget, 380),
     ];
   }};
   const ensureThumbBehavior = () => {{
@@ -1548,6 +1840,8 @@ def create_app():
             }});
             const index = thumbButtons.indexOf(card);
             if (index >= 0) {{
+              activeDialogSelection = {{ side, index }};
+              activeDialogPreviewFname = card.dataset.hyFname || "";
               pushThumbAction(`preview:${{side}}:${{index}}:${{Date.now()}}`);
             }}
             setTimeout(scheduleRepaint, 30);
@@ -1628,6 +1922,32 @@ def create_app():
         card.dataset.hySide = side;
         card.dataset.hyIndex = String(index);
         card.dataset.hyFname = fname;
+        const scoreLookup = markedState.score_lookup || {{}};
+        const hoverScores = scoreLookup[fname] || null;
+        const hoverMain = hoverScores && Number.isFinite(hoverScores.main)
+          ? hoverScores.main
+          : parseMainScoreFromCaption(captionText);
+        card.dataset.hyHoverMain = Number.isFinite(hoverMain) ? String(hoverMain) : "";
+        card.dataset.hyHoverNeg = hoverScores && Number.isFinite(hoverScores.neg) ? String(hoverScores.neg) : "";
+        if (!card.dataset.hyHoverHooked) {{
+          card.addEventListener("mouseenter", (event) => {{
+            const target = event.currentTarget;
+            if (!target) return;
+            const main = Number.parseFloat(target.dataset.hyHoverMain || "");
+            const neg = Number.parseFloat(target.dataset.hyHoverNeg || "");
+            activeHoverInfo = {{
+              fname: target.dataset.hyFname || "",
+              main: Number.isFinite(main) ? main : null,
+              neg: Number.isFinite(neg) ? neg : null,
+            }};
+            syncHistogramHoverLine();
+          }});
+          card.addEventListener("mouseleave", () => {{
+            activeHoverInfo = null;
+            syncHistogramHoverLine();
+          }});
+          card.dataset.hyHoverHooked = "1";
+        }}
         if (!card.dataset.hyDragHooked) {{
           card.addEventListener("dragstart", (event) => {{
             const dragSide = card.dataset.hySide || side;
@@ -1729,10 +2049,31 @@ def create_app():
   }};
   applyTooltips();
   hookMarkState();
+  hookHistogramResize();
+  hookPreviewDialogTracking();
   scheduleRepaint();
-  new MutationObserver(() => {{
+  new MutationObserver((mutations) => {{
+    let dialogMutation = false;
+    const relevantMutation = mutations.some((mutation) => {{
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      return nodes.some((node) => {{
+        if (!(node instanceof Element)) return false;
+        if (node.closest('[role="dialog"], [aria-modal="true"]') || node.matches?.('[role="dialog"], [aria-modal="true"]')) {{
+          dialogMutation = true;
+          return false;
+        }}
+        return !!node.closest('#hy-left-gallery, #hy-right-gallery, #hy-hist, .sidebar-box');
+      }});
+    }});
+    if (dialogMutation) {{
+      setTimeout(syncDialogPreviewTarget, 30);
+      setTimeout(syncDialogPreviewTarget, 120);
+    }}
+    if (!relevantMutation) return;
     applyTooltips();
     hookMarkState();
+    hookHistogramResize();
+    hookPreviewDialogTracking();
     scheduleRepaint();
   }}).observe(document.body, {{ childList: true, subtree: true }});
 }})();
@@ -1930,12 +2271,48 @@ def create_app():
             return "Shift+click to mark multiple images, or drag one image or a marked batch between galleries."
         return f"Marked: **{left_count}** in SELECTED, **{right_count}** in REJECTED"
 
-    def marked_state_json():
+    def marked_state_json(visible_fnames=None):
+        score_lookup = {}
+        media_lookup = {}
+        left_order = []
+        right_order = []
+        visible_names = set(visible_fnames or [])
+        for fname, item in state.get("scores", {}).items():
+            if visible_names and fname not in visible_names:
+                continue
+            original_path = item.get("path")
+            if original_path:
+                original_base = os.path.basename(original_path)
+                media_lookup[original_base] = fname
+                media_lookup[original_path] = fname
+                display_path = state.get("proxy_map", {}).get(original_path, original_path)
+                display_base = os.path.basename(display_path)
+                media_lookup[display_base] = fname
+                media_lookup[display_path] = fname
+            if state["method"] == METHOD_PROMPTMATCH:
+                if item.get("failed", False) or "pos" not in item:
+                    continue
+                score_lookup[fname] = {
+                    "main": round(float(item["pos"]), 6),
+                    "neg": round(float(item["neg"]), 6) if item.get("neg") is not None else None,
+                }
+            else:
+                if item.get("score", -1001) <= -1000:
+                    continue
+                score_lookup[fname] = {
+                    "main": round(float(item["score"]), 6),
+                    "neg": None,
+                }
         return json.dumps({
             "left": state.get("left_marked", []),
             "right": state.get("right_marked", []),
             "held": list(state.get("overrides", {}).keys()),
             "preview": state.get("preview_fname"),
+            "hist_geom": state.get("hist_geom"),
+            "score_lookup": score_lookup,
+            "media_lookup": media_lookup,
+            "left_order": left_order,
+            "right_order": right_order,
         })
 
     def active_targets(main_threshold, aux_threshold):
@@ -1962,13 +2339,34 @@ def create_app():
             state["hist_geom"] = None
             return None
         _, _, main_hist_label, aux_hist_label = threshold_labels(method)
+        try:
+            hist_width = max(220, int(state.get("hist_width", 300)))
+        except Exception:
+            hist_width = 300
+
+        def draw_axis_labels(draw, left_x, center_x, right_x, y, lo, hi):
+            labels = (
+                (left_x, f"{lo:.3f}", "left"),
+                (center_x, f"{((lo + hi) / 2):.3f}", "center"),
+                (right_x, f"{hi:.3f}", "right"),
+            )
+            for x, text, align in labels:
+                bbox = draw.textbbox((0, 0), text)
+                width = bbox[2] - bbox[0]
+                if align == "center":
+                    tx = x - (width / 2)
+                elif align == "right":
+                    tx = x - width
+                else:
+                    tx = x
+                draw.text((int(tx), y), text, fill="#667755")
 
         if method == METHOD_PROMPTMATCH:
             if not all("pos" in item for item in scores.values()):
                 state["hist_geom"] = None
                 return None
-            pos_vals = [v["pos"] for v in scores.values() if v["pos"] >= 0]
-            neg_vals = [v["neg"] for v in scores.values() if v.get("neg") is not None and v["neg"] >= 0]
+            pos_vals = [v["pos"] for v in scores.values() if not v.get("failed", False)]
+            neg_vals = [v["neg"] for v in scores.values() if not v.get("failed", False) and v.get("neg") is not None]
             has_neg = bool(neg_vals)
             if not pos_vals:
                 state["hist_geom"] = None
@@ -1989,8 +2387,8 @@ def create_app():
 
             pos_counts, pos_lo, pos_hi = _bins(pos_vals)
             neg_counts, neg_lo, neg_hi = _bins(neg_vals)
-            W, CH = 300, max(60, int(130 * HIST_HEIGHT_SCALE))
-            PAD_L, PAD_R = 38, 8
+            W, CH = hist_width, max(60, int(130 * HIST_HEIGHT_SCALE))
+            PAD_L, PAD_R = 12, 12
             PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
             GAP = max(16, int(28 * HIST_HEIGHT_SCALE))
             n_ch = 2 if has_neg else 1
@@ -2018,9 +2416,7 @@ def create_app():
                     draw.rectangle([x0, y0 + CH - bh, x1, y0 + CH], fill=bar_rgb)
                 for yy in range(y0, y0 + CH, 6):
                     draw.line([(tx, yy), (tx, min(yy + 3, y0 + CH))], fill=line_rgb, width=2)
-                for frac, val in [(0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)]:
-                    lx = PAD_L + int(frac * cW)
-                    draw.text((lx, y0 + CH + 4), f"{val:.3f}", fill="#667755", anchor="mt")
+                draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, y0 + CH + 4, lo, hi)
                 draw.text((PAD_L, y0 - 14), f"{label} threshold: {threshold:.3f}", fill="#99bb88")
 
             draw_chart(
@@ -2082,8 +2478,8 @@ def create_app():
         counts = [0] * bins
         for val in vals:
             counts[min(int((val - lo) / width), bins - 1)] += 1
-        W, H = 300, max(70, int(130 * HIST_HEIGHT_SCALE))
-        PAD_L, PAD_R = 38, 8
+        W, H = hist_width, max(70, int(130 * HIST_HEIGHT_SCALE))
+        PAD_L, PAD_R = 12, 12
         PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
         cW = W - PAD_L - PAD_R
         img = Image.new("RGB", (W, H), "#0d0d11")
@@ -2102,9 +2498,7 @@ def create_app():
         tx = max(PAD_L, min(W - PAD_R, tx))
         for yy in range(PAD_TOP, PAD_TOP + H - PAD_BOT, 6):
             draw.line([(tx, yy), (tx, min(yy + 3, PAD_TOP + H - PAD_BOT))], fill="#aadd66", width=2)
-        for frac, val in [(0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)]:
-            lx = PAD_L + int(frac * cW)
-            draw.text((lx, PAD_TOP + H - PAD_BOT + 4), f"{val:.3f}", fill="#667755", anchor="mt")
+        draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, PAD_TOP + H - PAD_BOT + 4, lo, hi)
         draw.text((PAD_L, PAD_TOP - 14), f"{main_hist_label}: {main_threshold:.3f}", fill="#99bb88")
         state["hist_geom"] = {
             "method": method,
@@ -2129,8 +2523,11 @@ def create_app():
         )
         left_names = {os.path.basename(path) for path, _ in left_items}
         right_names = {os.path.basename(path) for path, _ in right_items}
+        left_order = [os.path.basename(path) for path, _ in left_items]
+        right_order = [os.path.basename(path) for path, _ in right_items]
         state["left_marked"] = [name for name in state.get("left_marked", []) if name in left_names]
         state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
+        visible_names = left_names | right_names
         return (
             f"### {left_name} — {len(left_items)} images",
             gallery_update(gallery_display_items(left_items), columns=zoom_columns),
@@ -2139,7 +2536,11 @@ def create_app():
             status_line(state["method"], left_items, right_items, state["scores"], state["overrides"]),
             render_histogram(state["method"], state["scores"], main_threshold, aux_threshold),
             selection_info(),
-            marked_state_json(),
+            json.dumps({
+                **json.loads(marked_state_json(visible_names)),
+                "left_order": left_order,
+                "right_order": right_order,
+            }),
         )
 
     def get_preview_image_path():
@@ -2846,6 +3247,14 @@ def create_app():
         # Custom JS reports preview clicks, shift-click bulk marking, and drag-drop moves.
         if not action:
             return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        if str(action).startswith("previewfname:"):
+            try:
+                _, fname, _ = str(action).split(":", 2)
+            except Exception:
+                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            if fname and fname in state.get("scores", {}):
+                state["preview_fname"] = fname
+            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
         if str(action).startswith("dropjson:"):
             try:
                 payload = json.loads(str(action)[9:])
@@ -2886,6 +3295,7 @@ def create_app():
             fname = os.path.basename(items[index][0])
             if verb == "preview":
                 state["preview_fname"] = fname
+                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
             else:
                 marked_key = "left_marked" if side == "left" else "right_marked"
                 if fname in state[marked_key]:
@@ -2894,9 +3304,21 @@ def create_app():
                     state[marked_key].append(fname)
         return current_view(main_threshold, aux_threshold)
 
+    def handle_hist_width(width_value, main_threshold, aux_threshold):
+        try:
+            next_width = max(220, int(float(width_value)))
+        except Exception:
+            return gr.skip()
+        if abs(next_width - int(state.get("hist_width", 300))) < 2:
+            return gr.skip()
+        state["hist_width"] = next_width
+        return render_histogram(state["method"], state["scores"], main_threshold, aux_threshold)
+
     def move_right(main_threshold, aux_threshold):
         left_name, right_name, _, _ = method_labels(state["method"])
-        for fname in state["left_marked"]:
+        left_targets, _ = active_targets(main_threshold, aux_threshold)
+        targets = left_targets or list(state.get("left_marked", []))
+        for fname in targets:
             state["overrides"][fname] = right_name
         state["left_marked"] = []
         state["right_marked"] = []
@@ -2904,7 +3326,9 @@ def create_app():
 
     def move_left(main_threshold, aux_threshold):
         left_name, right_name, _, _ = method_labels(state["method"])
-        for fname in state["right_marked"]:
+        _, right_targets = active_targets(main_threshold, aux_threshold)
+        targets = right_targets or list(state.get("right_marked", []))
+        for fname in targets:
             state["overrides"][fname] = left_name
         state["left_marked"] = []
         state["right_marked"] = []
@@ -3164,6 +3588,10 @@ def create_app():
     .sidebar-box .gr-group, .sidebar-box .block { gap:2px !important; }
     .sidebar-box .gr-form, .sidebar-box .gradio-row { gap:2px !important; }
     .threshold-row { align-items:end; gap:6px; }
+    .threshold-actions {
+        min-width:58px !important;
+        gap:4px !important;
+    }
     .threshold-mid button {
         min-width:50px !important;
         height:36px !important;
@@ -3185,7 +3613,20 @@ def create_app():
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
     .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
-    .hist-img img { cursor:crosshair !important; border-radius:6px; }
+    .hist-img, .hist-img > div { width:100% !important; max-width:100% !important; }
+    .hist-img img { cursor:crosshair !important; border-radius:6px; width:100% !important; max-width:100% !important; display:block !important; }
+    .hy-hover-line {
+        position:absolute;
+        width:0;
+        border-left:1px dashed rgba(190, 230, 190, 0.75);
+        pointer-events:none;
+        z-index:3;
+        opacity:0;
+        transition:opacity 0.06s linear;
+    }
+    .hy-hover-line-neg {
+        border-left-color: rgba(220, 165, 145, 0.78);
+    }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
     .grid-wrap .caption-label span, .grid-wrap [class*="caption"] { font-family:monospace !important; font-size:.72em !important; color:#8899aa !important; }
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
@@ -3370,6 +3811,7 @@ def create_app():
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=300, elem_classes=["sidebar-box"]):
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
+                hist_width_tb = gr.Textbox(value="300", visible="hidden", elem_id="hy-hist-width")
                 shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
                 with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
@@ -3460,7 +3902,8 @@ def create_app():
                             elem_id="hy-main-slider",
                             buttons=[],
                         )
-                        main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
+                        with gr.Column(scale=0, min_width=58, elem_classes=["threshold-actions"]):
+                            main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=58, elem_classes=["threshold-mid"])
                     with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
                         aux_slider = gr.Slider(
                             minimum=-1.0,
@@ -3520,7 +3963,7 @@ def create_app():
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
                         sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
                         move_right_btn = gr.Button("Move >>", elem_id="hy-move-right")
-                        fit_threshold_btn = gr.Button("Fit thresh", elem_id="hy-fit-threshold")
+                        fit_threshold_btn = gr.Button("Fit thresh to filter image", elem_id="hy-fit-threshold")
                         move_left_btn = gr.Button("<< Move", elem_id="hy-move-left")
                         clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
@@ -3605,6 +4048,7 @@ def create_app():
             inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
+        hist_width_tb.change(fn=handle_hist_width, inputs=[hist_width_tb, main_slider, aux_slider], outputs=[hist_plot])
         thumb_action.change(fn=handle_thumb_action, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
