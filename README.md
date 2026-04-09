@@ -30,6 +30,17 @@ If you generate a lot of images, collect references, or review large image folde
 
 `HybridScorer` is built to solve exactly that workflow: score a folder, split it into likely keepers and rejects, quickly fix the edge cases yourself, and export a clean result.
 
+## What It Actually Does
+
+Point `HybridScorer` at a folder of images, give it either a content prompt or an aesthetic target, and it will score the whole set, split it into two buckets, and let you correct the borderline cases visually.
+
+In practice, the workflow is:
+
+- score a large folder against what you want
+- review the `SELECTED` and `REJECTED` split
+- manually move the few mistakes
+- export the final result into folders you name yourself
+
 ## What This Is
 
 `HybridScorer` is a practical human-in-the-loop image triage tool for people who need to review a lot of images quickly without giving up control.
@@ -47,6 +58,28 @@ If you generate a lot of images, collect references, or review large image folde
 - Reference boards and collected folders: find the images that actually match the idea in your head.
 - Aesthetic filtering: separate strong images from weak ones faster than manual pass-after-pass review.
 - Prompt iteration: find one image that works, generate a prompt from it, and rescore again.
+
+### Real-World Examples
+
+- Find the best images from a batch of 500 generations without hand-sorting every single one.
+- Pull out only the images that match a prompt like `blonde woman in white dress` or `cinematic rainy street at night`.
+- Separate strong beach landscapes, portraits, or character shots from weaker near-duplicates in one pass.
+- Review a big reference folder and quickly keep only the images that match a specific subject, outfit, pose, lighting style, or mood.
+
+### What It Is Not
+
+- Not a cloud service.
+- Not a hosted AI product with telemetry or accounts.
+- Not a DAM or metadata catalog system.
+- Not an auto-tagger for building large searchable databases.
+- Not limited to AI-generated images. It works on any local image folder.
+
+### Local And Private
+
+- The app runs locally on your machine.
+- Your images stay in local folders.
+- Export uses the original source files, not recompressed previews.
+- Models are downloaded only when their libraries need them for first use.
 
 ### Prompt From Image
 
@@ -73,6 +106,13 @@ cd HybridScorer
 ```
 
 The setup scripts install everything into an isolated virtual environment, so you do not have to fight with system Python or risk breaking other tools on your machine.
+
+Current support target:
+
+- Windows
+- Linux
+
+`macOS` is not currently a supported/tested target.
 
 ### Windows Setup Script
 
