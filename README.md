@@ -2,14 +2,16 @@
 
 Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
-Current version: `1.6.5` (`v1.6.5` on GitHub releases)
+Current version: `1.7.0` (`v1.7.0` on GitHub releases)
 
 ## Latest Updates
 
-- Manual pinning now survives rescoring the same folder, so hand-sorted images stay on their chosen side until they actually leave that folder.
-- Prompt reruns can keep the exact current thresholds with per-method keep-threshold toggles, while folder/model changes still release them automatically.
-- The threshold panel is clearer now: only the relevant keep-threshold checkbox is shown, the sliders follow the real score range from the graphs, and the old reset arrows were replaced with explicit `50%` buttons.
-- PromptMatch histograms now tint the keep/reject sides around the threshold line to make the split easier to read visually.
+- Manual pinning survives rescoring the same folder, so hand-sorted images stay on their chosen side until they actually leave that folder.
+- Histogram hover markers now follow the thumbnail under your mouse without forcing graph redraws, and the threshold graph resizes with the sidebar width.
+- The export UI now lives above the galleries: each bucket has its own enable toggle and editable export folder name, plus an optional `Move instead of copy` mode in the export section.
+- Repeated exports into existing folders no longer clear them first; matching filenames are overwritten and unrelated files are left alone.
+
+![Updated graph UI](screenshots/New_Graphs.jpg)
 
 ## Screenshot
 
@@ -36,7 +38,7 @@ If you generate a lot of images, collect references, or review large image folde
 - Use **ImageReward** to sort for taste, aesthetic quality, style, and overall appeal.
 - Review the split in one interface, then manually correct the few exceptions instead of sorting everything by hand.
 - Generate a reusable prompt from any image you like while you review.
-- Keep the original files untouched. Export is a lossless copy into `selected/` and `rejected/`.
+- Keep the original files untouched by default. Export is a lossless copy unless you explicitly enable `Move instead of copy`.
 - CUDA keeps scoring fast enough to stay useful on large folders, and proxy caching speeds up repeat work and browsing.
 
 ### Why People Use It
@@ -58,7 +60,7 @@ If you find an image you like while reviewing, `HybridScorer` can turn that prev
 
 | App | Best for | How it scores | Output buckets |
 | --- | --- | --- | --- |
-| `Hybrid-Scorer.py` | Switching between content matching and aesthetic ranking in one place | PromptMatch with CLIP-family models or ImageReward with optional penalty prompt | `selected` / `rejected` |
+| `Hybrid-Scorer.py` | Switching between content matching and aesthetic ranking in one place | PromptMatch with CLIP-family models or ImageReward with optional penalty prompt | two editable export buckets (`selected` / `rejected` by default) |
 
 
 ## Install With Setup Scripts
@@ -211,7 +213,7 @@ The app is built for a fast review loop: score a folder, inspect the split, make
 - Adjust the threshold sliders or click directly on the histogram to refine the split.
 - Leave **Use proxies for gallery display** enabled for large folders if you want much faster gallery refreshes.
 - Manually move exceptions between buckets if needed.
-- Click **Export folders** to losslessly copy the final result into `selected/` and `rejected/`.
+- Decide which buckets should export, edit their target folder names above the galleries if needed, then click **Export folders**.
 
 ### Prompt From Preview Image
 
@@ -278,16 +280,23 @@ Large folders are faster because the app can build reusable proxy images with th
 - The histogram shows the current score distribution.
 - In PromptMatch, the top chart is the positive threshold and the bottom chart is the negative threshold.
 - In ImageReward, the histogram controls the single main threshold.
+- Hovering gallery thumbnails shows a faint score marker line in the histogram for that image.
+- The histogram resizes with the threshold panel instead of staying at a fixed width.
 - You can also use **Or keep top N%** to automatically keep roughly the top part of the set.
 
 ### Export
 
-Export does a **lossless file copy** of the originals.
+Export always uses the original source files, never the proxies.
 
 - No recompression
 - No resizing
 - No metadata rewriting by the app
-- Final folders are `selected/` and `rejected/`
+- Each bucket has its own `Export` checkbox above the gallery.
+- Each bucket's folder name is editable above the gallery instead of being locked to `selected` / `rejected`.
+- `Move instead of copy` is available in the export section and is disabled by default.
+- Export writes directly into `source_folder/<your-folder-name>`.
+- Repeated exports do not clear the destination folder first.
+- If a file with the same name already exists, the exported file overwrites that matching file but unrelated files in the folder are preserved.
 
 ## Manual Install
 

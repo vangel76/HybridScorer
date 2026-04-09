@@ -998,6 +998,15 @@ def method_labels(method):
     return "SELECTED", "REJECTED", "selected", "rejected"
 
 
+def sanitize_export_name(name):
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "").strip()).strip("._-")
+    return cleaned
+
+
+def export_destination(folder, filename):
+    return os.path.join(folder, filename)
+
+
 def threshold_labels(method):
     if method == METHOD_PROMPTMATCH:
         return (
@@ -2426,6 +2435,11 @@ def create_app():
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it, Shift+click to mark, or drag an image to the other gallery.",
         "hy-right-gallery": "Images currently in the right bucket. Click one to select it, Shift+click to mark, or drag an image to the other gallery.",
+        "hy-export-left-enabled": "Include the left bucket in the next export run.",
+        "hy-export-right-enabled": "Include the right bucket in the next export run.",
+        "hy-export-move-enabled": "Move files into the export folders instead of copying them. Disabled by default.",
+        "hy-export-left-name": "Editable export folder name for the left bucket. Export writes directly into source_folder/<name>.",
+        "hy-export-right-name": "Editable export folder name for the right bucket. Export writes directly into source_folder/<name>.",
         "hy-move-right": "Move all marked SELECTED images into REJECTED as manual overrides.",
         "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
         "hy-fit-threshold": "Adjust the score threshold just enough so the marked images flip to the other bucket. Uses the previewed image if nothing is marked.",
@@ -2844,9 +2858,9 @@ def create_app():
         state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
         visible_names = left_names | right_names
         return (
-            f"### {left_name} — {len(left_items)} images",
+            f"**{len(left_items)} images**",
             gallery_update(gallery_display_items(left_items), columns=zoom_columns),
-            f"### {right_name} — {len(right_items)} images",
+            f"**{len(right_items)} images**",
             gallery_update(gallery_display_items(right_items), columns=zoom_columns),
             status_line(state["method"], left_items, right_items, state["scores"], state["overrides"]),
             render_histogram(state["method"], state["scores"], main_threshold, aux_threshold),
@@ -3831,27 +3845,55 @@ def create_app():
 
         return (*current_view(main_threshold, aux_threshold), gr.update(value=main_threshold), gr.update(value=aux_threshold))
 
-    def export_files(main_threshold, aux_threshold):
+    def export_files(main_threshold, aux_threshold, export_left_enabled, export_right_enabled, export_move_enabled, export_left_name, export_right_name):
         # Export is a lossless copy, not a rewrite or recompression of the originals.
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         left_name, right_name, left_dirname, right_dirname = method_labels(state["method"])
         base = state["source_dir"]
-        left_dir = os.path.join(base, left_dirname)
-        right_dir = os.path.join(base, right_dirname)
-        for folder in (left_dir, right_dir):
-            os.makedirs(folder, exist_ok=True)
-            for name in os.listdir(folder):
-                fp = os.path.join(folder, name)
-                if os.path.isfile(fp):
-                    os.remove(fp)
-        for path, _ in left_items:
-            shutil.copy2(path, os.path.join(left_dir, os.path.basename(path)))
-        for path, _ in right_items:
-            shutil.copy2(path, os.path.join(right_dir, os.path.basename(path)))
-        return (
-            f"Losslessly copied {len(left_items)} files to {left_dir}\n"
-            f"Losslessly copied {len(right_items)} files to {right_dir}"
-        )
+        targets = []
+        if export_left_enabled:
+            targets.append((left_name, sanitize_export_name(export_left_name) or left_dirname, left_items))
+        if export_right_enabled:
+            targets.append((right_name, sanitize_export_name(export_right_name) or right_dirname, right_items))
+        if not targets:
+            return (*current_view(main_threshold, aux_threshold), "Enable at least one bucket for export.")
+        target_names = [folder_name for _, folder_name, _ in targets]
+        if len(set(target_names)) != len(target_names):
+            return (*current_view(main_threshold, aux_threshold), "Export folder names must be different when both buckets are enabled.")
+
+        lines = []
+        moved_names = []
+        for bucket_label, folder_name, items in targets:
+            bucket_dir = os.path.join(base, folder_name)
+            os.makedirs(bucket_dir, exist_ok=True)
+            for path, _ in items:
+                original_name = os.path.basename(path)
+                dest_path = export_destination(bucket_dir, original_name)
+                if export_move_enabled:
+                    shutil.copy2(path, dest_path)
+                    os.remove(path)
+                    moved_names.append(original_name)
+                else:
+                    shutil.copy2(path, dest_path)
+            verb = "Moved" if export_move_enabled else "Losslessly copied"
+            lines.append(f"{verb} {len(items)} {bucket_label.lower()} files to {bucket_dir}")
+        disabled = []
+        if not export_left_enabled:
+            disabled.append(left_name.lower())
+        if not export_right_enabled:
+            disabled.append(right_name.lower())
+        if disabled:
+            lines.append(f"Skipped bucket(s): {', '.join(disabled)}")
+        if moved_names:
+            moved_set = set(moved_names)
+            for fname in moved_set:
+                state["scores"].pop(fname, None)
+                state["overrides"].pop(fname, None)
+            state["left_marked"] = [name for name in state.get("left_marked", []) if name not in moved_set]
+            state["right_marked"] = [name for name in state.get("right_marked", []) if name not in moved_set]
+            if state.get("preview_fname") in moved_set:
+                state["preview_fname"] = None
+        return (*current_view(main_threshold, aux_threshold), "\n".join(lines))
 
     css = """
     body, .gradio-container { background:#0d0d11 !important; color:#ddd8cc !important; }
@@ -3959,6 +4001,18 @@ def create_app():
     }
     .hy-hover-line-neg {
         border-left-color: rgba(220, 165, 145, 0.78);
+    }
+    #hy-left-gallery, #hy-left-gallery > div {
+        background:linear-gradient(180deg, rgba(18, 36, 24, 0.96), rgba(13, 18, 15, 0.98)) !important;
+        border:1px solid #284732 !important;
+        border-radius:10px !important;
+        box-shadow:inset 0 1px 0 rgba(110, 170, 120, 0.08) !important;
+    }
+    #hy-right-gallery, #hy-right-gallery > div {
+        background:linear-gradient(180deg, rgba(40, 22, 22, 0.96), rgba(19, 14, 14, 0.98)) !important;
+        border:1px solid #5b2f35 !important;
+        border-radius:10px !important;
+        box-shadow:inset 0 1px 0 rgba(195, 110, 110, 0.08) !important;
     }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
     .grid-wrap .caption-label span, .grid-wrap [class*="caption"] { font-family:monospace !important; font-size:.72em !important; color:#8899aa !important; }
@@ -4146,9 +4200,123 @@ def create_app():
         display:block !important;
     }
     .gallery-side { min-width:0; }
-    .gallery-topbar { align-items:end; margin-bottom:8px; }
-    .gallery-right-topbar { align-items:center; gap:12px; justify-content:space-between; }
-    .zoom-inline-wrap { align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; }
+    .gallery-topbar { align-items:end; margin-bottom:8px; gap:14px !important; flex-wrap:nowrap !important; }
+    .gallery-header-slot { min-width:0; overflow:hidden !important; }
+    .gallery-header-spacer {
+        flex:0 0 auto !important;
+        min-width:100px !important;
+    }
+    .gallery-zoom-slot {
+        margin-left:auto !important;
+        display:flex !important;
+        justify-content:flex-end !important;
+        align-items:flex-end !important;
+        min-width:230px !important;
+    }
+    .gallery-head-row {
+        display:flex !important;
+        width:100% !important;
+        align-items:center !important;
+        justify-content:space-between !important;
+        gap:6px !important;
+        flex-wrap:nowrap !important;
+        min-width:0 !important;
+        overflow:hidden !important;
+    }
+    .gallery-head-row .markdown { min-width:0 !important; flex:0 0 auto !important; }
+    .gallery-head-fill {
+        flex:1 1 auto !important;
+        min-width:0 !important;
+        width:100% !important;
+    }
+    .gallery-head-row .markdown h3,
+    .gallery-head-row .markdown p {
+        margin:0 !important;
+    }
+    .gallery-head-row .markdown p {
+        font-family:monospace !important;
+        font-size:.82rem !important;
+        color:#bfc8b5 !important;
+    }
+    .gallery-export-toggle {
+        flex:0 0 auto !important;
+        min-width:0 !important;
+        width:auto !important;
+        max-width:max-content !important;
+        margin:0 !important;
+        padding:0 !important;
+        background:transparent !important;
+        border:0 !important;
+        box-shadow:none !important;
+    }
+    .gallery-export-toggle label {
+        margin:0 !important;
+        min-height:0 !important;
+        gap:5px !important;
+        padding:0 !important;
+        justify-content:flex-start !important;
+        width:fit-content !important;
+        background:transparent !important;
+        border:0 !important;
+        box-shadow:none !important;
+    }
+    .gallery-export-toggle .wrap {
+        width:fit-content !important;
+        min-width:0 !important;
+        max-width:max-content !important;
+        padding:0 !important;
+        margin:0 !important;
+    }
+    .gallery-export-toggle .checkbox,
+    .gallery-export-toggle .checkbox-wrap {
+        margin:0 !important;
+        flex:0 0 auto !important;
+    }
+    .gallery-export-toggle span {
+        font-family:monospace !important;
+        font-size:.68rem !important;
+        color:#aebaa0 !important;
+        letter-spacing:.03em !important;
+        text-transform:uppercase !important;
+        white-space:nowrap !important;
+    }
+    .export-move-toggle {
+        min-width:0 !important;
+    }
+    .gallery-export-name {
+        flex:0 1 156px !important;
+        min-width:120px !important;
+        max-width:180px !important;
+    }
+    .gallery-export-name textarea,
+    .gallery-export-name input {
+        min-height:31px !important;
+        height:31px !important;
+        font-family:monospace !important;
+        font-size:.92rem !important;
+        font-weight:700 !important;
+        letter-spacing:.01em !important;
+        color:#f3f1e6 !important;
+        padding:4px 10px !important;
+    }
+    .gallery-count {
+        flex:0 0 auto !important;
+        min-width:max-content !important;
+    }
+    .gallery-count p {
+        font-family:monospace !important;
+        font-size:.82rem !important;
+        font-weight:700 !important;
+        color:#d7decf !important;
+        white-space:nowrap !important;
+    }
+    .export-options-row {
+        align-items:center !important;
+        gap:14px !important;
+        margin-bottom:10px !important;
+        flex-wrap:nowrap !important;
+    }
+    .zoom-inline-wrap { align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; justify-content:flex-end !important; width:100% !important; }
     .zoom-inline-label {
         flex:0 0 auto;
         overflow:visible !important;
@@ -4309,21 +4477,55 @@ def create_app():
                     status_md = gr.Markdown("", elem_classes=["status-md"])
 
                 with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export"):
+                    with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
+                        move_export_cb = gr.Checkbox(
+                            value=False,
+                            label="Move instead of copy",
+                            container=False,
+                            scale=0,
+                            min_width=150,
+                            elem_id="hy-export-move-enabled",
+                            elem_classes=["gallery-export-toggle", "export-move-toggle"],
+                        )
                     export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
                     export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
 
             with gr.Column(scale=5):
                 with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        left_head = gr.Markdown("### SELECTED")
-                    with gr.Column(scale=0, min_width=100):
+                    with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]):
+                        with gr.Row(equal_height=False, elem_classes=["gallery-head-row"]):
+                            left_export_cb = gr.Checkbox(
+                                value=True,
+                                label="Export",
+                                container=False,
+                                scale=0,
+                                min_width=62,
+                                elem_id="hy-export-left-enabled",
+                                elem_classes=["gallery-export-toggle"],
+                            )
+                            gr.HTML("", elem_classes=["gallery-head-fill"])
+                            left_export_name_tb = gr.Textbox(value="selected", show_label=False, container=False, lines=1, elem_id="hy-export-left-name", elem_classes=["gallery-export-name"])
+                            left_head = gr.Markdown("**0 images**", elem_classes=["gallery-count"])
+                    with gr.Column(scale=0, min_width=100, elem_classes=["gallery-header-spacer"]):
                         gr.HTML("")
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
-                            right_head = gr.Markdown("### REJECTED")
-                            with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
-                                gr.Markdown("Tile Size", elem_classes=["zoom-inline-label"])
-                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=7, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
+                    with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]):
+                        with gr.Row(equal_height=False, elem_classes=["gallery-head-row"]):
+                            right_export_cb = gr.Checkbox(
+                                value=True,
+                                label="Export",
+                                container=False,
+                                scale=0,
+                                min_width=62,
+                                elem_id="hy-export-right-enabled",
+                                elem_classes=["gallery-export-toggle"],
+                            )
+                            gr.HTML("", elem_classes=["gallery-head-fill"])
+                            right_export_name_tb = gr.Textbox(value="rejected", show_label=False, container=False, lines=1, elem_id="hy-export-right-name", elem_classes=["gallery-export-name"])
+                            right_head = gr.Markdown("**0 images**", elem_classes=["gallery-count"])
+                    with gr.Column(scale=0, elem_classes=["gallery-zoom-slot"]):
+                        with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
+                            gr.Markdown("Tile Size", elem_classes=["zoom-inline-label"])
+                            zoom_slider = gr.Slider(minimum=2, maximum=10, value=7, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         left_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
@@ -4426,7 +4628,11 @@ def create_app():
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
-        export_btn.click(fn=export_files, inputs=[main_slider, aux_slider], outputs=[export_tb])
+        export_btn.click(
+            fn=export_files,
+            inputs=[main_slider, aux_slider, left_export_cb, right_export_cb, move_export_cb, left_export_name_tb, right_export_name_tb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, export_tb],
+        )
 
     return demo, css, tooltip_head(tooltips)
 

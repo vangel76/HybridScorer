@@ -1,47 +1,15 @@
 # Changelog
 
+## [1.7.0] - 2026-04-10
+
+- Moved export controls into the gallery headers so each bucket now has its own `Export` toggle and editable folder name directly above the gallery.
+- Added an optional `Move instead of copy` export mode in the export section.
+- Added subtle green/red gallery background tinting and kept the `Tile Size` control pinned to the far right of the top toolbar.
+
 ## [1.6.23] - 2026-04-09
 
-- Disabled image-to-image navigation inside the zoom dialog so it no longer acts like a carousel.
+- Due to a bug in Gradio: Disabled image-to-image navigation inside the zoom dialog so it no longer acts like a carousel.
 - Hid the zoom dialog's thumbnail strip, blocked left/right navigation keys there, and prevented clicks inside the zoomed media area from stepping to neighboring images.
-
-## [1.6.22] - 2026-04-09
-
-- Reworked zoom-dialog actions to send the chosen filename and action together in one backend event instead of relying on a separate preview update to land first.
-- Stopped tiny-thumb clicks from immediately pushing a guessed filename; the dialog now re-syncs from the visible zoom metadata after Gradio updates the preview.
-- Made the dialog's filename/status line above the thumbnail strip the primary source of truth for the currently zoomed image during actions.
-
-## [1.6.21] - 2026-04-09
-
-- Applied a direct one-slot correction to the zoom-dialog thumbnail-strip index used for actions, so clicking a tiny thumb no longer targets the next image to the right.
-
-## [1.6.20] - 2026-04-09
-
-- Made zoom-dialog actions prefer the actually selected tiny preview thumb in the bottom strip, including Gradio's active markers and visible highlight styling, before falling back to caption/image inference.
-
-## [1.6.19] - 2026-04-09
-
-- Tightened zoom-dialog thumbnail tracking to index only the actual bottom thumbnail strip row, fixing the consistent "one image to the right" offset caused by extra small dialog images being counted ahead of the real strip.
-
-## [1.6.18] - 2026-04-09
-
-- Made `Fit thresh`, `Move >>`, and `<< Move` hand off cleanly from the zoom dialog by resolving the currently shown preview image, closing the dialog, and then replaying the action from the normal gallery state instead of acting inside the unstable zoom view.
-
-## [1.6.17] - 2026-04-09
-
-- Made `Move >>` and `<< Move` follow the active zoomed preview image when nothing is explicitly marked, matching the same target-selection behavior already used by `Fit thresh`.
-
-## [1.6.16] - 2026-04-09
-
-- Switched zoom-dialog thumbnail tracking from filename/source guessing to direct thumbnail-strip index matching against the known gallery order, fixing wrong-image offsets when clicking the small preview thumbs under the zoomed image.
-
-## [1.6.15] - 2026-04-09
-
-- Improved zoom-dialog preview tracking again by following gallery order for keyboard navigation and resolving clicks on the small dialog thumbnails back to scored filenames, so actions can stay synced with the image actually selected inside the zoom view.
-
-## [1.6.14] - 2026-04-09
-
-- Made the zoomed preview dialog keep the active preview image in sync while stepping through images by resolving the currently visible dialog image back to its scored filename, so `Fit thresh` and move actions now target the image actually shown in the zoom view instead of the thumbnail that originally opened it.
 
 ## [1.6.13] - 2026-04-09
 
@@ -58,7 +26,6 @@
 
 ## [1.6.10] - 2026-04-09
 
-- Removed the main-threshold `Auto` button because it was more confusing than helpful in practice.
 - Stopped the custom gallery repaint observer from reacting to Gradio preview-dialog mutations, which was causing the UI to visibly refresh when zooming into an image.
 
 ## [1.6.9] - 2026-04-09
@@ -69,17 +36,6 @@
 ## [1.6.8] - 2026-04-09
 
 - Fixed the PromptMatch histogram so both positive and negative charts now show the full score range instead of incorrectly clipping everything below `0`.
-- Re-aligned the main `Auto` threshold helper with that full PromptMatch score range so its guess matches the corrected graph.
-
-## [1.6.7] - 2026-04-09
-
-- Fixed the main `Auto` threshold guess for PromptMatch so it now uses the same nonnegative positive-score data shown in the graph instead of being pulled down by hidden negative similarities.
-- Tweaked the auto-threshold fallback order so a real score-gap split wins more often before falling back to the softer Otsu-style estimate.
-
-## [1.6.6] - 2026-04-09
-
-- Added an `Auto` button above the main threshold `50%` button so the positive keep-threshold can guess a split from the current score distribution.
-- The new auto-threshold logic looks for a strong gap between neighboring sorted scores and falls back to an Otsu-style histogram split when the graph does not show one clear valley.
 
 ## [1.6.5] - 2026-04-09
 
