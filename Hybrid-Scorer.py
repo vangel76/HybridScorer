@@ -89,7 +89,7 @@ JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-
 JOYCAPTION_GGUF_SETUP_HINT = "INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
 
-SEARCH_PROMPT = "woman"
+SEARCH_PROMPT = "ginger woman"
 NEGATIVE_PROMPT = ""
 NEGATIVE_THRESHOLD = 0.14
 IR_PROMPT = (
@@ -998,6 +998,22 @@ def method_labels(method):
     return "SELECTED", "REJECTED", "selected", "rejected"
 
 
+def threshold_labels(method):
+    if method == METHOD_PROMPTMATCH:
+        return (
+            "Minimum positive similarity to keep (higher = fewer kept)",
+            "Maximum negative similarity allowed (lower = fewer kept)",
+            "Min positive similarity",
+            "Max negative similarity",
+        )
+    return (
+        "Minimum score to keep (higher = fewer kept)",
+        "Maximum negative similarity allowed (lower = fewer kept)",
+        "Minimum keep score",
+        "Max negative similarity",
+    )
+
+
 def promptmatch_slider_range(scores):
     pos_vals = [v["pos"] for v in scores.values() if not v.get("failed", False)]
     neg_vals = [v["neg"] for v in scores.values() if not v.get("failed", False) and v.get("neg") is not None]
@@ -1041,6 +1057,10 @@ def slider_step_floor(value, step=0.001):
 
 def slider_step_ceil_exclusive(value, step=0.001):
     return round((math.floor(float(value) / step) + 1) * step, 3)
+
+
+def clamp_threshold(value, lo, hi):
+    return round(max(float(lo), min(float(hi), float(value))), 3)
 
 
 def extract_florence_caption(parsed, raw_text, task_prompt):
@@ -1295,6 +1315,9 @@ def create_app():
         "source_dir": source_dir,
         "scores": {},
         "overrides": {},
+        "last_scored_method": None,
+        "last_scored_folder_key": None,
+        "last_promptmatch_model_label": None,
         "left_marked": [],
         "right_marked": [],
         "preview_fname": None,
@@ -1733,9 +1756,14 @@ def create_app():
         "hy-promptgen-status": "Small status readout for prompt generation.",
         "hy-run-pm": "Score the current folder with the selected method and prompts. Ctrl+Enter from a PromptMatch prompt box does the same.",
         "hy-run-ir": "Score the current folder with the selected method and prompts. Ctrl+Enter from an ImageReward prompt box does the same.",
-        "hy-main-slider": "Main classification threshold. Click the histogram to set it visually.",
-        "hy-aux-slider": "PromptMatch negative threshold. Lower values pass the negative filter.",
+        "hy-main-slider": "Minimum score needed to stay in SELECTED. Raising it keeps fewer images. Click the histogram to set it visually.",
+        "hy-aux-slider": "Maximum negative-prompt similarity allowed in PromptMatch. Lowering it rejects more images that match the negative prompt.",
+        "hy-main-mid": "Set the main threshold to 50% of the current score range.",
+        "hy-aux-mid": "Set the negative threshold to 50% of the current negative-score range.",
+        "hy-keep-pm-thresholds": "Keep the exact PromptMatch thresholds when rerunning with changed prompts. They reset automatically if folder or PromptMatch model changes.",
+        "hy-keep-ir-thresholds": "Keep the exact ImageReward threshold when rerunning with changed prompts. It resets automatically if the folder changes.",
         "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
+        "hy-percentile-mid": "Set the percentile control back to 50%.",
         "hy-zoom-ui": "Choose how many thumbnails appear per row in both galleries.",
         "hy-use-proxy-display": "Show gallery images from cached proxies for faster browsing on large folders.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
@@ -1933,6 +1961,7 @@ def create_app():
         if not scores:
             state["hist_geom"] = None
             return None
+        _, _, main_hist_label, aux_hist_label = threshold_labels(method)
 
         if method == METHOD_PROMPTMATCH:
             if not all("pos" in item for item in scores.values()):
@@ -1969,11 +1998,17 @@ def create_app():
             img = Image.new("RGB", (W, H), "#0d0d11")
             draw = ImageDraw.Draw(img)
 
-            def draw_chart(y0, counts, lo, hi, threshold, bar_rgb, line_rgb, label):
+            def draw_chart(y0, counts, lo, hi, threshold, bar_rgb, line_rgb, label, left_tint=None, right_tint=None):
                 cW = W - PAD_L - PAD_R
                 max_c = max(counts) if counts else 1
                 bw = cW / len(counts)
                 draw.rectangle([PAD_L, y0, W - PAD_R, y0 + CH], fill="#0f0f16")
+                tx = PAD_L + int(((threshold - lo) / (hi - lo)) * cW)
+                tx = max(PAD_L, min(W - PAD_R, tx))
+                if left_tint and tx > PAD_L:
+                    draw.rectangle([PAD_L, y0, tx, y0 + CH], fill=left_tint)
+                if right_tint and tx < (W - PAD_R):
+                    draw.rectangle([tx, y0, W - PAD_R, y0 + CH], fill=right_tint)
                 for i, count in enumerate(counts):
                     if count == 0:
                         continue
@@ -1981,8 +2016,6 @@ def create_app():
                     x0 = PAD_L + int(i * bw) + 1
                     x1 = PAD_L + int((i + 1) * bw) - 1
                     draw.rectangle([x0, y0 + CH - bh, x1, y0 + CH], fill=bar_rgb)
-                tx = PAD_L + int(((threshold - lo) / (hi - lo)) * cW)
-                tx = max(PAD_L, min(W - PAD_R, tx))
                 for yy in range(y0, y0 + CH, 6):
                     draw.line([(tx, yy), (tx, min(yy + 3, y0 + CH))], fill=line_rgb, width=2)
                 for frac, val in [(0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)]:
@@ -1990,9 +2023,31 @@ def create_app():
                     draw.text((lx, y0 + CH + 4), f"{val:.3f}", fill="#667755", anchor="mt")
                 draw.text((PAD_L, y0 - 14), f"{label} threshold: {threshold:.3f}", fill="#99bb88")
 
-            draw_chart(PAD_TOP, pos_counts, pos_lo, pos_hi, main_threshold, "#3a7a3a", "#aadd66", "Positive")
+            draw_chart(
+                PAD_TOP,
+                pos_counts,
+                pos_lo,
+                pos_hi,
+                main_threshold,
+                "#3a7a3a",
+                "#aadd66",
+                main_hist_label,
+                left_tint="#241416",
+                right_tint="#142418",
+            )
             if has_neg:
-                draw_chart(PAD_TOP + CH + GAP, neg_counts, neg_lo, neg_hi, aux_threshold, "#7a3a3a", "#dd6644", "Negative")
+                draw_chart(
+                    PAD_TOP + CH + GAP,
+                    neg_counts,
+                    neg_lo,
+                    neg_hi,
+                    aux_threshold,
+                    "#7a3a3a",
+                    "#dd6644",
+                    aux_hist_label,
+                    left_tint="#142418",
+                    right_tint="#241416",
+                )
 
             state["hist_geom"] = {
                 "method": method,
@@ -2050,7 +2105,7 @@ def create_app():
         for frac, val in [(0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)]:
             lx = PAD_L + int(frac * cW)
             draw.text((lx, PAD_TOP + H - PAD_BOT + 4), f"{val:.3f}", fill="#667755", anchor="mt")
-        draw.text((PAD_L, PAD_TOP - 14), f"ImageReward threshold: {main_threshold:.3f}", fill="#99bb88")
+        draw.text((PAD_L, PAD_TOP - 14), f"{main_hist_label}: {main_threshold:.3f}", fill="#99bb88")
         state["hist_geom"] = {
             "method": method,
             "W": W,
@@ -2389,24 +2444,31 @@ def create_app():
         return changed
 
     def configure_controls(method):
+        main_label, aux_label, _, _ = threshold_labels(method)
         if method == METHOD_PROMPTMATCH:
             return (
                 gr.update(visible=True),
                 gr.update(visible=False),
-                gr.update(label="Primary thresh (>=  SELECTED)", value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-                gr.update(label="Neg threshold (< -> passes)", visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(label=aux_label, visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=True),
+                gr.update(visible=True),
+                gr.update(visible=False),
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
             )
         return (
             gr.update(visible=False),
             gr.update(visible=True),
-            gr.update(label="Primary thresh (>=  SELECTED)", value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
+            gr.update(label=main_label, value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
             gr.update(visible=False, value=NEGATIVE_THRESHOLD),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
             gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score."),
         )
 
     def empty_result(message, method):
-        _, _, main_upd, aux_upd, _ = configure_controls(method)
+        _, _, main_upd, aux_upd, _, _, _, _ = configure_controls(method)
         return (
             "### LEFT",
             gallery_update([]),
@@ -2420,21 +2482,61 @@ def create_app():
             aux_upd,
         )
 
-    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, progress=gr.Progress()):
+    def middle_threshold_values(method):
+        if method == METHOD_PROMPTMATCH:
+            if state["scores"]:
+                _, _, pos_mid, _, _, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
+            else:
+                pos_mid, neg_mid, has_neg = 0.14, NEGATIVE_THRESHOLD, True
+            return round(float(pos_mid), 3), round(float(neg_mid), 3), bool(has_neg)
+        if state["scores"]:
+            _, _, main_mid = imagereward_slider_range(state["scores"])
+        else:
+            main_mid = IMAGEREWARD_THRESHOLD
+        return round(float(main_mid), 3), NEGATIVE_THRESHOLD, False
+
+    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         # Main entrypoint for "Run scoring"; both methods converge back into current_view().
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
             return empty_result(f"Invalid folder: {folder!r}", method)
+        main_label, aux_label, _, _ = threshold_labels(method)
 
         image_paths = scan_image_paths(folder)
         if not image_paths:
             return empty_result(f"No images found in {folder}", method)
         image_signature = get_image_paths_signature(image_paths)
+        folder_key = normalize_folder_identity(folder)
+        previous_folder = state.get("source_dir")
+        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
+        available_names = {os.path.basename(path) for path in image_paths}
+        preserved_overrides = {}
+        if previous_folder_key == folder_key:
+            # Keep manual pins across rescoring the same folder, but drop them once
+            # the file is gone from that folder.
+            preserved_overrides = {
+                fname: side
+                for fname, side in state.get("overrides", {}).items()
+                if fname in available_names
+            }
+        preserve_promptmatch_thresholds = (
+            bool(keep_pm_thresholds)
+            and method == METHOD_PROMPTMATCH
+            and state.get("last_scored_method") == METHOD_PROMPTMATCH
+            and state.get("last_scored_folder_key") == folder_key
+            and state.get("last_promptmatch_model_label") == model_label
+        )
+        preserve_imagereward_threshold = (
+            bool(keep_ir_thresholds)
+            and method == METHOD_IMAGEREWARD
+            and state.get("last_scored_method") == METHOD_IMAGEREWARD
+            and state.get("last_scored_folder_key") == folder_key
+        )
 
         state["method"] = method
         sync_promptmatch_proxy_cache(folder)
         state["source_dir"] = folder
-        state["overrides"] = {}
+        state["overrides"] = preserved_overrides
         state["left_marked"] = []
         state["right_marked"] = []
         state["preview_fname"] = None
@@ -2536,7 +2638,12 @@ def create_app():
                     neg_emb,
                 )
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
-            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(pos_mid, neg_mid)
+            next_main = clamp_threshold(main_threshold, pos_min, pos_max) if preserve_promptmatch_thresholds else pos_mid
+            next_aux = clamp_threshold(aux_threshold, neg_min, neg_max) if preserve_promptmatch_thresholds else neg_mid
+            state["last_scored_method"] = METHOD_PROMPTMATCH
+            state["last_scored_folder_key"] = folder_key
+            state["last_promptmatch_model_label"] = model_label
+            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, next_aux)
             return (
                 left_head,
                 left_gallery,
@@ -2546,8 +2653,8 @@ def create_app():
                 hist,
                 sel_info,
                 mark_state,
-                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=pos_mid, label="Primary thresh (>=  SELECTED)"),
-                gr.update(minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX, value=neg_mid, visible=True, interactive=has_neg, label="Neg threshold (< -> passes)"),
+                gr.update(minimum=pos_min, maximum=pos_max, value=next_main, label=main_label),
+                gr.update(minimum=neg_min, maximum=neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
             )
 
         if state["ir_model"] is None:
@@ -2563,7 +2670,10 @@ def create_app():
             progress,
         )
         lo, hi, mid = imagereward_slider_range(state["scores"])
-        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(mid, NEGATIVE_THRESHOLD)
+        next_main = clamp_threshold(main_threshold, lo, hi) if preserve_imagereward_threshold else mid
+        state["last_scored_method"] = METHOD_IMAGEREWARD
+        state["last_scored_folder_key"] = folder_key
+        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
         return (
             left_head,
             left_gallery,
@@ -2573,11 +2683,11 @@ def create_app():
             hist,
             sel_info,
             mark_state,
-            gr.update(minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX, value=mid, label="Primary thresh (>=  SELECTED)"),
+            gr.update(minimum=lo, maximum=hi, value=next_main, label=main_label),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
         )
 
-    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, progress=gr.Progress()):
+    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         action = (action or "").strip()
         if not action.startswith("run:"):
             return empty_result("Shortcut action ignored.", method)
@@ -2597,6 +2707,10 @@ def create_app():
             ir_prompt,
             ir_negative_prompt,
             ir_penalty_weight,
+            main_threshold,
+            aux_threshold,
+            keep_pm_thresholds,
+            keep_ir_thresholds,
             progress=progress,
         )
 
@@ -2715,14 +2829,15 @@ def create_app():
             )
 
         lo, hi, _ = imagereward_slider_range(state["scores"])
-        clamped = round(max(lo, min(hi, float(main_threshold))), 3)
+        clamped = clamp_threshold(main_threshold, lo, hi)
+        main_label, _, _, _ = threshold_labels(METHOD_IMAGEREWARD)
         return (
             *current_view(clamped, aux_threshold),
             gr.update(
-                minimum=IMAGEREWARD_SLIDER_MIN,
-                maximum=IMAGEREWARD_SLIDER_MAX,
+                minimum=lo,
+                maximum=hi,
                 value=clamped,
-                label="Primary thresh (>=  SELECTED)",
+                label=main_label,
             ),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
         )
@@ -2872,6 +2987,40 @@ def create_app():
         new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
         return (*current_view(new_threshold, aux_threshold), gr.update(value=new_threshold))
 
+    def reset_main_threshold_to_middle(main_threshold, aux_threshold):
+        new_main, _, _ = middle_threshold_values(state["method"])
+        return (
+            *current_view(new_main, aux_threshold),
+            gr.update(value=new_main),
+            gr.update(),
+        )
+
+    def reset_aux_threshold_to_middle(main_threshold, aux_threshold):
+        if state["method"] != METHOD_PROMPTMATCH:
+            return (
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+            )
+        _, new_aux, _ = middle_threshold_values(METHOD_PROMPTMATCH)
+        return (
+            *current_view(main_threshold, new_aux),
+            gr.update(),
+            gr.update(value=new_aux),
+        )
+
+    def reset_percentile_to_middle(main_threshold, aux_threshold):
+        percentile = 50
+        if state["scores"]:
+            new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
+        else:
+            new_threshold = float(main_threshold)
+        return (
+            *current_view(new_threshold, aux_threshold),
+            gr.update(value=new_threshold),
+            gr.update(value=percentile),
+        )
+
     def update_zoom(zoom_value, main_threshold, aux_threshold):
         # Invert the slider so dragging right makes thumbnails larger by reducing columns.
         try:
@@ -3014,6 +3163,20 @@ def create_app():
     }
     .sidebar-box .gr-group, .sidebar-box .block { gap:2px !important; }
     .sidebar-box .gr-form, .sidebar-box .gradio-row { gap:2px !important; }
+    .threshold-row { align-items:end; gap:6px; }
+    .threshold-mid button {
+        min-width:50px !important;
+        height:36px !important;
+        padding:0 8px !important;
+        font-family:monospace !important;
+        background:#2a2435 !important;
+        border:1px solid #5d4f77 !important;
+        color:#e0d7f1 !important;
+    }
+    .threshold-mid button:hover {
+        background:#362d45 !important;
+        border-color:#8d77b4 !important;
+    }
     .sidebar-box label { margin-bottom:1px !important; }
     .sidebar-box label span { margin-bottom:0 !important; line-height:1.05 !important; }
     .sidebar-box .form > *, .sidebar-box .wrap > * { margin-top:0 !important; margin-bottom:0 !important; }
@@ -3287,9 +3450,51 @@ def create_app():
 
                 with gr.Accordion("4. Thresholds", open=True, elem_id="hy-acc-thresholds"):
                     hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
-                    main_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=0.14, step=0.001, label="Primary thresh (>=  SELECTED)", elem_id="hy-main-slider")
-                    aux_slider = gr.Slider(minimum=-1.0, maximum=1.0, value=NEGATIVE_THRESHOLD, step=0.001, label="Neg threshold (< -> passes)", elem_id="hy-aux-slider")
-                    percentile_slider = gr.Slider(minimum=0, maximum=100, value=50, step=1, label="Or keep top N%", elem_id="hy-percentile")
+                    with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
+                        main_slider = gr.Slider(
+                            minimum=-1.0,
+                            maximum=1.0,
+                            value=0.14,
+                            step=0.001,
+                            label=threshold_labels(METHOD_PROMPTMATCH)[0],
+                            elem_id="hy-main-slider",
+                            buttons=[],
+                        )
+                        main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
+                    with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
+                        aux_slider = gr.Slider(
+                            minimum=-1.0,
+                            maximum=1.0,
+                            value=NEGATIVE_THRESHOLD,
+                            step=0.001,
+                            label=threshold_labels(METHOD_PROMPTMATCH)[1],
+                            elem_id="hy-aux-slider",
+                            buttons=[],
+                        )
+                        aux_mid_btn = gr.Button("50%", elem_id="hy-aux-mid", scale=0, min_width=50, visible=True, elem_classes=["threshold-mid"])
+                    keep_pm_thresholds_cb = gr.Checkbox(
+                        value=True,
+                        label="Keep PromptMatch thresholds on prompt reruns",
+                        visible=True,
+                        elem_id="hy-keep-pm-thresholds",
+                    )
+                    keep_ir_thresholds_cb = gr.Checkbox(
+                        value=True,
+                        label="Keep ImageReward threshold on prompt reruns",
+                        visible=False,
+                        elem_id="hy-keep-ir-thresholds",
+                    )
+                    with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
+                        percentile_slider = gr.Slider(
+                            minimum=0,
+                            maximum=100,
+                            value=50,
+                            step=1,
+                            label="Or keep top N%",
+                            elem_id="hy-percentile",
+                            buttons=[],
+                        )
+                        percentile_mid_btn = gr.Button("50%", elem_id="hy-percentile-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
                     proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
                     status_md = gr.Markdown("", elem_classes=["status-md"])
 
@@ -3324,17 +3529,17 @@ def create_app():
         method_dd.change(
             fn=configure_controls,
             inputs=[method_dd],
-            outputs=[promptmatch_group, imagereward_group, main_slider, aux_slider, method_note],
+            outputs=[promptmatch_group, imagereward_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, method_note],
         )
 
         promptmatch_run_btn.click(
             fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
+            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
         imagereward_run_btn.click(
             fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
+            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
         prompt_generator_dd.change(
@@ -3365,6 +3570,21 @@ def create_app():
             inputs=[percentile_slider, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider],
         )
+        main_mid_btn.click(
+            fn=reset_main_threshold_to_middle,
+            inputs=[main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
+        aux_mid_btn.click(
+            fn=reset_aux_threshold_to_middle,
+            inputs=[main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
+        percentile_mid_btn.click(
+            fn=reset_percentile_to_middle,
+            inputs=[main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, percentile_slider],
+        )
         zoom_slider.change(
             fn=update_zoom,
             inputs=[zoom_slider, main_slider, aux_slider],
@@ -3382,7 +3602,7 @@ def create_app():
         )
         shortcut_action.change(
             fn=handle_shortcut_action,
-            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb],
+            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
         thumb_action.change(fn=handle_thumb_action, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])

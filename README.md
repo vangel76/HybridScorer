@@ -2,13 +2,14 @@
 
 Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
-Current version: `1.6.0` (`v1.6.0` on GitHub releases)
+Current version: `1.6.5` (`v1.6.5` on GitHub releases)
 
 ## Latest Updates
 
-- PromptMatch reruns on the same folder and model are now MUCH faster because image embeddings are cached.
-- The PromptMatch model list was trimmed and cleaned up for more practical normal/NSFW-oriented use.
-- The README now includes clearer PromptMatch model notes, VRAM guidance, and GPU-tier recommendations.
+- Manual pinning now survives rescoring the same folder, so hand-sorted images stay on their chosen side until they actually leave that folder.
+- Prompt reruns can keep the exact current thresholds with per-method keep-threshold toggles, while folder/model changes still release them automatically.
+- The threshold panel is clearer now: only the relevant keep-threshold checkbox is shown, the sliders follow the real score range from the graphs, and the old reset arrows were replaced with explicit `50%` buttons.
+- PromptMatch histograms now tint the keep/reject sides around the threshold line to make the split easier to read visually.
 
 ## Screenshot
 

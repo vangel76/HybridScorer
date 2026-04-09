@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.5] - 2026-04-09
+
+- Manual PromptMatch/ImageReward pinning now survives rescoring the same folder and only clears automatically when an image leaves that folder or you switch folders.
+- Added per-method threshold lock checkboxes so prompt reruns can keep the exact current thresholds, while folder/model changes still release them automatically.
+- Reworked the threshold panel so PromptMatch and ImageReward only show the relevant keep-threshold checkbox for the active method.
+- Clarified threshold wording, replaced the slider reset arrows with explicit `50%` actions, and made the threshold sliders follow the same min/max score ranges shown in the histograms.
+- Added threshold-side tinting to the PromptMatch positive and negative histograms to make the keep/reject sides easier to read at a glance.
+
 ## [1.6.0] - 2026-04-09
 
 - Added PromptMatch image-embedding caching per folder and model, so rerunning with changed positive or negative prompts can reuse the expensive image pass and feel much faster.
