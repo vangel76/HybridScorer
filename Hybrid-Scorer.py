@@ -999,6 +999,15 @@ def method_labels(method):
     return "SELECTED", "REJECTED", "selected", "rejected"
 
 
+def sanitize_export_name(name):
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "").strip()).strip("._-")
+    return cleaned
+
+
+def export_destination(folder, filename):
+    return os.path.join(folder, filename)
+
+
 def threshold_labels(method):
     if method == METHOD_PROMPTMATCH:
         return (
@@ -1325,6 +1334,7 @@ def create_app():
         "backend": prompt_backend,
         "ir_model": None,
         "hist_geom": None,
+        "hist_width": 300,
         "proxy_folder_key": None,
         "proxy_cache_dir": None,
         "proxy_map": {},
@@ -1395,6 +1405,21 @@ def create_app():
     input.dispatchEvent(new Event("input", {{ bubbles: true }}));
     input.dispatchEvent(new Event("change", {{ bubbles: true }}));
   }};
+  const pushHistWidth = (value) => {{
+    const root = document.getElementById("hy-hist-width");
+    if (!root) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    const normalized = String(value);
+    if (input.value === normalized) return;
+    input.value = normalized;
+    input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const pushPreviewFname = (fname) => {{
+    if (!fname) return;
+    pushThumbAction(`previewfname:${{fname}}:${{Date.now()}}`);
+  }};
   const readMarkedState = () => {{
     const root = document.getElementById("hy-mark-state");
     if (!root) return {{ left: [], right: [] }};
@@ -1408,6 +1433,10 @@ def create_app():
   }};
   let repaintTimers = [];
   let activeDrag = null;
+  let histResizeObserver = null;
+  let activeHoverInfo = null;
+  let activeDialogPreviewFname = "";
+  let activeDialogSelection = {{ side: "", index: -1 }};
   const findWeightedPromptSpan = (value, selectionStart, selectionEnd) => {{
     const weightedRe = /\\(([^()]*?)\\s*:\\s*([0-9]*\\.?[0-9]+)\\)/g;
     let match;
@@ -1513,14 +1542,595 @@ def create_app():
     }}, true);
     document.body.dataset.hyRunHotkeyHooked = "1";
   }};
+  const hookPreviewDialogTracking = () => {{
+    if (document.body.dataset.hyPreviewTrackHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
+      if (!dialogRoot) return;
+      disablePreviewDialogNavigation(dialogRoot);
+      if (shouldBlockDialogNavigationClick(target, dialogRoot)) {{
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+      }}
+      const thumbInfo = getDialogThumbTargetInfo(target);
+      if (thumbInfo) {{
+        setTimeout(syncDialogPreviewTarget, 40);
+        setTimeout(syncDialogPreviewTarget, 140);
+        setTimeout(syncDialogPreviewTarget, 280);
+        return;
+      }}
+      setTimeout(syncDialogPreviewTarget, 40);
+      setTimeout(syncDialogPreviewTarget, 140);
+    }}, true);
+    document.addEventListener("keydown", (event) => {{
+      const dialogRoot = document.querySelector('[role="dialog"], [aria-modal="true"]');
+      if (!dialogRoot) return;
+      const key = event.key || "";
+      const deltas = {{
+        ArrowLeft: -1,
+        ArrowUp: -1,
+        PageUp: -1,
+        ArrowRight: 1,
+        ArrowDown: 1,
+        PageDown: 1,
+        Home: 0,
+        End: 0,
+      }};
+      if (!(key in deltas)) return;
+      disablePreviewDialogNavigation(dialogRoot);
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }}, true);
+    document.body.dataset.hyPreviewTrackHooked = "1";
+  }};
+  const hookInlinePreviewNavigationLock = () => {{
+    if (document.body.dataset.hyInlinePreviewLockHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const previewNavTarget = target.closest(
+        "#hy-left-gallery .preview .media-button, #hy-right-gallery .preview .media-button, " +
+        "#hy-left-gallery .preview .thumbnail-small, #hy-right-gallery .preview .thumbnail-small"
+      );
+      if (!previewNavTarget) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }}, true);
+    document.addEventListener("keydown", (event) => {{
+      const key = event.key || "";
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(key)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const active = document.activeElement instanceof Element ? document.activeElement : null;
+      const inPreview = !!(
+        target?.closest?.("#hy-left-gallery .preview, #hy-right-gallery .preview")
+        || active?.closest?.("#hy-left-gallery .preview, #hy-right-gallery .preview")
+      );
+      if (!inPreview) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }}, true);
+    document.body.dataset.hyInlinePreviewLockHooked = "1";
+  }};
+  const hookHistogramResize = () => {{
+    const root = document.getElementById("hy-hist");
+    if (!root) return;
+    const measure = () => {{
+      const rect = root.getBoundingClientRect();
+      const width = Math.max(220, Math.round(rect.width || root.clientWidth || 300) - 2);
+      pushHistWidth(width);
+      syncHistogramHoverLine();
+    }};
+    if (!histResizeObserver) {{
+      histResizeObserver = new ResizeObserver(() => {{
+        window.requestAnimationFrame(measure);
+      }});
+    }}
+    if (root.dataset.hyResizeHooked !== "1") {{
+      histResizeObserver.observe(root);
+      root.dataset.hyResizeHooked = "1";
+    }}
+    measure();
+  }};
+  const parseMainScoreFromCaption = (captionText) => {{
+    const cleaned = (captionText || "").replace(/^✋\s*/, "").trim();
+    const match = cleaned.match(/^-?\d+(?:\.\d+)?/);
+    return match ? Number.parseFloat(match[0]) : null;
+  }};
+  const extractFnameFromCaption = (captionText) => {{
+    const text = (captionText || "").trim();
+    if (!text) return "";
+    const parts = text.split("|");
+    return parts.length ? parts[parts.length - 1].trim() : "";
+  }};
+  const resolveImageSourceTokens = (src) => {{
+    const tokens = new Set();
+    if (!src) return tokens;
+    const raw = String(src);
+    const decoded = (() => {{
+      try {{
+        return decodeURIComponent(raw);
+      }} catch {{
+        return raw;
+      }}
+    }})();
+    for (const candidate of [raw, decoded]) {{
+      if (!candidate) continue;
+      tokens.add(candidate);
+      for (const part of candidate.split(/[/?#&=]+/)) {{
+        const clean = (part || "").trim();
+        if (clean) tokens.add(clean);
+      }}
+      const slashParts = candidate.split("/");
+      const tail = slashParts.length ? slashParts[slashParts.length - 1] : "";
+      if (tail) tokens.add(tail);
+    }}
+    return tokens;
+  }};
+  const extractFnameFromDialogImage = (img, markedState) => {{
+    if (!img) return "";
+    const direct = extractFnameFromCaption(
+      img.getAttribute("alt")
+      || img.getAttribute("aria-label")
+      || img.getAttribute("title")
+      || ""
+    );
+    if (direct) return direct;
+    const mediaLookup = markedState.media_lookup || {{}};
+    const sourceTokens = new Set([
+      ...resolveImageSourceTokens(img.currentSrc || ""),
+      ...resolveImageSourceTokens(img.src || ""),
+    ]);
+    for (const token of sourceTokens) {{
+      if (mediaLookup[token]) return mediaLookup[token];
+    }}
+    return "";
+  }};
+  const extractFnameFromDialogText = (dialogRoot, markedState) => {{
+    if (!dialogRoot) return "";
+    const knownNames = [
+      ...(Array.isArray(markedState.left_order) ? markedState.left_order : []),
+      ...(Array.isArray(markedState.right_order) ? markedState.right_order : []),
+    ];
+    if (!knownNames.length) return "";
+    const sortedNames = knownNames.slice().sort((a, b) => b.length - a.length);
+    const dialogRect = dialogRoot.getBoundingClientRect();
+    const thumbs = getDialogThumbImages(dialogRoot);
+    const stripTop = thumbs.length
+      ? Math.min(...thumbs.map((img) => img.getBoundingClientRect().top))
+      : Number.POSITIVE_INFINITY;
+    let bestFname = "";
+    let bestScore = -Infinity;
+    for (const node of Array.from(dialogRoot.querySelectorAll("div, span, p, figcaption, label"))) {{
+      if (!(node instanceof Element)) continue;
+      if (node.closest("button, [role='button']")) continue;
+      if (node.querySelector("img")) continue;
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      if (
+        rect.width <= 0
+        || rect.height <= 0
+        || style.display === "none"
+        || style.visibility === "hidden"
+        || style.opacity === "0"
+      ) continue;
+      const text = (node.textContent || "").trim();
+      if (!text || text.length > 300) continue;
+      let fname = "";
+      const parsed = extractFnameFromCaption(text);
+      if (parsed && knownNames.includes(parsed)) {{
+        fname = parsed;
+      }} else {{
+        for (const candidate of sortedNames) {{
+          if (text.includes(candidate)) {{
+            fname = candidate;
+            break;
+          }}
+        }}
+      }}
+      if (!fname) continue;
+      const centerX = rect.left + (rect.width / 2);
+      const dialogCenterX = dialogRect.left + (dialogRect.width / 2);
+      let score = 0;
+      if (text.includes("|")) score += 800;
+      if (Number.isFinite(stripTop) && rect.bottom <= stripTop + 18) {{
+        score += 500;
+        score -= Math.abs(stripTop - rect.bottom);
+      }}
+      if (rect.width < dialogRect.width * 0.9) score += 80;
+      score += rect.top / 6;
+      score -= Math.abs(centerX - dialogCenterX) / 4;
+      if (score > bestScore) {{
+        bestScore = score;
+        bestFname = fname;
+      }}
+    }}
+    return bestFname;
+  }};
+  const getDialogOrder = (markedState, side) => {{
+    if (side === "left") return Array.isArray(markedState.left_order) ? markedState.left_order : [];
+    if (side === "right") return Array.isArray(markedState.right_order) ? markedState.right_order : [];
+    return [];
+  }};
+  const updateDialogSelectionFromFname = (markedState, fname) => {{
+    if (!fname) return false;
+    for (const side of ["left", "right"]) {{
+      const order = getDialogOrder(markedState, side);
+      const idx = order.indexOf(fname);
+      if (idx >= 0) {{
+        activeDialogSelection = {{ side, index: idx }};
+        return true;
+      }}
+    }}
+    return false;
+  }};
+  const getActiveDialogImage = () => {{
+    const candidates = Array.from(document.querySelectorAll('[role="dialog"] img, [aria-modal="true"] img')).filter((img) => {{
+      const rect = img.getBoundingClientRect();
+      const style = window.getComputedStyle(img);
+      return rect.width >= 220 && rect.height >= 220 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    }});
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height) - (a.getBoundingClientRect().width * a.getBoundingClientRect().height));
+    return candidates[0];
+  }};
+  const getDialogThumbImages = (dialogRoot) => {{
+    const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (!root) return [];
+    const candidates = Array.from(root.querySelectorAll("img")).filter((img) => {{
+      const rect = img.getBoundingClientRect();
+      const style = window.getComputedStyle(img);
+      return rect.width > 12
+        && rect.height > 12
+        && rect.width <= 180
+        && rect.height <= 180
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && style.opacity !== "0";
+    }});
+    if (candidates.length <= 1) return candidates;
+    const rows = [];
+    for (const img of candidates) {{
+      const rect = img.getBoundingClientRect();
+      const centerY = rect.top + (rect.height / 2);
+      let row = rows.find((entry) => Math.abs(entry.centerY - centerY) <= 22);
+      if (!row) {{
+        row = {{ centerY, images: [] }};
+        rows.push(row);
+      }}
+      row.images.push(img);
+      row.centerY = row.images.reduce((sum, entry) => {{
+        const entryRect = entry.getBoundingClientRect();
+        return sum + entryRect.top + (entryRect.height / 2);
+      }}, 0) / row.images.length;
+    }}
+    rows.sort((a, b) => {{
+      if (b.images.length !== a.images.length) return b.images.length - a.images.length;
+      return b.centerY - a.centerY;
+    }});
+    const strip = rows[0]?.images || [];
+    strip.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    return strip;
+  }};
+  const getDialogThumbTargetInfo = (target) => {{
+    const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
+    if (!dialogRoot) return null;
+    const targetImg = target instanceof HTMLImageElement ? target : target.querySelector?.("img");
+    if (!(targetImg instanceof HTMLImageElement)) return null;
+    const thumbs = getDialogThumbImages(dialogRoot);
+    const idx = thumbs.indexOf(targetImg);
+    if (idx < 0) return null;
+    return {{ dialogRoot, targetImg, idx }};
+  }};
+  const getDialogControlLabel = (element) => {{
+    if (!(element instanceof Element)) return "";
+    return `${{element.getAttribute("aria-label") || ""}} ${{element.getAttribute("title") || ""}} ${{(element.textContent || "").trim()}}`.trim().toLowerCase();
+  }};
+  const hideDialogThumbStrip = (dialogRoot) => {{
+    const thumbs = getDialogThumbImages(dialogRoot);
+    if (!thumbs.length) return;
+    const parentCounts = new Map();
+    for (const img of thumbs) {{
+      const host = img.closest("button, [role='button'], .thumbnail-item, .gallery-item") || img;
+      host.style.display = "none";
+      host.style.pointerEvents = "none";
+      host.setAttribute("aria-hidden", "true");
+      if (host.parentElement) {{
+        parentCounts.set(host.parentElement, (parentCounts.get(host.parentElement) || 0) + 1);
+      }}
+    }}
+    for (const [parent, count] of parentCounts.entries()) {{
+      if (count >= Math.max(3, Math.ceil(thumbs.length * 0.5))) {{
+        parent.style.display = "none";
+        parent.setAttribute("aria-hidden", "true");
+      }}
+    }}
+  }};
+  const disablePreviewDialogNavigation = (dialogRoot) => {{
+    const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (!root) return;
+    hideDialogThumbStrip(root);
+    const mainImg = getActiveDialogImage();
+    if (mainImg) {{
+      const host = mainImg.closest("button, [role='button']") || mainImg;
+      host.style.pointerEvents = "none";
+      host.style.cursor = "default";
+      mainImg.style.pointerEvents = "none";
+      mainImg.style.cursor = "default";
+    }}
+  }};
+  const shouldBlockDialogNavigationClick = (target, dialogRoot) => {{
+    if (!(target instanceof Element) || !dialogRoot) return false;
+    if (target === dialogRoot) return false;
+    const control = target.closest("button, a");
+    if (control) {{
+      const label = getDialogControlLabel(control);
+      const rect = control.getBoundingClientRect();
+      const dialogRect = dialogRoot.getBoundingClientRect();
+      if (rect.top <= dialogRect.top + 80) return false;
+      if (
+        label === "x"
+        || label === "×"
+        || label.includes("close")
+        || label.includes("download")
+        || label.includes("share")
+        || label.includes("fullscreen")
+        || label.includes("expand")
+      ) {{
+        return false;
+      }}
+    }}
+    return true;
+  }};
+  const parseCssColor = (value) => {{
+    const match = String(value || "").match(/rgba?\\(([^)]+)\\)/i);
+    if (!match) return null;
+    const parts = match[1].split(",").map((part) => Number.parseFloat(part.trim()));
+    if (parts.length < 3 || parts.some((part) => !Number.isFinite(part))) return null;
+    return {{
+      r: parts[0],
+      g: parts[1],
+      b: parts[2],
+      a: Number.isFinite(parts[3]) ? parts[3] : 1,
+    }};
+  }};
+  const thumbSelectionScore = (img) => {{
+    const host = img.closest("button, [role='button'], .thumbnail-item, .gallery-item") || img;
+    const hostStyle = window.getComputedStyle(host);
+    const imgStyle = window.getComputedStyle(img);
+    const hostClasses = String(host.className || "").toLowerCase();
+    const imgClasses = String(img.className || "").toLowerCase();
+    let score = 0;
+    if (host.getAttribute("aria-selected") === "true" || img.getAttribute("aria-selected") === "true") score += 1000;
+    if (host.getAttribute("aria-current") === "true" || img.getAttribute("aria-current") === "true") score += 1000;
+    if (host.dataset.selected === "true" || img.dataset.selected === "true") score += 1000;
+    if (/(^|\\s)(selected|active|current)(\\s|$)/.test(hostClasses)) score += 300;
+    if (/(^|\\s)(selected|active|current)(\\s|$)/.test(imgClasses)) score += 300;
+    const outlineWidth = Number.parseFloat(hostStyle.outlineWidth || "0") || 0;
+    const borderWidth = Number.parseFloat(hostStyle.borderTopWidth || "0") || 0;
+    const boxShadow = `${{hostStyle.boxShadow || ""}} ${{imgStyle.boxShadow || ""}}`.toLowerCase();
+    if (outlineWidth > 0) score += outlineWidth * 25;
+    if (borderWidth > 0) score += borderWidth * 15;
+    if (boxShadow && boxShadow !== "none") score += 30;
+    const colors = [
+      parseCssColor(hostStyle.outlineColor),
+      parseCssColor(hostStyle.borderTopColor),
+      parseCssColor(hostStyle.boxShadow),
+      parseCssColor(imgStyle.outlineColor),
+      parseCssColor(imgStyle.borderTopColor),
+      parseCssColor(imgStyle.boxShadow),
+    ].filter(Boolean);
+    for (const color of colors) {{
+      const blueBias = color.b - Math.max(color.r, color.g);
+      const cyanBias = Math.min(color.g, color.b) - color.r;
+      if (blueBias > 20) score += 40 + blueBias;
+      if (cyanBias > 20) score += 40 + cyanBias;
+      score += (color.a || 0) * 10;
+    }}
+    return score;
+  }};
+  const getSelectedDialogThumbIndex = (dialogRoot) => {{
+    const thumbs = getDialogThumbImages(dialogRoot);
+    if (!thumbs.length) return -1;
+    let bestIndex = -1;
+    let bestScore = -1;
+    thumbs.forEach((img, idx) => {{
+      const score = thumbSelectionScore(img);
+      if (score > bestScore) {{
+        bestScore = score;
+        bestIndex = idx;
+      }}
+    }});
+    return bestScore > 0 ? bestIndex : -1;
+  }};
+  const syncDialogPreviewTarget = () => {{
+    const dialogRoot = document.querySelector('[role="dialog"], [aria-modal="true"]');
+    const dialogImg = getActiveDialogImage();
+    const markedState = readMarkedState();
+    if (!activeDialogSelection.side) {{
+      updateDialogSelectionFromFname(markedState, markedState.preview || "");
+    }}
+    if (!dialogRoot || !dialogImg) {{
+      activeDialogPreviewFname = "";
+      activeDialogSelection = {{ side: "", index: -1 }};
+      return;
+    }}
+    disablePreviewDialogNavigation(dialogRoot);
+    const fname = extractFnameFromDialogText(dialogRoot, markedState) || extractFnameFromDialogImage(dialogImg, markedState);
+    if (!fname || fname === activeDialogPreviewFname) return;
+    updateDialogSelectionFromFname(markedState, fname);
+    activeDialogPreviewFname = fname;
+    pushPreviewFname(fname);
+  }};
+  const resolveDialogPreviewFnameForAction = (dialogRoot, markedState) => {{
+    const fromText = extractFnameFromDialogText(dialogRoot, markedState);
+    if (fromText) {{
+      updateDialogSelectionFromFname(markedState, fromText);
+      return fromText;
+    }}
+    const dialogImg = getActiveDialogImage();
+    const fromImage = extractFnameFromDialogImage(dialogImg, markedState);
+    if (fromImage) {{
+      updateDialogSelectionFromFname(markedState, fromImage);
+      return fromImage;
+    }}
+    const selectedThumbIndex = getSelectedDialogThumbIndex(dialogRoot);
+    if (selectedThumbIndex >= 0) {{
+      let side = activeDialogSelection.side || "";
+      if (!side) {{
+        side = updateDialogSelectionFromFname(markedState, markedState.preview || "") ? activeDialogSelection.side : "";
+      }}
+      const order = getDialogOrder(markedState, side);
+      if (selectedThumbIndex < order.length) {{
+        activeDialogSelection = {{ side, index: selectedThumbIndex }};
+        return order[selectedThumbIndex] || "";
+      }}
+    }}
+    const order = getDialogOrder(markedState, activeDialogSelection.side);
+    if (order.length && activeDialogSelection.index >= 0 && activeDialogSelection.index < order.length) {{
+      return order[activeDialogSelection.index] || "";
+    }}
+    return activeDialogPreviewFname || markedState.preview || "";
+  }};
+  const closePreviewDialog = (dialogRoot) => {{
+    const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
+    if (!root) return false;
+    const closeButton = Array.from(root.querySelectorAll("button")).find((button) => {{
+      const label = `${{button.getAttribute("aria-label") || ""}} ${{button.getAttribute("title") || ""}} ${{(button.textContent || "").trim()}}`.trim().toLowerCase();
+      return label === "x" || label === "×" || label.includes("close");
+    }});
+    if (closeButton) {{
+      closeButton.click();
+      return true;
+    }}
+    const escapeEvent = new KeyboardEvent("keydown", {{
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+    }});
+    document.dispatchEvent(escapeEvent);
+    return true;
+  }};
+  const hookDialogActionHandoff = () => {{
+    if (document.body.dataset.hyDialogActionHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const actionRoot = target.closest("#hy-fit-threshold, #hy-move-right, #hy-move-left");
+      if (!actionRoot) return;
+      const dialogRoot = document.querySelector('[role="dialog"], [aria-modal="true"]');
+      if (!dialogRoot) return;
+      const markedState = readMarkedState();
+      const fname = resolveDialogPreviewFnameForAction(dialogRoot, markedState);
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      closePreviewDialog(dialogRoot);
+      pushThumbAction(`dialogactionjson:${{JSON.stringify({{
+        action: actionRoot.id || "",
+        fname: fname || "",
+        ts: Date.now(),
+      }})}}`);
+      setTimeout(scheduleRepaint, 40);
+      setTimeout(scheduleRepaint, 140);
+    }}, true);
+    document.body.dataset.hyDialogActionHooked = "1";
+  }};
+  const getHoverScores = (markedState) => {{
+    if (!activeHoverInfo || !activeHoverInfo.fname) return null;
+    const lookup = markedState.score_lookup || {{}};
+    const scored = lookup[activeHoverInfo.fname] || null;
+    if (scored) return scored;
+    if (Number.isFinite(activeHoverInfo.main)) {{
+      return {{
+        main: activeHoverInfo.main,
+        neg: Number.isFinite(activeHoverInfo.neg) ? activeHoverInfo.neg : null,
+      }};
+    }}
+    return null;
+  }};
+  const syncHistogramHoverLine = () => {{
+    const root = document.getElementById("hy-hist");
+    if (!root) return;
+    root.style.position = "relative";
+    const markedState = readMarkedState();
+    const geom = markedState.hist_geom || null;
+    const img = root.querySelector("img");
+    let line = root.querySelector(".hy-hover-line-main");
+    if (!line) {{
+      line = document.createElement("div");
+      line.className = "hy-hover-line hy-hover-line-main";
+      root.appendChild(line);
+    }}
+    let negLine = root.querySelector(".hy-hover-line-neg");
+    if (!negLine) {{
+      negLine = document.createElement("div");
+      negLine.className = "hy-hover-line hy-hover-line-neg";
+      root.appendChild(negLine);
+    }}
+    const hoverScores = getHoverScores(markedState);
+    if (!geom || !img || !hoverScores || !Number.isFinite(hoverScores.main)) {{
+      line.style.opacity = "0";
+      negLine.style.opacity = "0";
+      return;
+    }}
+    const chartLo = geom.method === "PromptMatch" ? geom.pos_lo : geom.lo;
+    const chartHi = geom.method === "PromptMatch" ? geom.pos_hi : geom.hi;
+    if (!Number.isFinite(chartLo) || !Number.isFinite(chartHi) || Math.abs(chartHi - chartLo) < 1e-9) {{
+      line.style.opacity = "0";
+      negLine.style.opacity = "0";
+      return;
+    }}
+    const scaleX = img.clientWidth / Math.max(geom.W || 1, 1);
+    const scaleY = img.clientHeight / Math.max(geom.H || 1, 1);
+    const chartX = (geom.PAD_L + (((hoverScores.main - chartLo) / (chartHi - chartLo)) * (geom.W - geom.PAD_L - geom.PAD_R))) * scaleX;
+    const clampedX = Math.max(geom.PAD_L * scaleX, Math.min((geom.W - geom.PAD_R) * scaleX, chartX));
+    const chartTop = (geom.PAD_TOP || 0) * scaleY;
+    const chartHeight = (geom.method === "PromptMatch" ? geom.CH : (geom.H - geom.PAD_TOP - geom.PAD_BOT)) * scaleY;
+    line.style.left = `${{Math.round(img.offsetLeft + clampedX)}}px`;
+    line.style.top = `${{Math.round(img.offsetTop + chartTop)}}px`;
+    line.style.height = `${{Math.max(12, Math.round(chartHeight))}}px`;
+    line.style.opacity = "1";
+    negLine.style.opacity = "0";
+    if (geom.method === "PromptMatch" && geom.has_neg && Number.isFinite(hoverScores.neg) && Number.isFinite(geom.neg_lo) && Number.isFinite(geom.neg_hi) && Math.abs(geom.neg_hi - geom.neg_lo) >= 1e-9) {{
+      const negX = (geom.PAD_L + (((hoverScores.neg - geom.neg_lo) / (geom.neg_hi - geom.neg_lo)) * (geom.W - geom.PAD_L - geom.PAD_R))) * scaleX;
+      const clampedNegX = Math.max(geom.PAD_L * scaleX, Math.min((geom.W - geom.PAD_R) * scaleX, negX));
+      const negTop = (geom.PAD_TOP + geom.CH + geom.GAP) * scaleY;
+      negLine.style.left = `${{Math.round(img.offsetLeft + clampedNegX)}}px`;
+      negLine.style.top = `${{Math.round(img.offsetTop + negTop)}}px`;
+      negLine.style.height = `${{Math.max(12, Math.round(geom.CH * scaleY))}}px`;
+      negLine.style.opacity = "1";
+    }}
+  }};
   const scheduleRepaint = () => {{
     // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
     ensureThumbBehavior();
+    hookHistogramResize();
+    syncHistogramHoverLine();
+    syncDialogPreviewTarget();
+    disablePreviewDialogNavigation();
     for (const timer of repaintTimers) clearTimeout(timer);
     repaintTimers = [
       setTimeout(ensureThumbBehavior, 40),
+      setTimeout(syncHistogramHoverLine, 60),
+      setTimeout(syncDialogPreviewTarget, 80),
+      setTimeout(disablePreviewDialogNavigation, 100),
       setTimeout(ensureThumbBehavior, 140),
+      setTimeout(syncHistogramHoverLine, 170),
+      setTimeout(syncDialogPreviewTarget, 200),
+      setTimeout(disablePreviewDialogNavigation, 220),
       setTimeout(ensureThumbBehavior, 320),
+      setTimeout(syncHistogramHoverLine, 350),
+      setTimeout(syncDialogPreviewTarget, 380),
+      setTimeout(disablePreviewDialogNavigation, 400),
     ];
   }};
   const ensureThumbBehavior = () => {{
@@ -1549,6 +2159,8 @@ def create_app():
             }});
             const index = thumbButtons.indexOf(card);
             if (index >= 0) {{
+              activeDialogSelection = {{ side, index }};
+              activeDialogPreviewFname = card.dataset.hyFname || "";
               pushThumbAction(`preview:${{side}}:${{index}}:${{Date.now()}}`);
             }}
             setTimeout(scheduleRepaint, 30);
@@ -1629,6 +2241,32 @@ def create_app():
         card.dataset.hySide = side;
         card.dataset.hyIndex = String(index);
         card.dataset.hyFname = fname;
+        const scoreLookup = markedState.score_lookup || {{}};
+        const hoverScores = scoreLookup[fname] || null;
+        const hoverMain = hoverScores && Number.isFinite(hoverScores.main)
+          ? hoverScores.main
+          : parseMainScoreFromCaption(captionText);
+        card.dataset.hyHoverMain = Number.isFinite(hoverMain) ? String(hoverMain) : "";
+        card.dataset.hyHoverNeg = hoverScores && Number.isFinite(hoverScores.neg) ? String(hoverScores.neg) : "";
+        if (!card.dataset.hyHoverHooked) {{
+          card.addEventListener("mouseenter", (event) => {{
+            const target = event.currentTarget;
+            if (!target) return;
+            const main = Number.parseFloat(target.dataset.hyHoverMain || "");
+            const neg = Number.parseFloat(target.dataset.hyHoverNeg || "");
+            activeHoverInfo = {{
+              fname: target.dataset.hyFname || "",
+              main: Number.isFinite(main) ? main : null,
+              neg: Number.isFinite(neg) ? neg : null,
+            }};
+            syncHistogramHoverLine();
+          }});
+          card.addEventListener("mouseleave", () => {{
+            activeHoverInfo = null;
+            syncHistogramHoverLine();
+          }});
+          card.dataset.hyHoverHooked = "1";
+        }}
         if (!card.dataset.hyDragHooked) {{
           card.addEventListener("dragstart", (event) => {{
             const dragSide = card.dataset.hySide || side;
@@ -1730,10 +2368,37 @@ def create_app():
   }};
   applyTooltips();
   hookMarkState();
+  hookHistogramResize();
+  hookPreviewDialogTracking();
+  hookInlinePreviewNavigationLock();
+  hookDialogActionHandoff();
   scheduleRepaint();
-  new MutationObserver(() => {{
+  new MutationObserver((mutations) => {{
+    let dialogMutation = false;
+    const relevantMutation = mutations.some((mutation) => {{
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      return nodes.some((node) => {{
+        if (!(node instanceof Element)) return false;
+        if (node.closest('[role="dialog"], [aria-modal="true"]') || node.matches?.('[role="dialog"], [aria-modal="true"]')) {{
+          dialogMutation = true;
+          return false;
+        }}
+        return !!node.closest('#hy-left-gallery, #hy-right-gallery, #hy-hist, .sidebar-box');
+      }});
+    }});
+    if (dialogMutation) {{
+      setTimeout(syncDialogPreviewTarget, 30);
+      setTimeout(syncDialogPreviewTarget, 120);
+      setTimeout(disablePreviewDialogNavigation, 45);
+      setTimeout(disablePreviewDialogNavigation, 135);
+    }}
+    if (!relevantMutation) return;
     applyTooltips();
     hookMarkState();
+    hookHistogramResize();
+    hookPreviewDialogTracking();
+    hookInlinePreviewNavigationLock();
+    hookDialogActionHandoff();
     scheduleRepaint();
   }}).observe(document.body, {{ childList: true, subtree: true }});
 }})();
@@ -1771,6 +2436,11 @@ def create_app():
         "hy-export": "COPY the current split into two SELECTED / REJECTED output folders inside source folder.",
         "hy-left-gallery": "Images currently in the left bucket. Click one to select it, Shift+click to mark, or drag an image to the other gallery.",
         "hy-right-gallery": "Images currently in the right bucket. Click one to select it, Shift+click to mark, or drag an image to the other gallery.",
+        "hy-export-left-enabled": "Include the left bucket in the next export run.",
+        "hy-export-right-enabled": "Include the right bucket in the next export run.",
+        "hy-export-move-enabled": "Move files into the export folders instead of copying them. Disabled by default.",
+        "hy-export-left-name": "Editable export folder name for the left bucket. Export writes directly into source_folder/<name>.",
+        "hy-export-right-name": "Editable export folder name for the right bucket. Export writes directly into source_folder/<name>.",
         "hy-move-right": "Move all marked SELECTED images into REJECTED as manual overrides.",
         "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
         "hy-fit-threshold": "Adjust the score threshold just enough so the marked images flip to the other bucket. Uses the previewed image if nothing is marked.",
@@ -1931,15 +2601,51 @@ def create_app():
             return "Shift+click to mark multiple images, or drag one image or a marked batch between galleries."
         return f"Marked: **{left_count}** in SELECTED, **{right_count}** in REJECTED"
 
-    def marked_state_json():
+    def marked_state_json(visible_fnames=None):
+        score_lookup = {}
+        media_lookup = {}
+        left_order = []
+        right_order = []
+        visible_names = set(visible_fnames or [])
+        for fname, item in state.get("scores", {}).items():
+            if visible_names and fname not in visible_names:
+                continue
+            original_path = item.get("path")
+            if original_path:
+                original_base = os.path.basename(original_path)
+                media_lookup[original_base] = fname
+                media_lookup[original_path] = fname
+                display_path = state.get("proxy_map", {}).get(original_path, original_path)
+                display_base = os.path.basename(display_path)
+                media_lookup[display_base] = fname
+                media_lookup[display_path] = fname
+            if state["method"] == METHOD_PROMPTMATCH:
+                if item.get("failed", False) or "pos" not in item:
+                    continue
+                score_lookup[fname] = {
+                    "main": round(float(item["pos"]), 6),
+                    "neg": round(float(item["neg"]), 6) if item.get("neg") is not None else None,
+                }
+            else:
+                if item.get("score", -1001) <= -1000:
+                    continue
+                score_lookup[fname] = {
+                    "main": round(float(item["score"]), 6),
+                    "neg": None,
+                }
         return json.dumps({
             "left": state.get("left_marked", []),
             "right": state.get("right_marked", []),
             "held": list(state.get("overrides", {}).keys()),
             "preview": state.get("preview_fname"),
+            "hist_geom": state.get("hist_geom"),
+            "score_lookup": score_lookup,
+            "media_lookup": media_lookup,
+            "left_order": left_order,
+            "right_order": right_order,
         })
 
-    def active_targets(main_threshold, aux_threshold):
+    def active_targets(main_threshold, aux_threshold, preview_override=None):
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
         )
@@ -1950,7 +2656,7 @@ def create_app():
         if left_marked or right_marked:
             return left_marked, right_marked
 
-        preview_fname = state.get("preview_fname")
+        preview_fname = preview_override or state.get("preview_fname")
         if preview_fname in left_names:
             return [preview_fname], []
         if preview_fname in right_names:
@@ -1963,13 +2669,34 @@ def create_app():
             state["hist_geom"] = None
             return None
         _, _, main_hist_label, aux_hist_label = threshold_labels(method)
+        try:
+            hist_width = max(220, int(state.get("hist_width", 300)))
+        except Exception:
+            hist_width = 300
+
+        def draw_axis_labels(draw, left_x, center_x, right_x, y, lo, hi):
+            labels = (
+                (left_x, f"{lo:.3f}", "left"),
+                (center_x, f"{((lo + hi) / 2):.3f}", "center"),
+                (right_x, f"{hi:.3f}", "right"),
+            )
+            for x, text, align in labels:
+                bbox = draw.textbbox((0, 0), text)
+                width = bbox[2] - bbox[0]
+                if align == "center":
+                    tx = x - (width / 2)
+                elif align == "right":
+                    tx = x - width
+                else:
+                    tx = x
+                draw.text((int(tx), y), text, fill="#667755")
 
         if method == METHOD_PROMPTMATCH:
             if not all("pos" in item for item in scores.values()):
                 state["hist_geom"] = None
                 return None
-            pos_vals = [v["pos"] for v in scores.values() if v["pos"] >= 0]
-            neg_vals = [v["neg"] for v in scores.values() if v.get("neg") is not None and v["neg"] >= 0]
+            pos_vals = [v["pos"] for v in scores.values() if not v.get("failed", False)]
+            neg_vals = [v["neg"] for v in scores.values() if not v.get("failed", False) and v.get("neg") is not None]
             has_neg = bool(neg_vals)
             if not pos_vals:
                 state["hist_geom"] = None
@@ -1990,8 +2717,8 @@ def create_app():
 
             pos_counts, pos_lo, pos_hi = _bins(pos_vals)
             neg_counts, neg_lo, neg_hi = _bins(neg_vals)
-            W, CH = 300, max(60, int(130 * HIST_HEIGHT_SCALE))
-            PAD_L, PAD_R = 38, 8
+            W, CH = hist_width, max(60, int(130 * HIST_HEIGHT_SCALE))
+            PAD_L, PAD_R = 12, 12
             PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
             GAP = max(16, int(28 * HIST_HEIGHT_SCALE))
             n_ch = 2 if has_neg else 1
@@ -2019,9 +2746,7 @@ def create_app():
                     draw.rectangle([x0, y0 + CH - bh, x1, y0 + CH], fill=bar_rgb)
                 for yy in range(y0, y0 + CH, 6):
                     draw.line([(tx, yy), (tx, min(yy + 3, y0 + CH))], fill=line_rgb, width=2)
-                for frac, val in [(0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)]:
-                    lx = PAD_L + int(frac * cW)
-                    draw.text((lx, y0 + CH + 4), f"{val:.3f}", fill="#667755", anchor="mt")
+                draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, y0 + CH + 4, lo, hi)
                 draw.text((PAD_L, y0 - 14), f"{label} threshold: {threshold:.3f}", fill="#99bb88")
 
             draw_chart(
@@ -2083,8 +2808,8 @@ def create_app():
         counts = [0] * bins
         for val in vals:
             counts[min(int((val - lo) / width), bins - 1)] += 1
-        W, H = 300, max(70, int(130 * HIST_HEIGHT_SCALE))
-        PAD_L, PAD_R = 38, 8
+        W, H = hist_width, max(70, int(130 * HIST_HEIGHT_SCALE))
+        PAD_L, PAD_R = 12, 12
         PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
         cW = W - PAD_L - PAD_R
         img = Image.new("RGB", (W, H), "#0d0d11")
@@ -2103,9 +2828,7 @@ def create_app():
         tx = max(PAD_L, min(W - PAD_R, tx))
         for yy in range(PAD_TOP, PAD_TOP + H - PAD_BOT, 6):
             draw.line([(tx, yy), (tx, min(yy + 3, PAD_TOP + H - PAD_BOT))], fill="#aadd66", width=2)
-        for frac, val in [(0.0, lo), (0.5, (lo + hi) / 2), (1.0, hi)]:
-            lx = PAD_L + int(frac * cW)
-            draw.text((lx, PAD_TOP + H - PAD_BOT + 4), f"{val:.3f}", fill="#667755", anchor="mt")
+        draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, PAD_TOP + H - PAD_BOT + 4, lo, hi)
         draw.text((PAD_L, PAD_TOP - 14), f"{main_hist_label}: {main_threshold:.3f}", fill="#99bb88")
         state["hist_geom"] = {
             "method": method,
@@ -2130,17 +2853,24 @@ def create_app():
         )
         left_names = {os.path.basename(path) for path, _ in left_items}
         right_names = {os.path.basename(path) for path, _ in right_items}
+        left_order = [os.path.basename(path) for path, _ in left_items]
+        right_order = [os.path.basename(path) for path, _ in right_items]
         state["left_marked"] = [name for name in state.get("left_marked", []) if name in left_names]
         state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
+        visible_names = left_names | right_names
         return (
-            f"### {left_name} — {len(left_items)} images",
+            f"**{len(left_items)} images**",
             gallery_update(gallery_display_items(left_items), columns=zoom_columns),
-            f"### {right_name} — {len(right_items)} images",
+            f"**{len(right_items)} images**",
             gallery_update(gallery_display_items(right_items), columns=zoom_columns),
             status_line(state["method"], left_items, right_items, state["scores"], state["overrides"]),
             render_histogram(state["method"], state["scores"], main_threshold, aux_threshold),
             selection_info(),
-            marked_state_json(),
+            json.dumps({
+                **json.loads(marked_state_json(visible_names)),
+                "left_order": left_order,
+                "right_order": right_order,
+            }),
         )
 
     def get_preview_image_path():
@@ -2845,8 +3575,34 @@ def create_app():
 
     def handle_thumb_action(action, main_threshold, aux_threshold):
         # Custom JS reports preview clicks, shift-click bulk marking, and drag-drop moves.
+        noop = (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        with_slider_skips = lambda view: (*view, gr.skip(), gr.skip())
         if not action:
-            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            return noop
+        if str(action).startswith("previewfname:"):
+            try:
+                _, fname, _ = str(action).split(":", 2)
+            except Exception:
+                return noop
+            if fname and fname in state.get("scores", {}):
+                state["preview_fname"] = fname
+            return noop
+        if str(action).startswith("dialogactionjson:"):
+            try:
+                payload = json.loads(str(action)[17:])
+                action_id = str(payload.get("action", "") or "")
+                fname = str(payload.get("fname", "") or "")
+            except Exception:
+                return noop
+            if fname and fname in state.get("scores", {}):
+                state["preview_fname"] = fname
+            if action_id == "hy-move-right":
+                return with_slider_skips(move_right(main_threshold, aux_threshold, preview_override=fname))
+            if action_id == "hy-move-left":
+                return with_slider_skips(move_left(main_threshold, aux_threshold, preview_override=fname))
+            if action_id == "hy-fit-threshold":
+                return fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=fname)
+            return noop
         if str(action).startswith("dropjson:"):
             try:
                 payload = json.loads(str(action)[9:])
@@ -2855,7 +3611,7 @@ def create_app():
                 target_side = payload["target_side"]
                 drop_fnames = [str(name) for name in payload.get("fnames", []) if str(name)]
             except Exception:
-                return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+                return noop
             left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
             items = left_items if side == "left" else right_items
             if 0 <= index < len(items) and target_side in ("left", "right") and target_side != side:
@@ -2872,7 +3628,7 @@ def create_app():
                 state["left_marked"] = [name for name in state["left_marked"] if name not in move_fnames]
                 state["right_marked"] = [name for name in state["right_marked"] if name not in move_fnames]
                 state["preview_fname"] = move_fnames[0]
-            return current_view(main_threshold, aux_threshold)
+            return with_slider_skips(current_view(main_threshold, aux_threshold))
         parts = str(action).split(":")
         verb = parts[0] if parts else ""
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
@@ -2881,31 +3637,46 @@ def create_app():
             _, side, raw_index, _ = parts
             index = int(raw_index)
         except Exception:
-            return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+            return noop
         items = left_items if side == "left" else right_items
         if 0 <= index < len(items):
             fname = os.path.basename(items[index][0])
             if verb == "preview":
                 state["preview_fname"] = fname
+                return noop
             else:
                 marked_key = "left_marked" if side == "left" else "right_marked"
                 if fname in state[marked_key]:
                     state[marked_key] = [name for name in state[marked_key] if name != fname]
                 else:
                     state[marked_key].append(fname)
-        return current_view(main_threshold, aux_threshold)
+        return with_slider_skips(current_view(main_threshold, aux_threshold))
 
-    def move_right(main_threshold, aux_threshold):
+    def handle_hist_width(width_value, main_threshold, aux_threshold):
+        try:
+            next_width = max(220, int(float(width_value)))
+        except Exception:
+            return gr.skip()
+        if abs(next_width - int(state.get("hist_width", 300))) < 2:
+            return gr.skip()
+        state["hist_width"] = next_width
+        return render_histogram(state["method"], state["scores"], main_threshold, aux_threshold)
+
+    def move_right(main_threshold, aux_threshold, preview_override=None):
         left_name, right_name, _, _ = method_labels(state["method"])
-        for fname in state["left_marked"]:
+        left_targets, _ = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
+        targets = left_targets or list(state.get("left_marked", []))
+        for fname in targets:
             state["overrides"][fname] = right_name
         state["left_marked"] = []
         state["right_marked"] = []
         return current_view(main_threshold, aux_threshold)
 
-    def move_left(main_threshold, aux_threshold):
+    def move_left(main_threshold, aux_threshold, preview_override=None):
         left_name, right_name, _, _ = method_labels(state["method"])
-        for fname in state["right_marked"]:
+        _, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
+        targets = right_targets or list(state.get("right_marked", []))
+        for fname in targets:
             state["overrides"][fname] = left_name
         state["left_marked"] = []
         state["right_marked"] = []
@@ -2918,8 +3689,8 @@ def create_app():
         state["right_marked"] = []
         return current_view(main_threshold, aux_threshold)
 
-    def fit_threshold_to_targets(main_threshold, aux_threshold):
-        left_targets, right_targets = active_targets(main_threshold, aux_threshold)
+    def fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=None):
+        left_targets, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = left_targets or right_targets
         if not targets or (left_targets and right_targets) or not state["scores"]:
             return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
@@ -3075,27 +3846,55 @@ def create_app():
 
         return (*current_view(main_threshold, aux_threshold), gr.update(value=main_threshold), gr.update(value=aux_threshold))
 
-    def export_files(main_threshold, aux_threshold):
+    def export_files(main_threshold, aux_threshold, export_left_enabled, export_right_enabled, export_move_enabled, export_left_name, export_right_name):
         # Export is a lossless copy, not a rewrite or recompression of the originals.
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         left_name, right_name, left_dirname, right_dirname = method_labels(state["method"])
         base = state["source_dir"]
-        left_dir = os.path.join(base, left_dirname)
-        right_dir = os.path.join(base, right_dirname)
-        for folder in (left_dir, right_dir):
-            os.makedirs(folder, exist_ok=True)
-            for name in os.listdir(folder):
-                fp = os.path.join(folder, name)
-                if os.path.isfile(fp):
-                    os.remove(fp)
-        for path, _ in left_items:
-            shutil.copy2(path, os.path.join(left_dir, os.path.basename(path)))
-        for path, _ in right_items:
-            shutil.copy2(path, os.path.join(right_dir, os.path.basename(path)))
-        return (
-            f"Losslessly copied {len(left_items)} files to {left_dir}\n"
-            f"Losslessly copied {len(right_items)} files to {right_dir}"
-        )
+        targets = []
+        if export_left_enabled:
+            targets.append((left_name, sanitize_export_name(export_left_name) or left_dirname, left_items))
+        if export_right_enabled:
+            targets.append((right_name, sanitize_export_name(export_right_name) or right_dirname, right_items))
+        if not targets:
+            return (*current_view(main_threshold, aux_threshold), "Enable at least one bucket for export.")
+        target_names = [folder_name for _, folder_name, _ in targets]
+        if len(set(target_names)) != len(target_names):
+            return (*current_view(main_threshold, aux_threshold), "Export folder names must be different when both buckets are enabled.")
+
+        lines = []
+        moved_names = []
+        for bucket_label, folder_name, items in targets:
+            bucket_dir = os.path.join(base, folder_name)
+            os.makedirs(bucket_dir, exist_ok=True)
+            for path, _ in items:
+                original_name = os.path.basename(path)
+                dest_path = export_destination(bucket_dir, original_name)
+                if export_move_enabled:
+                    shutil.copy2(path, dest_path)
+                    os.remove(path)
+                    moved_names.append(original_name)
+                else:
+                    shutil.copy2(path, dest_path)
+            verb = "Moved" if export_move_enabled else "Losslessly copied"
+            lines.append(f"{verb} {len(items)} {bucket_label.lower()} files to {bucket_dir}")
+        disabled = []
+        if not export_left_enabled:
+            disabled.append(left_name.lower())
+        if not export_right_enabled:
+            disabled.append(right_name.lower())
+        if disabled:
+            lines.append(f"Skipped bucket(s): {', '.join(disabled)}")
+        if moved_names:
+            moved_set = set(moved_names)
+            for fname in moved_set:
+                state["scores"].pop(fname, None)
+                state["overrides"].pop(fname, None)
+            state["left_marked"] = [name for name in state.get("left_marked", []) if name not in moved_set]
+            state["right_marked"] = [name for name in state.get("right_marked", []) if name not in moved_set]
+            if state.get("preview_fname") in moved_set:
+                state["preview_fname"] = None
+        return (*current_view(main_threshold, aux_threshold), "\n".join(lines))
 
     css = """
     body, .gradio-container { background:#0d0d11 !important; color:#ddd8cc !important; }
@@ -3165,6 +3964,10 @@ def create_app():
     .sidebar-box .gr-group, .sidebar-box .block { gap:2px !important; }
     .sidebar-box .gr-form, .sidebar-box .gradio-row { gap:2px !important; }
     .threshold-row { align-items:end; gap:6px; }
+    .threshold-actions {
+        min-width:58px !important;
+        gap:4px !important;
+    }
     .threshold-mid button {
         min-width:50px !important;
         height:36px !important;
@@ -3186,7 +3989,32 @@ def create_app():
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
     .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
-    .hist-img img { cursor:crosshair !important; border-radius:6px; }
+    .hist-img, .hist-img > div { width:100% !important; max-width:100% !important; }
+    .hist-img img { cursor:crosshair !important; border-radius:6px; width:100% !important; max-width:100% !important; display:block !important; }
+    .hy-hover-line {
+        position:absolute;
+        width:0;
+        border-left:1px dashed rgba(190, 230, 190, 0.75);
+        pointer-events:none;
+        z-index:3;
+        opacity:0;
+        transition:opacity 0.06s linear;
+    }
+    .hy-hover-line-neg {
+        border-left-color: rgba(220, 165, 145, 0.78);
+    }
+    #hy-left-gallery, #hy-left-gallery > div {
+        background:linear-gradient(180deg, rgba(18, 36, 24, 0.96), rgba(13, 18, 15, 0.98)) !important;
+        border:1px solid #284732 !important;
+        border-radius:10px !important;
+        box-shadow:inset 0 1px 0 rgba(110, 170, 120, 0.08) !important;
+    }
+    #hy-right-gallery, #hy-right-gallery > div {
+        background:linear-gradient(180deg, rgba(40, 22, 22, 0.96), rgba(19, 14, 14, 0.98)) !important;
+        border:1px solid #5b2f35 !important;
+        border-radius:10px !important;
+        box-shadow:inset 0 1px 0 rgba(195, 110, 110, 0.08) !important;
+    }
     .grid-wrap img { object-fit: contain !important; background: #0a0a12; }
     .grid-wrap .caption-label span, .grid-wrap [class*="caption"] { font-family:monospace !important; font-size:.72em !important; color:#8899aa !important; }
     .move-col { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 6px; background:#0f0f16; border-radius:8px; border:1px solid #252535; }
@@ -3279,6 +4107,40 @@ def create_app():
         background:#254f86 !important;
         color:#d9e8ff !important;
     }
+    #hy-left-gallery .preview .thumbnails,
+    #hy-right-gallery .preview .thumbnails,
+    #hy-left-gallery .preview .thumbnail-small,
+    #hy-right-gallery .preview .thumbnail-small {
+        display:none !important;
+        pointer-events:none !important;
+    }
+    #hy-left-gallery .preview,
+    #hy-right-gallery .preview {
+        display:flex !important;
+        flex-direction:column !important;
+    }
+    #hy-left-gallery .preview .media-button,
+    #hy-right-gallery .preview .media-button {
+        pointer-events:none !important;
+        cursor:default !important;
+        height:auto !important;
+        flex:1 1 auto !important;
+        min-height:0 !important;
+    }
+    #hy-left-gallery .preview [data-testid="detailed-image"],
+    #hy-right-gallery .preview [data-testid="detailed-image"],
+    #hy-left-gallery .preview [data-testid="detailed-video"],
+    #hy-right-gallery .preview [data-testid="detailed-video"] {
+        cursor:default !important;
+        pointer-events:none !important;
+    }
+    [role="dialog"] .thumbnail-item,
+    [aria-modal="true"] .thumbnail-item,
+    [role="dialog"] [data-testid*="thumbnail"],
+    [aria-modal="true"] [data-testid*="thumbnail"] {
+        display:none !important;
+        pointer-events:none !important;
+    }
     #hy-insert-prompt, #hy-insert-prompt button {
         background:#8d5a19 !important;
         background-image:none !important;
@@ -3339,9 +4201,123 @@ def create_app():
         display:block !important;
     }
     .gallery-side { min-width:0; }
-    .gallery-topbar { align-items:end; margin-bottom:8px; }
-    .gallery-right-topbar { align-items:center; gap:12px; justify-content:space-between; }
-    .zoom-inline-wrap { align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; }
+    .gallery-topbar { align-items:end; margin-bottom:8px; gap:14px !important; flex-wrap:nowrap !important; }
+    .gallery-header-slot { min-width:0; overflow:hidden !important; }
+    .gallery-header-spacer {
+        flex:0 0 auto !important;
+        min-width:100px !important;
+    }
+    .gallery-zoom-slot {
+        margin-left:auto !important;
+        display:flex !important;
+        justify-content:flex-end !important;
+        align-items:flex-end !important;
+        min-width:230px !important;
+    }
+    .gallery-head-row {
+        display:flex !important;
+        width:100% !important;
+        align-items:center !important;
+        justify-content:space-between !important;
+        gap:6px !important;
+        flex-wrap:nowrap !important;
+        min-width:0 !important;
+        overflow:hidden !important;
+    }
+    .gallery-head-row .markdown { min-width:0 !important; flex:0 0 auto !important; }
+    .gallery-head-fill {
+        flex:1 1 auto !important;
+        min-width:0 !important;
+        width:100% !important;
+    }
+    .gallery-head-row .markdown h3,
+    .gallery-head-row .markdown p {
+        margin:0 !important;
+    }
+    .gallery-head-row .markdown p {
+        font-family:monospace !important;
+        font-size:.82rem !important;
+        color:#bfc8b5 !important;
+    }
+    .gallery-export-toggle {
+        flex:0 0 auto !important;
+        min-width:0 !important;
+        width:auto !important;
+        max-width:max-content !important;
+        margin:0 !important;
+        padding:0 !important;
+        background:transparent !important;
+        border:0 !important;
+        box-shadow:none !important;
+    }
+    .gallery-export-toggle label {
+        margin:0 !important;
+        min-height:0 !important;
+        gap:5px !important;
+        padding:0 !important;
+        justify-content:flex-start !important;
+        width:fit-content !important;
+        background:transparent !important;
+        border:0 !important;
+        box-shadow:none !important;
+    }
+    .gallery-export-toggle .wrap {
+        width:fit-content !important;
+        min-width:0 !important;
+        max-width:max-content !important;
+        padding:0 !important;
+        margin:0 !important;
+    }
+    .gallery-export-toggle .checkbox,
+    .gallery-export-toggle .checkbox-wrap {
+        margin:0 !important;
+        flex:0 0 auto !important;
+    }
+    .gallery-export-toggle span {
+        font-family:monospace !important;
+        font-size:.68rem !important;
+        color:#aebaa0 !important;
+        letter-spacing:.03em !important;
+        text-transform:uppercase !important;
+        white-space:nowrap !important;
+    }
+    .export-move-toggle {
+        min-width:0 !important;
+    }
+    .gallery-export-name {
+        flex:0 1 156px !important;
+        min-width:120px !important;
+        max-width:180px !important;
+    }
+    .gallery-export-name textarea,
+    .gallery-export-name input {
+        min-height:31px !important;
+        height:31px !important;
+        font-family:monospace !important;
+        font-size:.92rem !important;
+        font-weight:700 !important;
+        letter-spacing:.01em !important;
+        color:#f3f1e6 !important;
+        padding:4px 10px !important;
+    }
+    .gallery-count {
+        flex:0 0 auto !important;
+        min-width:max-content !important;
+    }
+    .gallery-count p {
+        font-family:monospace !important;
+        font-size:.82rem !important;
+        font-weight:700 !important;
+        color:#d7decf !important;
+        white-space:nowrap !important;
+    }
+    .export-options-row {
+        align-items:center !important;
+        gap:14px !important;
+        margin-bottom:10px !important;
+        flex-wrap:nowrap !important;
+    }
+    .zoom-inline-wrap { align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; overflow:hidden; justify-content:flex-end !important; width:100% !important; }
     .zoom-inline-label {
         flex:0 0 auto;
         overflow:visible !important;
@@ -3371,6 +4347,7 @@ def create_app():
         with gr.Row(equal_height=False):
             with gr.Column(scale=1, min_width=300, elem_classes=["sidebar-box"]):
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
+                hist_width_tb = gr.Textbox(value="300", visible="hidden", elem_id="hy-hist-width")
                 shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
                 with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
@@ -3461,7 +4438,8 @@ def create_app():
                             elem_id="hy-main-slider",
                             buttons=[],
                         )
-                        main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
+                        with gr.Column(scale=0, min_width=58, elem_classes=["threshold-actions"]):
+                            main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=58, elem_classes=["threshold-mid"])
                     with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
                         aux_slider = gr.Slider(
                             minimum=-1.0,
@@ -3500,28 +4478,62 @@ def create_app():
                     status_md = gr.Markdown("", elem_classes=["status-md"])
 
                 with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export"):
+                    with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
+                        move_export_cb = gr.Checkbox(
+                            value=False,
+                            label="Move instead of copy",
+                            container=False,
+                            scale=0,
+                            min_width=150,
+                            elem_id="hy-export-move-enabled",
+                            elem_classes=["gallery-export-toggle", "export-move-toggle"],
+                        )
                     export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
                     export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
 
             with gr.Column(scale=5):
                 with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        left_head = gr.Markdown("### SELECTED")
-                    with gr.Column(scale=0, min_width=100):
+                    with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]):
+                        with gr.Row(equal_height=False, elem_classes=["gallery-head-row"]):
+                            left_export_cb = gr.Checkbox(
+                                value=True,
+                                label="Export",
+                                container=False,
+                                scale=0,
+                                min_width=62,
+                                elem_id="hy-export-left-enabled",
+                                elem_classes=["gallery-export-toggle"],
+                            )
+                            gr.HTML("", elem_classes=["gallery-head-fill"])
+                            left_export_name_tb = gr.Textbox(value="selected", show_label=False, container=False, lines=1, elem_id="hy-export-left-name", elem_classes=["gallery-export-name"])
+                            left_head = gr.Markdown("**0 images**", elem_classes=["gallery-count"])
+                    with gr.Column(scale=0, min_width=100, elem_classes=["gallery-header-spacer"]):
                         gr.HTML("")
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
-                        with gr.Row(equal_height=False, elem_classes=["gallery-right-topbar"]):
-                            right_head = gr.Markdown("### REJECTED")
-                            with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
-                                gr.Markdown("Tile Size", elem_classes=["zoom-inline-label"])
-                                zoom_slider = gr.Slider(minimum=2, maximum=10, value=7, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
+                    with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]):
+                        with gr.Row(equal_height=False, elem_classes=["gallery-head-row"]):
+                            right_export_cb = gr.Checkbox(
+                                value=True,
+                                label="Export",
+                                container=False,
+                                scale=0,
+                                min_width=62,
+                                elem_id="hy-export-right-enabled",
+                                elem_classes=["gallery-export-toggle"],
+                            )
+                            gr.HTML("", elem_classes=["gallery-head-fill"])
+                            right_export_name_tb = gr.Textbox(value="rejected", show_label=False, container=False, lines=1, elem_id="hy-export-right-name", elem_classes=["gallery-export-name"])
+                            right_head = gr.Markdown("**0 images**", elem_classes=["gallery-count"])
+                    with gr.Column(scale=0, elem_classes=["gallery-zoom-slot"]):
+                        with gr.Row(equal_height=False, elem_classes=["zoom-inline-wrap"]):
+                            gr.Markdown("Tile Size", elem_classes=["zoom-inline-label"])
+                            zoom_slider = gr.Slider(minimum=2, maximum=10, value=7, step=1, label="Thumbnail count", show_label=False, container=False, elem_id="hy-zoom")
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         left_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
                         sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
                         move_right_btn = gr.Button("Move >>", elem_id="hy-move-right")
-                        fit_threshold_btn = gr.Button("Fit thresh", elem_id="hy-fit-threshold")
+                        fit_threshold_btn = gr.Button("Fit thresh to filter image", elem_id="hy-fit-threshold")
                         move_left_btn = gr.Button("<< Move", elem_id="hy-move-left")
                         clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
@@ -3606,13 +4618,22 @@ def create_app():
             inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
         )
-        thumb_action.change(fn=handle_thumb_action, inputs=[thumb_action, main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        hist_width_tb.change(fn=handle_hist_width, inputs=[hist_width_tb, main_slider, aux_slider], outputs=[hist_plot])
+        thumb_action.change(
+            fn=handle_thumb_action,
+            inputs=[thumb_action, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+        )
         move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
-        export_btn.click(fn=export_files, inputs=[main_slider, aux_slider], outputs=[export_tb])
+        export_btn.click(
+            fn=export_files,
+            inputs=[main_slider, aux_slider, left_export_cb, right_export_cb, move_export_cb, left_export_name_tb, right_export_name_tb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, export_tb],
+        )
 
     return demo, css, tooltip_head(tooltips)
 
