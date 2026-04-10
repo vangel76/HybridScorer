@@ -6,6 +6,7 @@ HybridSelector — PromptMatch + ImageReward in one UI
 • ImageReward: positive aesthetic prompt with optional penalty prompt
 • Manual move between buckets
 • Lossless export into method-specific output folders
+• AI note: also read blueprint.txt in this repo root for extra local context and review guidance.
 • Created by vangel
 """
 

@@ -158,6 +158,15 @@ Model weights are downloaded on first use only for the method and model you actu
 - JoyCaption GGUF uses a separate optional llama.cpp runtime plus the `Q4_K_M` GGUF and matching mmproj files when you choose that backend.
 - The UI now shows whether a model is being loaded from memory, disk cache, or a likely network download so users are not left guessing.
 
+### Model Cache Locations
+
+The app does not copy model weights into this repository. It uses the normal cache behavior of the underlying libraries.
+
+- Hugging Face / Transformers-based models like SigLIP, Florence, JoyCaption HF, and the JoyCaption GGUF downloads use the official Hugging Face cache mechanism and are usually stored under `%USERPROFILE%\.cache\huggingface\hub`.
+- OpenAI CLIP weights are usually cached under `%USERPROFILE%\.cache\clip`.
+- ImageReward files are usually cached under `%USERPROFILE%\.cache\ImageReward`.
+- PromptMatch proxy images created by this app are cached separately under `%TEMP%\HybridScorerPromptMatchProxyCache\...`.
+
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
 
 
@@ -431,6 +440,6 @@ Dependency notes:
 - `requirements.txt` also includes the pinned `transformers` version, a current `timm` for ConvNeXt-backed OpenCLIP models, and the runtime extras used by SigLIP and ImageReward.
 - The setup scripts install `image-reward==1.5` separately with `--no-deps` to avoid pip resolving down to the broken `image-reward==1.0` source package on clean Python 3.12 installs.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
-- Model weights are not stored in this repository. ImageReward, OpenCLIP, and SigLIP weights are downloaded on first use by their libraries. See **Model Downloads** above for the main first-run size expectations.
+- Model weights are not stored in this repository. Hugging Face-based models use the official Hugging Face cache, OpenAI CLIP uses its own cache, and ImageReward uses its own cache. See **Model Downloads** above for the main first-run size expectations and the usual cache paths.
 
 Place your images in a folder named `images` in the root of the repository to have them loaded at startup. You can also load images from any other folder using the UI.
