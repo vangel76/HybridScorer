@@ -128,7 +128,7 @@ JOYCAPTION_MAX_NEW_TOKENS = 320
 JOYCAPTION_GGUF_REPO_ID = "cinnabrad/llama-joycaption-beta-one-hf-llava-mmproj-gguf"
 JOYCAPTION_GGUF_FILENAME = "Llama-Joycaption-Beta-One-Hf-Llava-Q4_K_M.gguf"
 JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-f16.gguf"
-JOYCAPTION_GGUF_SETUP_HINT = "INSTALL_JOYCAPTION_GGUF=1 ./setup-venv312.sh"
+JOYCAPTION_GGUF_SETUP_HINT = "./setup_update-linux.sh"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
 
 SEARCH_PROMPT = "ginger woman"
@@ -2826,11 +2826,22 @@ def create_app():
         try:
             from llama_cpp import Llama
             from llama_cpp.llama_chat_format import Llava15ChatHandler
+            from llama_cpp._utils import suppress_stdout_stderr
+            import llama_cpp.llama_cpp as llama_cpp_backend
         except ImportError as exc:
             raise RuntimeError(
-                "JoyCaption GGUF support is optional and not installed.\n"
+                "JoyCaption GGUF support is not installed.\n"
                 f"Run: {JOYCAPTION_GGUF_SETUP_HINT}"
             ) from exc
+
+        if device == "cuda":
+            supports_gpu_offload = getattr(llama_cpp_backend, "llama_supports_gpu_offload", None)
+            if callable(supports_gpu_offload) and not supports_gpu_offload():
+                raise RuntimeError(
+                    "JoyCaption GGUF is installed with a CPU-only llama-cpp-python build.\n"
+                    "Reinstall the GGUF runtime with CUDA enabled by rerunning setup with:\n"
+                    f"{JOYCAPTION_GGUF_SETUP_HINT}"
+                )
 
         local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_GGUF) == "disk cache"
         print(f"[JoyCaption GGUF] Loading {JOYCAPTION_GGUF_REPO_ID} / {JOYCAPTION_GGUF_FILENAME} …")
@@ -2846,18 +2857,24 @@ def create_app():
             local_files_only=local_files_only,
             cache_dir=get_cache_config()["huggingface_dir"],
         )
-        chat_handler = Llava15ChatHandler(
-            clip_model_path=mmproj_path,
-            verbose=False,
-        )
-        llm = Llama(
-            model_path=model_path,
-            chat_handler=chat_handler,
-            chat_format="llava-1-5",
-            n_ctx=4096,
-            n_gpu_layers=-1 if device == "cuda" else 0,
-            verbose=False,
-        )
+        with suppress_stdout_stderr(disable=False):
+            chat_handler = Llava15ChatHandler(
+                clip_model_path=mmproj_path,
+                verbose=False,
+            )
+            llm = Llama(
+                model_path=model_path,
+                chat_handler=chat_handler,
+                chat_format="llava-1-5",
+                n_ctx=2048,
+                n_batch=2048,
+                n_ubatch=512,
+                n_threads=max(1, (os.cpu_count() or 1) - 1),
+                n_threads_batch=max(1, (os.cpu_count() or 1) - 1),
+                n_gpu_layers=-1 if device == "cuda" else 0,
+                flash_attn=(device == "cuda"),
+                verbose=False,
+            )
         state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION_GGUF] = {
             "llm": llm,
             "model_path": model_path,
@@ -3298,21 +3315,43 @@ def create_app():
 
         llm = ensure_joycaption_gguf_model()
         data_url = image_to_data_url(image)
-        response = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_prompt},
-                        {"type": "image_url", "image_url": {"url": data_url}},
+        try:
+            from llama_cpp._utils import suppress_stdout_stderr
+        except ImportError:
+            suppress_stdout_stderr = None
+        if suppress_stdout_stderr is None:
+            response = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_prompt},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    },
+                ],
+                temperature=0.0,
+                top_p=1.0,
+                max_tokens=max_new_tokens,
+            )
+        else:
+            with suppress_stdout_stderr(disable=False):
+                response = llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": user_prompt},
+                                {"type": "image_url", "image_url": {"url": data_url}},
+                            ],
+                        },
                     ],
-                },
-            ],
-            temperature=0.0,
-            top_p=1.0,
-            max_tokens=max_new_tokens,
-        )
+                    temperature=0.0,
+                    top_p=1.0,
+                    max_tokens=max_new_tokens,
+                )
         try:
             text = response["choices"][0]["message"]["content"]
         except Exception as exc:

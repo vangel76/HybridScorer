@@ -136,11 +136,7 @@ to create the Python virtual environment needed.
 ./setup_update-linux.sh
 ```
 
-If you also want the optional JoyCaption GGUF backend, rerun setup with:
-
-```bash
-INSTALL_JOYCAPTION_GGUF=1 ./setup_update-linux.sh
-```
+This now also installs the JoyCaption GGUF backend into `venv312` by default.
 
 ## Update
 
@@ -385,10 +381,10 @@ cd HybridScorer
 
 `requirements.txt` includes the app-side compatibility dependencies, including pinned `transformers`, a modern `timm` for ConvNeXt-backed OpenCLIP models, plus the runtime extras needed by SigLIP and ImageReward. The setup scripts install `image-reward==1.5` separately with `--no-deps` so pip does not backtrack into the broken `image-reward==1.0` source build on fresh Python 3.12 environments.
 
-If you want the optional JoyCaption GGUF backend in a manual setup, also install:
+If you want the JoyCaption GGUF backend in a manual setup, also install:
 
 ```bash
-python -m pip install -r requirements-gguf.txt
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python -m pip install --upgrade --force-reinstall --no-cache-dir -r requirements-gguf.txt
 ```
 
 ### Linux Manual Install

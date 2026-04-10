@@ -126,16 +126,10 @@ python -m pip install \
 python -m pip install -r "$SCRIPT_DIR/requirements.txt"
 python -m pip install --no-deps image-reward==1.5
 
-if [ "${INSTALL_JOYCAPTION_GGUF:-0}" = "1" ]; then
-  echo
-  echo "Installing optional JoyCaption GGUF runtime from requirements-gguf.txt"
-  python -m pip install -r "$SCRIPT_DIR/requirements-gguf.txt"
-else
-  echo
-  echo "Skipping optional JoyCaption GGUF runtime."
-  echo "To enable it later, rerun:"
-  echo "  INSTALL_JOYCAPTION_GGUF=1 ./setup_update-linux.sh"
-fi
+echo
+echo "Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python"
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+  python -m pip install --upgrade --force-reinstall --no-cache-dir -r "$SCRIPT_DIR/requirements-gguf.txt"
 
 python - <<'PY'
 import sys

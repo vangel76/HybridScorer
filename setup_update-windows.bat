@@ -162,6 +162,15 @@ if errorlevel 1 exit /b 1
 python -m pip install --no-deps image-reward==1.5
 if errorlevel 1 exit /b 1
 
+echo.
+echo Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python
+set "CMAKE_ARGS=-DGGML_CUDA=on"
+set "FORCE_CMAKE=1"
+python -m pip install --upgrade --force-reinstall --no-cache-dir -r "%CD%\requirements-gguf.txt"
+if errorlevel 1 exit /b 1
+set "CMAKE_ARGS="
+set "FORCE_CMAKE="
+
 python -c "import sys, torch; ok=torch.cuda.is_available(); print(f'CUDA OK: {torch.cuda.get_device_name(0)}' if ok else 'CUDA missing'); sys.exit(0 if ok else 1)"
 if errorlevel 1 (
     echo CUDA is mandatory for this project, but torch.cuda.is_available() is False.

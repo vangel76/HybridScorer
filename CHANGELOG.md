@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.8.5] - 2026-04-11
+
+- JoyCaption GGUF generation is now quieter and finally must faster because GPU powered.
+- Updated the README and in-app setup hints to match the new always-installed GGUF workflow.
+
 ## [1.8.3] - 2026-04-10
 
 - Trimmed startup noise by removing the Linux launcher banner lines and fixing the embedded JS/raw-string plus transformers warnings that were cluttering app launch.
