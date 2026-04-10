@@ -1199,6 +1199,14 @@ def clamp_threshold(value, lo, hi):
     return round(max(float(lo), min(float(hi), float(value))), 3)
 
 
+def expand_slider_bounds(lo, hi, *values):
+    safe_values = [float(v) for v in values if v is not None]
+    if safe_values:
+        lo = min(float(lo), *safe_values)
+        hi = max(float(hi), *safe_values)
+    return round(lo, 3), round(hi, 3)
+
+
 def extract_florence_caption(parsed, raw_text, task_prompt):
     def _clean(text):
         text = re.sub(r"<[^>]+>", " ", text or "")
@@ -3665,6 +3673,8 @@ def create_app():
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             next_main = clamp_threshold(main_threshold, pos_min, pos_max) if preserve_promptmatch_thresholds else pos_mid
             next_aux = clamp_threshold(aux_threshold, neg_min, neg_max) if preserve_promptmatch_thresholds else neg_mid
+            safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, main_threshold, next_main)
+            safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, aux_threshold, next_aux)
             state["last_scored_method"] = METHOD_PROMPTMATCH
             state["last_scored_folder_key"] = folder_key
             state["last_promptmatch_model_label"] = model_label
@@ -3678,8 +3688,8 @@ def create_app():
                 hist,
                 sel_info,
                 mark_state,
-                gr.update(minimum=pos_min, maximum=pos_max, value=next_main, label=main_label),
-                gr.update(minimum=neg_min, maximum=neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
+                gr.update(minimum=safe_pos_min, maximum=safe_pos_max, value=next_main, label=main_label),
+                gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
                 promptmatch_model_status_json(),
             )
 
@@ -3697,6 +3707,7 @@ def create_app():
         )
         lo, hi, mid = imagereward_slider_range(state["scores"])
         next_main = clamp_threshold(main_threshold, lo, hi) if preserve_imagereward_threshold else mid
+        safe_lo, safe_hi = expand_slider_bounds(lo, hi, main_threshold, next_main)
         state["last_scored_method"] = METHOD_IMAGEREWARD
         state["last_scored_folder_key"] = folder_key
         left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
@@ -3705,11 +3716,11 @@ def create_app():
             left_gallery,
             right_head,
             right_gallery,
-            status,
-            hist,
-            sel_info,
-            mark_state,
-            gr.update(minimum=lo, maximum=hi, value=next_main, label=main_label),
+                status,
+                hist,
+                sel_info,
+                mark_state,
+            gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
             promptmatch_model_status_json(),
         )
@@ -3857,12 +3868,13 @@ def create_app():
 
         lo, hi, _ = imagereward_slider_range(state["scores"])
         clamped = clamp_threshold(main_threshold, lo, hi)
+        safe_lo, safe_hi = expand_slider_bounds(lo, hi, main_threshold, clamped)
         main_label, _, _, _ = threshold_labels(METHOD_IMAGEREWARD)
         return (
             *current_view(clamped, aux_threshold),
             gr.update(
-                minimum=lo,
-                maximum=hi,
+                minimum=safe_lo,
+                maximum=safe_hi,
                 value=clamped,
                 label=main_label,
             ),
