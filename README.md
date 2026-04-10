@@ -6,8 +6,8 @@ Current version: `1.8.0` (`v1.8.0` on GitHub releases)
 
 ## Latest Updates
 
-- On Windows, model downloads and PromptMatch proxy caches are now kept locally inside the project folder under `models/` and `cache/` instead of filling the user profile or temp drive.
-- On Linux, the default stays with the normal system-cache behavior, while `HYBRIDSCORER_CACHE_MODE=project` or `HYBRIDSCORER_CACHE_MODE=system` can still override either OS.
+- On Windows, model downloads and PromptMatch proxy caches are now kept locally inside the project folder under `models/` and `cache/` instead of filling the user profile or temp drive. 
+- On Linux, the default stays with the normal system-cache behavior.
 - The PromptMatch model dropdown now shows clear cached/download markers, and OpenCLIP cache detection now reports already-downloaded models correctly.
 - On Windows, PromptMatch proxy folders now live directly under `cache/` instead of an extra nested `PromptMatchProxyCache` folder.
 - Manual pinning survives rescoring the same folder, so hand-sorted images stay on their chosen side until they actually leave that folder.
