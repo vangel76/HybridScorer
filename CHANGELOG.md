@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.8.3] - 2026-04-10
+
+- Trimmed startup noise by removing the Linux launcher banner lines and fixing the embedded JS/raw-string plus transformers warnings that were cluttering app launch.
+- Made the inline gallery preview close again with a simple left-click, so zooming in and back out feels direct instead of getting stuck in preview mode.
+- Fixed a Gradio slider-range handoff bug when switching into ImageReward, which could throw out-of-bounds threshold errors during method changes or penalty-score recalculation.
+
 ## [1.8.0] - 2026-04-10
 
 - On Windows, model downloads and PromptMatch proxy caches are now kept locally inside the project folder under `models/` and `cache/` instead of filling the user's profile or temp drive.
