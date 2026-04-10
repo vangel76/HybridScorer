@@ -723,19 +723,18 @@ class ModelBackend:
             from transformers import AutoModel, AutoProcessor
         except ImportError:
             sys.exit("transformers not installed.\nRun: pip install transformers")
-        print(f"[SigLIP] Loading {self._siglip_model} …")
         dtype = torch.float16 if self.device == "cuda" else torch.float32
         self._processor = AutoProcessor.from_pretrained(
             self._siglip_model,
             cache_dir=self._huggingface_cache_dir,
+            use_fast=False,
         )
         self._model = AutoModel.from_pretrained(
             self._siglip_model,
-            torch_dtype=dtype,
+            dtype=dtype,
             cache_dir=self._huggingface_cache_dir,
         ).to(self.device)
         self._model.eval()
-        print("[SigLIP] Ready.")
 
     def _encode_text_plain(self, prompt):
         prompt = normalize_prompt_text(prompt)
@@ -1511,7 +1510,7 @@ def create_app():
 
     def tooltip_head(pairs):
         mapping = json.dumps(pairs)
-        return f"""
+        return fr"""
 <script>
 (() => {{
   const tooltips = {mapping};
@@ -1717,6 +1716,13 @@ def create_app():
       const dialogRoot = target.closest('[role="dialog"], [aria-modal="true"]');
       if (!dialogRoot) return;
       disablePreviewDialogNavigation(dialogRoot);
+      if (isDialogMainImageClick(event, dialogRoot)) {{
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        closePreviewDialog(dialogRoot);
+        return;
+      }}
       if (shouldBlockDialogNavigationClick(target, dialogRoot)) {{
         event.preventDefault();
         event.stopPropagation();
@@ -1760,14 +1766,18 @@ def create_app():
     document.addEventListener("click", (event) => {{
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const previewNavTarget = target.closest(
-        "#hy-left-gallery .preview .media-button, #hy-right-gallery .preview .media-button, " +
-        "#hy-left-gallery .preview .thumbnail-small, #hy-right-gallery .preview .thumbnail-small"
-      );
-      if (!previewNavTarget) return;
+      const previewRoot = target.closest("#hy-left-gallery .preview, #hy-right-gallery .preview");
+      if (!previewRoot) return;
+      if (event.button !== 0) return;
+      if (target.closest(".thumbnails, .thumbnail-item, .thumbnail-small, .thumbnail-lg")) return;
+      const control = target.closest("button, a, input, textarea, select, label");
+      if (control && !control.closest(".media-button")) return;
+      const closeButton = findInlinePreviewCloseButton(previewRoot);
+      if (!closeButton) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
+      closeButton.click();
     }}, true);
     document.addEventListener("keydown", (event) => {{
       const key = event.key || "";
@@ -1999,6 +2009,25 @@ def create_app():
     if (!(element instanceof Element)) return "";
     return `${{element.getAttribute("aria-label") || ""}} ${{element.getAttribute("title") || ""}} ${{(element.textContent || "").trim()}}`.trim().toLowerCase();
   }};
+  const findInlinePreviewCloseButton = (previewRoot) => {{
+    if (!(previewRoot instanceof Element)) return null;
+    const candidates = Array.from(previewRoot.querySelectorAll("button")).filter((button) => {{
+      return !button.matches(".media-button, .thumbnail-item, .thumbnail-small, .thumbnail-lg")
+        && !button.closest(".thumbnails");
+    }});
+    return candidates.length ? candidates[candidates.length - 1] : null;
+  }};
+  const findCloseButton = (root) => {{
+    if (!(root instanceof Element)) return null;
+    if (root.matches?.("#hy-left-gallery .preview, #hy-right-gallery .preview")) {{
+      const previewClose = findInlinePreviewCloseButton(root);
+      if (previewClose) return previewClose;
+    }}
+    return Array.from(root.querySelectorAll("button")).find((button) => {{
+      const label = getDialogControlLabel(button);
+      return label === "x" || label === "×" || label.includes("close");
+    }}) || null;
+  }};
   const hideDialogThumbStrip = (dialogRoot) => {{
     const thumbs = getDialogThumbImages(dialogRoot);
     if (!thumbs.length) return;
@@ -2031,6 +2060,23 @@ def create_app():
       mainImg.style.pointerEvents = "none";
       mainImg.style.cursor = "default";
     }}
+  }};
+  const isDialogMainImageClick = (event, dialogRoot) => {{
+    if (!event || !(dialogRoot instanceof Element)) return false;
+    if (event.button !== 0) return false;
+    const target = event.target;
+    if (!(target instanceof Element)) return false;
+    if (target.closest("button, a, input, textarea, select, label")) return false;
+    const dialogImg = getActiveDialogImage();
+    if (!(dialogImg instanceof HTMLImageElement)) return false;
+    const rect = dialogImg.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    return (
+      event.clientX >= rect.left
+      && event.clientX <= rect.right
+      && event.clientY >= rect.top
+      && event.clientY <= rect.bottom
+    );
   }};
   const shouldBlockDialogNavigationClick = (target, dialogRoot) => {{
     if (!(target instanceof Element) || !dialogRoot) return false;
@@ -2168,10 +2214,7 @@ def create_app():
   const closePreviewDialog = (dialogRoot) => {{
     const root = dialogRoot || document.querySelector('[role="dialog"], [aria-modal="true"]');
     if (!root) return false;
-    const closeButton = Array.from(root.querySelectorAll("button")).find((button) => {{
-      const label = `${{button.getAttribute("aria-label") || ""}} ${{button.getAttribute("title") || ""}} ${{(button.textContent || "").trim()}}`.trim().toLowerCase();
-      return label === "x" || label === "×" || label.includes("close");
-    }});
+    const closeButton = findCloseButton(root);
     if (closeButton) {{
       closeButton.click();
       return true;
@@ -4905,7 +4948,6 @@ def create_app():
 if __name__ == "__main__":
     app, css, head = create_app()
     port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
-    print(f"Launching {APP_DISPLAY_NAME} {APP_GITHUB_TAG} on http://localhost:{port} ...")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)
     app.launch(
