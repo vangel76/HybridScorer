@@ -1,10 +1,19 @@
 # Changelog
 
+## [1.8.0] - 2026-04-10
+
+- On Windows, model downloads and PromptMatch proxy caches are now kept locally inside the project folder under `models/` and `cache/` instead of filling the user's profile or temp drive.
+- On Linux, the app keeps using the normal system-cache behavior by default.
+- Added clear cached-vs-download model markers to the PromptMatch model dropdown and fixed the availability detection so cached OpenCLIP models report correctly.
+- Expanded the README cache and model-guide documentation so ImageReward, OS-specific cache defaults, and cache locations are explained more clearly.
+
 ## [1.7.0] - 2026-04-10
 
 - Moved export controls into the gallery headers so each bucket now has its own `Export` toggle and editable folder name directly above the gallery.
 - Added an optional `Move instead of copy` export mode in the export section.
 - Added subtle green/red gallery background tinting and kept the `Tile Size` control pinned to the far right of the top toolbar.
+- Model downloads now go into project-local `models/` folders by default, and PromptMatch proxy images now go into a project-local `cache/` folder instead of filling the user's profile or temp drive.
+- Added `HYBRIDSCORER_CACHE_MODE=system` for users who want to keep the old cache behavior under their normal library-managed locations.
 
 ## [1.6.23] - 2026-04-09
 

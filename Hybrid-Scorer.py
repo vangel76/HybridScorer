@@ -24,6 +24,7 @@ import tempfile
 import types
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from hashlib import sha256
 from importlib import import_module
 from importlib.machinery import ModuleSpec
@@ -60,6 +61,46 @@ def load_app_version():
 APP_VERSION = load_app_version()
 APP_GITHUB_TAG = f"v{APP_VERSION}"
 APP_WINDOW_TITLE = f"{APP_DISPLAY_NAME} {APP_GITHUB_TAG}"
+
+CACHE_MODE_PROJECT = "project"
+CACHE_MODE_SYSTEM = "system"
+ENV_CACHE_MODE = "HYBRIDSCORER_CACHE_MODE"
+PROJECT_HF_CACHE_DIR = os.path.join("models", "huggingface")
+PROJECT_CLIP_CACHE_DIR = os.path.join("models", "clip")
+PROJECT_IMAGEREWARD_CACHE_DIR = os.path.join("models", "ImageReward")
+PROJECT_PROMPTMATCH_PROXY_CACHE_DIR = "cache"
+
+
+def default_cache_mode():
+    return CACHE_MODE_PROJECT if os.name == "nt" else CACHE_MODE_SYSTEM
+
+
+@lru_cache(maxsize=1)
+def get_cache_config():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    fallback_mode = default_cache_mode()
+    raw_mode = (os.getenv(ENV_CACHE_MODE) or fallback_mode).strip().lower()
+    mode = raw_mode if raw_mode in {CACHE_MODE_PROJECT, CACHE_MODE_SYSTEM} else fallback_mode
+
+    if mode == CACHE_MODE_PROJECT:
+        return {
+            "mode": mode,
+            "script_dir": script_dir,
+            "huggingface_dir": os.path.join(script_dir, PROJECT_HF_CACHE_DIR),
+            "clip_dir": os.path.join(script_dir, PROJECT_CLIP_CACHE_DIR),
+            "imagereward_dir": os.path.join(script_dir, PROJECT_IMAGEREWARD_CACHE_DIR),
+            "proxy_root": os.path.join(script_dir, PROJECT_PROMPTMATCH_PROXY_CACHE_DIR),
+        }
+
+    home_cache_root = os.path.expanduser("~/.cache")
+    return {
+        "mode": mode,
+        "script_dir": script_dir,
+        "huggingface_dir": None,
+        "clip_dir": os.path.join(home_cache_root, "clip"),
+        "imagereward_dir": os.path.join(home_cache_root, "ImageReward"),
+        "proxy_root": os.path.join(tempfile.gettempdir(), PROMPTMATCH_PROXY_CACHE_ROOT),
+    }
 
 # High-level app modes and default thresholds/prompts.
 METHOD_PROMPTMATCH = "PromptMatch"
@@ -246,13 +287,37 @@ def huggingface_file_cached(repo_id, filename):
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return False
+    cache_dir = get_cache_config()["huggingface_dir"]
     try:
-        cached = try_to_load_from_cache(repo_id=repo_id, filename=filename)
+        cached = try_to_load_from_cache(repo_id=repo_id, filename=filename, cache_dir=cache_dir)
     except Exception:
         return False
     if not isinstance(cached, (str, bytes, os.PathLike)):
         return False
     return os.path.isfile(cached)
+
+
+def huggingface_repo_cached(repo_id, filenames=None, suffixes=None):
+    cache_dir = get_cache_config()["huggingface_dir"]
+    if cache_dir is None:
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+            cache_dir = HF_HUB_CACHE
+        except Exception:
+            cache_dir = os.path.join(os.path.expanduser("~/.cache"), "huggingface", "hub")
+    repo_dir = os.path.join(cache_dir, f"models--{repo_id.replace('/', '--')}")
+    snapshots_dir = os.path.join(repo_dir, "snapshots")
+    if not os.path.isdir(snapshots_dir):
+        return False
+    exact_names = {name for name in (filenames or []) if name}
+    suffix_list = tuple(suffixes or ())
+    for root, _, files in os.walk(snapshots_dir):
+        for name in files:
+            if exact_names and name in exact_names:
+                return True
+            if suffix_list and name.endswith(suffix_list):
+                return True
+    return False
 
 
 def describe_openai_clip_source(model_name):
@@ -264,7 +329,7 @@ def describe_openai_clip_source(model_name):
     if not url:
         return "network or disk cache"
     filename = os.path.basename(url)
-    cache_path = os.path.join(os.path.expanduser("~"), ".cache", "clip", filename)
+    cache_path = os.path.join(get_cache_config()["clip_dir"], filename)
     return "disk cache" if os.path.isfile(cache_path) else "network download"
 
 
@@ -281,8 +346,15 @@ def describe_openclip_source(model_name, pretrained_tag):
     hf_ref = cfg.get("hf_hub", "")
     if hf_ref:
         model_id, filename = os.path.split(hf_ref)
-        if model_id and filename and huggingface_file_cached(model_id, filename):
-            return "disk cache"
+        if model_id:
+            if filename and huggingface_file_cached(model_id, filename):
+                return "disk cache"
+            if huggingface_repo_cached(
+                model_id,
+                filenames=[filename],
+                suffixes=(".bin", ".pt", ".pth", ".safetensors"),
+            ):
+                return "disk cache"
         return "network download"
     return "network or disk cache"
 
@@ -296,7 +368,7 @@ def describe_siglip_source(model_name):
 
 
 def describe_imagereward_source():
-    cache_root = os.path.expanduser("~/.cache/ImageReward")
+    cache_root = get_cache_config()["imagereward_dir"]
     model_ok = os.path.isfile(os.path.join(cache_root, "ImageReward.pt"))
     med_ok = os.path.isfile(os.path.join(cache_root, "med_config.json"))
     return "disk cache" if model_ok and med_ok else "network download"
@@ -362,7 +434,7 @@ def normalize_folder_identity(folder):
 def get_promptmatch_proxy_cache_dir(folder):
     folder_key = normalize_folder_identity(folder)
     digest = sha256(folder_key.encode("utf-8", errors="ignore")).hexdigest()
-    return os.path.join(tempfile.gettempdir(), PROMPTMATCH_PROXY_CACHE_ROOT, digest)
+    return os.path.join(get_cache_config()["proxy_root"], digest)
 
 
 def clear_promptmatch_proxy_cache(cache_dir):
@@ -581,13 +653,20 @@ class ModelBackend:
     # Small adapter that hides the differences between OpenAI CLIP, OpenCLIP, and SigLIP.
     def __init__(self, device, backend="openclip", clip_model="ViT-L/14",
                  openclip_model="ViT-bigG-14", openclip_pretrained="laion2b_s39b_b160k",
-                 siglip_model="google/siglip-so400m-patch14-384"):
+                 siglip_model="google/siglip-so400m-patch14-384",
+                 clip_cache_dir=None,
+                 huggingface_cache_dir=None):
         self.device = device
         self.backend = backend
         self._clip_model = clip_model
         self._openclip_model = openclip_model
         self._openclip_pre = openclip_pretrained
         self._siglip_model = siglip_model
+        cache_cfg = get_cache_config()
+        self._clip_cache_dir = clip_cache_dir if clip_cache_dir is not None else cache_cfg["clip_dir"]
+        self._huggingface_cache_dir = (
+            huggingface_cache_dir if huggingface_cache_dir is not None else cache_cfg["huggingface_dir"]
+        )
         self._load()
 
     def _load(self):
@@ -606,7 +685,11 @@ class ModelBackend:
         except ImportError:
             sys.exit("OpenAI CLIP not installed.\nRun: pip install git+https://github.com/openai/CLIP.git")
         print(f"[OpenAI CLIP] Loading {self._clip_model} …")
-        self._model, self._preprocess = _clip.load(self._clip_model, device=self.device)
+        self._model, self._preprocess = _clip.load(
+            self._clip_model,
+            device=self.device,
+            download_root=self._clip_cache_dir,
+        )
         self._model.eval()
         self._clip_mod = _clip
         print("[OpenAI CLIP] Ready.")
@@ -619,7 +702,10 @@ class ModelBackend:
         print(f"[OpenCLIP] Loading {self._openclip_model} / {self._openclip_pre} …")
         try:
             self._model, _, self._preprocess = open_clip.create_model_and_transforms(
-                self._openclip_model, pretrained=self._openclip_pre, device=self.device
+                self._openclip_model,
+                pretrained=self._openclip_pre,
+                device=self.device,
+                cache_dir=self._huggingface_cache_dir,
             )
         except RuntimeError as exc:
             if "install the latest timm" in str(exc).lower():
@@ -639,8 +725,15 @@ class ModelBackend:
             sys.exit("transformers not installed.\nRun: pip install transformers")
         print(f"[SigLIP] Loading {self._siglip_model} …")
         dtype = torch.float16 if self.device == "cuda" else torch.float32
-        self._processor = AutoProcessor.from_pretrained(self._siglip_model)
-        self._model = AutoModel.from_pretrained(self._siglip_model, torch_dtype=dtype).to(self.device)
+        self._processor = AutoProcessor.from_pretrained(
+            self._siglip_model,
+            cache_dir=self._huggingface_cache_dir,
+        )
+        self._model = AutoModel.from_pretrained(
+            self._siglip_model,
+            torch_dtype=dtype,
+            cache_dir=self._huggingface_cache_dir,
+        ).to(self.device)
         self._model.eval()
         print("[SigLIP] Ready.")
 
@@ -930,6 +1023,8 @@ MODEL_CHOICES = [
     ("OpenCLIP  ViT-bigG-14  laion2b  [14-16 GB]  ★ best CLIP", "openclip", {"openclip_model": "ViT-bigG-14", "openclip_pretrained": "laion2b_s39b_b160k"}),
 ]
 MODEL_LABELS = [choice[0] for choice in MODEL_CHOICES]
+MODEL_STATUS_CACHED_MARKER = "🟢"
+MODEL_STATUS_DOWNLOAD_MARKER = "🟠"
 
 
 def label_for_backend(backend):
@@ -947,6 +1042,38 @@ def label_for_backend(backend):
         if name == "siglip" and kwargs.get("siglip_model") == backend._siglip_model:
             return label
     return MODEL_LABELS[0]
+
+
+def promptmatch_model_status_map():
+    mapping = {}
+    for label, name, kwargs in MODEL_CHOICES:
+        if name == "openai":
+            source = describe_openai_clip_source(kwargs.get("clip_model"))
+        elif name == "openclip":
+            source = describe_openclip_source(kwargs.get("openclip_model"), kwargs.get("openclip_pretrained"))
+        elif name == "siglip":
+            source = describe_siglip_source(kwargs.get("siglip_model"))
+        else:
+            source = "network or disk cache"
+        mapping[label] = {
+            "cached": source in {"disk cache", "disk file"},
+            "source": source,
+        }
+    return mapping
+
+
+def promptmatch_model_status_json():
+    return json.dumps(promptmatch_model_status_map())
+
+
+def promptmatch_model_dropdown_choices():
+    status_map = promptmatch_model_status_map()
+    choices = []
+    for label in MODEL_LABELS:
+        entry = status_map.get(label) or {}
+        marker = MODEL_STATUS_CACHED_MARKER if entry.get("cached") else MODEL_STATUS_DOWNLOAD_MARKER
+        choices.append((f"{marker} {label}", label))
+    return choices
 
 
 def is_windows():
@@ -1317,6 +1444,8 @@ def create_app():
         device,
         backend="siglip",
         siglip_model="google/siglip-so400m-patch14-384",
+        clip_cache_dir=get_cache_config()["clip_dir"],
+        huggingface_cache_dir=get_cache_config()["huggingface_dir"],
     )
 
     # Shared mutable state for the one-page app. Gradio callbacks update this in place.
@@ -1430,6 +1559,44 @@ def create_app():
     }} catch {{
       return {{ left: [], right: [] }};
     }}
+  }};
+  const readPromptMatchModelStatus = () => {{
+    const root = document.getElementById("hy-model-status");
+    if (!root) return {{}};
+    const input = root.querySelector("input, textarea");
+    if (!input || !input.value) return {{}};
+    try {{
+      return JSON.parse(input.value);
+    }} catch {{
+      return {{}};
+    }}
+  }};
+  const paintPromptMatchModelNode = (node, entry, colors) => {{
+    if (!(node instanceof HTMLElement) || !entry) return;
+    const color = entry.cached ? colors.cached : colors.download;
+    node.style.setProperty("color", color, "important");
+    node.style.setProperty("-webkit-text-fill-color", color, "important");
+    node.style.setProperty("font-weight", entry.cached ? "600" : "500", "important");
+  }};
+  const findPromptMatchModelStatusEntry = (text, statusMap, knownLabels) => {{
+    const raw = `${{text || ""}}`.trim();
+    if (!raw) return null;
+    const normalized = raw.replace(/\\s+/g, " ").trim();
+    if (statusMap[normalized]) return statusMap[normalized];
+    let bestLabel = "";
+    for (const label of knownLabels) {{
+      if (normalized.includes(label) && label.length > bestLabel.length) {{
+        bestLabel = label;
+      }}
+    }}
+    return bestLabel ? statusMap[bestLabel] : null;
+  }};
+  const schedulePromptMatchModelAvailability = () => {{
+    applyPromptMatchModelAvailability();
+    requestAnimationFrame(() => applyPromptMatchModelAvailability());
+    setTimeout(applyPromptMatchModelAvailability, 0);
+    setTimeout(applyPromptMatchModelAvailability, 60);
+    setTimeout(applyPromptMatchModelAvailability, 180);
   }};
   let repaintTimers = [];
   let activeDrag = null;
@@ -2356,6 +2523,37 @@ def create_app():
     hookRunScoringHotkeys();
     hookPromptWeightHotkeys();
     ensureThumbBehavior();
+    applyPromptMatchModelAvailability();
+  }};
+  const applyPromptMatchModelAvailability = () => {{
+    const statusMap = readPromptMatchModelStatus();
+    const knownLabels = Object.keys(statusMap || {{}});
+    if (!knownLabels.length) return;
+    const colors = {{
+      cached: "#8fdc7e",
+      download: "#e7b062",
+    }};
+    const applyToNode = (node) => {{
+      if (!(node instanceof HTMLElement)) return;
+      const text = node instanceof HTMLInputElement
+        ? (node.value || "").trim()
+        : ((node.textContent || "").trim());
+      const entry = findPromptMatchModelStatusEntry(text, statusMap, knownLabels);
+      if (!entry) return;
+      paintPromptMatchModelNode(node, entry, colors);
+      for (const child of node.querySelectorAll("*")) {{
+        paintPromptMatchModelNode(child, entry, colors);
+      }}
+    }};
+    const root = document.getElementById("hy-model");
+    if (root) {{
+      const input = root.querySelector("input");
+      if (input) applyToNode(input);
+      for (const node of root.querySelectorAll("span, div")) applyToNode(node);
+    }}
+    for (const node of document.querySelectorAll('[role="option"], [role="listbox"], [role="listbox"] *')) {{
+      applyToNode(node);
+    }}
   }};
   const hookMarkState = () => {{
     const root = document.getElementById("hy-mark-state");
@@ -2366,8 +2564,39 @@ def create_app():
     input.addEventListener("change", scheduleRepaint);
     root.dataset.hyStateHooked = "1";
   }};
+  const hookModelStatusState = () => {{
+    const root = document.getElementById("hy-model-status");
+    if (!root || root.dataset.hyStateHooked) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    const repaint = () => schedulePromptMatchModelAvailability();
+    input.addEventListener("input", repaint);
+    input.addEventListener("change", repaint);
+    root.dataset.hyStateHooked = "1";
+  }};
+  const hookPromptMatchModelAvailability = () => {{
+    const root = document.getElementById("hy-model");
+    if (!root || root.dataset.hyAvailabilityHooked) return;
+    const repaint = () => schedulePromptMatchModelAvailability();
+    for (const eventName of ["click", "pointerdown", "mousedown", "focusin", "focusout", "input", "change", "keydown", "keyup"]) {{
+      root.addEventListener(eventName, repaint);
+    }}
+    const docRepaint = (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('#hy-model, [role="option"], [role="listbox"]')) {{
+        schedulePromptMatchModelAvailability();
+      }}
+    }};
+    document.addEventListener("click", docRepaint, true);
+    document.addEventListener("pointerup", docRepaint, true);
+    document.addEventListener("keyup", docRepaint, true);
+    root.dataset.hyAvailabilityHooked = "1";
+  }};
   applyTooltips();
   hookMarkState();
+  hookModelStatusState();
+  hookPromptMatchModelAvailability();
   hookHistogramResize();
   hookPreviewDialogTracking();
   hookInlinePreviewNavigationLock();
@@ -2395,6 +2624,8 @@ def create_app():
     if (!relevantMutation) return;
     applyTooltips();
     hookMarkState();
+    hookModelStatusState();
+    hookPromptMatchModelAvailability();
     hookHistogramResize();
     hookPreviewDialogTracking();
     hookInlinePreviewNavigationLock();
@@ -2408,7 +2639,7 @@ def create_app():
     tooltips = {
         "hy-method": "Choose whether to sort by PromptMatch or ImageReward.",
         "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
-        "hy-model": "Choose the PromptMatch model. Labels include rough VRAM guidance for picking a model that fits your GPU.",
+        "hy-model": "Choose the PromptMatch model. Cached models are shown in green text, and models that still need a first download are shown in amber.",
         "hy-pos": "Describe what you want to find in the images. PromptMatch also supports fragment weights like beautiful (blonde:1.2) woman. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
         "hy-neg": "Optional PromptMatch negative prompt that counts against a match. Weighted fragments like (text:1.3) also work here. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
         "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor. Press Ctrl+Enter to run scoring.",
@@ -2449,7 +2680,10 @@ def create_app():
 
     def ensure_imagereward_model():
         if state["ir_model"] is None:
-            state["ir_model"] = get_imagereward_utils().load("ImageReward-v1.0")
+            state["ir_model"] = get_imagereward_utils().load(
+                "ImageReward-v1.0",
+                download_root=get_cache_config()["imagereward_dir"],
+            )
         return state["ir_model"]
 
     def ensure_florence_model():
@@ -2472,11 +2706,13 @@ def create_app():
             FLORENCE_MODEL_ID,
             local_files_only=local_files_only,
             trust_remote_code=True,
+            cache_dir=get_cache_config()["huggingface_dir"],
         )
         model = Florence2ForConditionalGeneration.from_pretrained(
             FLORENCE_MODEL_ID,
             dtype=dtype,
             local_files_only=local_files_only,
+            cache_dir=get_cache_config()["huggingface_dir"],
         ).to(device)
         model.eval()
         state["prompt_backend_cache"][PROMPT_GENERATOR_FLORENCE] = {
@@ -2506,12 +2742,14 @@ def create_app():
             JOYCAPTION_MODEL_ID,
             local_files_only=local_files_only,
             trust_remote_code=True,
+            cache_dir=get_cache_config()["huggingface_dir"],
         )
         model = LlavaForConditionalGeneration.from_pretrained(
             JOYCAPTION_MODEL_ID,
             dtype=dtype,
             local_files_only=local_files_only,
             trust_remote_code=True,
+            cache_dir=get_cache_config()["huggingface_dir"],
         ).to(device)
         model.eval()
         state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION] = {
@@ -2549,11 +2787,13 @@ def create_app():
             repo_id=JOYCAPTION_GGUF_REPO_ID,
             filename=JOYCAPTION_GGUF_FILENAME,
             local_files_only=local_files_only,
+            cache_dir=get_cache_config()["huggingface_dir"],
         )
         mmproj_path = hf_hub_download(
             repo_id=JOYCAPTION_GGUF_REPO_ID,
             filename=JOYCAPTION_GGUF_MMPROJ_FILENAME,
             local_files_only=local_files_only,
+            cache_dir=get_cache_config()["huggingface_dir"],
         )
         chat_handler = Llava15ChatHandler(
             clip_model_path=mmproj_path,
@@ -3211,7 +3451,12 @@ def create_app():
             marked_state_json(),
             main_upd,
             aux_upd,
+            promptmatch_model_status_json(),
         )
+
+    def refresh_promptmatch_model_dropdown(current_model_label):
+        selected = current_model_label if current_model_label in MODEL_LABELS else MODEL_LABELS[0]
+        return gr.update(choices=promptmatch_model_dropdown_choices(), value=selected)
 
     def middle_threshold_values(method):
         if method == METHOD_PROMPTMATCH:
@@ -3286,7 +3531,13 @@ def create_app():
                     source = describe_siglip_source(kwargs.get("siglip_model"))
                 progress(0, desc=f"Loading PromptMatch model from {source}: {model_label}")
                 try:
-                    state["backend"] = ModelBackend(device, backend=backend_name, **kwargs)
+                    state["backend"] = ModelBackend(
+                        device,
+                        backend=backend_name,
+                        clip_cache_dir=get_cache_config()["clip_dir"],
+                        huggingface_cache_dir=get_cache_config()["huggingface_dir"],
+                        **kwargs,
+                    )
                 except Exception as exc:
                     return empty_result(str(exc), method)
             else:
@@ -3386,6 +3637,7 @@ def create_app():
                 mark_state,
                 gr.update(minimum=pos_min, maximum=pos_max, value=next_main, label=main_label),
                 gr.update(minimum=neg_min, maximum=neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
+                promptmatch_model_status_json(),
             )
 
         if state["ir_model"] is None:
@@ -3416,6 +3668,7 @@ def create_app():
             mark_state,
             gr.update(minimum=lo, maximum=hi, value=next_main, label=main_label),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+            promptmatch_model_status_json(),
         )
 
     def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
@@ -4350,6 +4603,7 @@ def create_app():
                 hist_width_tb = gr.Textbox(value="300", visible="hidden", elem_id="hy-hist-width")
                 shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
+                model_status_state = gr.Textbox(value=promptmatch_model_status_json(), visible="hidden", elem_id="hy-model-status")
                 with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
                     method_dd = gr.Dropdown(
                         choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
@@ -4371,7 +4625,12 @@ def create_app():
 
                 with gr.Accordion("2. SCORING & Method/Settings", open=True, elem_id="hy-acc-scoring"):
                     with gr.Group(visible=True) as promptmatch_group:
-                        model_dd = gr.Dropdown(choices=MODEL_LABELS, value=label_for_backend(prompt_backend), label="PromptMatch model", elem_id="hy-model")
+                        model_dd = gr.Dropdown(
+                            choices=promptmatch_model_dropdown_choices(),
+                            value=label_for_backend(prompt_backend),
+                            label="PromptMatch model",
+                            elem_id="hy-model",
+                        )
                         pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
                         neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
                         promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
@@ -4548,12 +4807,12 @@ def create_app():
         promptmatch_run_btn.click(
             fn=score_folder,
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
         )
         imagereward_run_btn.click(
             fn=score_folder,
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
         )
         prompt_generator_dd.change(
             fn=update_prompt_generator,
@@ -4616,7 +4875,12 @@ def create_app():
         shortcut_action.change(
             fn=handle_shortcut_action,
             inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
+        )
+        model_status_state.change(
+            fn=refresh_promptmatch_model_dropdown,
+            inputs=[model_dd],
+            outputs=[model_dd],
         )
         hist_width_tb.change(fn=handle_hist_width, inputs=[hist_width_tb, main_slider, aux_slider], outputs=[hist_plot])
         thumb_action.change(

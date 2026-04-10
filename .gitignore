@@ -12,3 +12,5 @@ Thumbs.db
 screenshots/HybridScorer2.jpg
 screenshots/HybridScorer2.jpg.kra
 blueprint.txt
+models/
+cache/

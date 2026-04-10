@@ -2,14 +2,17 @@
 
 Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
-Current version: `1.7.0` (`v1.7.0` on GitHub releases)
+Current version: `1.8.0` (`v1.8.0` on GitHub releases)
 
 ## Latest Updates
 
+- On Windows, model downloads and PromptMatch proxy caches are now kept locally inside the project folder under `models/` and `cache/` instead of filling the user profile or temp drive.
+- On Linux, the default stays with the normal system-cache behavior, while `HYBRIDSCORER_CACHE_MODE=project` or `HYBRIDSCORER_CACHE_MODE=system` can still override either OS.
+- The PromptMatch model dropdown now shows clear cached/download markers, and OpenCLIP cache detection now reports already-downloaded models correctly.
+- On Windows, PromptMatch proxy folders now live directly under `cache/` instead of an extra nested `PromptMatchProxyCache` folder.
 - Manual pinning survives rescoring the same folder, so hand-sorted images stay on their chosen side until they actually leave that folder.
-- Histogram hover markers now follow the thumbnail under your mouse without forcing graph redraws, and the threshold graph resizes with the sidebar width.
-- The export UI now lives above the galleries: each bucket has its own enable toggle and editable export folder name, plus an optional `Move instead of copy` mode in the export section.
-- Repeated exports into existing folders no longer clear them first; matching filenames are overwritten and unrelated files are left alone.
+- The threshold panel now keeps thresholds more predictably across prompt reruns, uses clearer wording, and matches slider ranges to the graph ranges.
+- The export UI lives above the galleries: each bucket has its own enable toggle and editable folder name, plus an optional `Move instead of copy` mode in the export section.
 
 ![Updated graph UI](screenshots/New_Graphs.jpg)
 
@@ -194,7 +197,7 @@ Model weights are downloaded on first use only for the method and model you actu
 - The default PromptMatch model is `SigLIP so400m-patch14-384`, which is about **3.3 GB** downloaded and is a good balance of quality and size.
 - PromptMatch focuses on SigLIP plus OpenCLIP ViT and ConvNeXt backbones chosen for practical NSFW-oriented use across different GPU tiers.
 - The heaviest PromptMatch option is `OpenCLIP ViT-bigG-14 laion2b`, which is about **9.5 GB** downloaded.
-- `ImageReward` is also downloaded on first use when you switch to that method.
+- `ImageReward` is also downloaded on first use when you switch to that method. The current app uses `ImageReward-v1.0`, which is about **1.7 GB** downloaded, and it scores images against your prompt as a preference/aesthetic-style model rather than a direct text-image similarity model like PromptMatch.
 - Florence prompt generation downloads `florence-community/Florence-2-base` on first use when you choose that prompt generator.
 - JoyCaption HF prompt generation downloads `fancyfeast/llama-joycaption-beta-one-hf-llava` on first use when you choose that prompt generator. It is much heavier than Florence and is best suited to 24 GB class GPUs.
 - JoyCaption GGUF uses a separate optional llama.cpp runtime plus the `Q4_K_M` GGUF and matching mmproj files when you choose that backend.
@@ -202,12 +205,30 @@ Model weights are downloaded on first use only for the method and model you actu
 
 ### Model Cache Locations
 
-The app does not copy model weights into this repository. It uses the normal cache behavior of the underlying libraries.
+The default cache location now depends on the operating system:
 
-- Hugging Face / Transformers-based models like SigLIP, Florence, JoyCaption HF, and the JoyCaption GGUF downloads use the official Hugging Face cache mechanism and are usually stored under `%USERPROFILE%\.cache\huggingface\hub`.
-- OpenAI CLIP weights are usually cached under `%USERPROFILE%\.cache\clip`.
-- ImageReward files are usually cached under `%USERPROFILE%\.cache\ImageReward`.
-- PromptMatch proxy images created by this app are cached separately under `%TEMP%\HybridScorerPromptMatchProxyCache\...`.
+- On Windows, the app keeps downloaded models together with the project instead of filling the user's profile cache on `C:`.
+- On Linux, the app keeps using the normal system cache locations.
+
+- On Windows, Hugging Face / Transformers-based models like SigLIP, Florence, JoyCaption HF, and the JoyCaption GGUF downloads still use the official Hugging Face cache mechanism, but the cache root is redirected into `models/huggingface` inside the project.
+- On Windows, OpenAI CLIP weights are stored in `models/clip`.
+- On Windows, ImageReward files are stored in `models/ImageReward`.
+- On Windows, PromptMatch proxy images created by this app are stored directly under `cache/...`.
+- Existing old caches are not moved automatically.
+- If you want the non-default behavior on either OS, set `HYBRIDSCORER_CACHE_MODE=project` or `HYBRIDSCORER_CACHE_MODE=system` before launching the app.
+
+Typical system-cache locations are:
+
+- Windows:
+  `%USERPROFILE%\.cache\huggingface\hub`
+  `%USERPROFILE%\.cache\clip`
+  `%USERPROFILE%\.cache\ImageReward`
+  `%TEMP%\HybridScorerPromptMatchProxyCache\...`
+- Linux:
+  `$HOME/.cache/huggingface/hub`
+  `$HOME/.cache/clip`
+  `$HOME/.cache/ImageReward`
+  `${TMPDIR:-/tmp}/HybridScorerPromptMatchProxyCache/...`
 
 So users do **not** need to download every model up front, but the first run of a new model can take a while depending on connection speed.
 
@@ -228,6 +249,8 @@ These are practical recommendations for this workflow, not a guarantee that one 
 The VRAM numbers below are practical working ranges for this app, not hard minimums. PromptMatch uses `1024px` proxies and auto-reduces batch size on OOM, so real usage can be lower than rough model-family heuristics suggest.
 
 ### Model Guide
+
+`ImageReward` is different from the PromptMatch models listed below: the current app uses a single `ImageReward-v1.0` model rather than a dropdown of alternatives. Use it when you want to sort for taste, mood, style, beauty, or overall visual appeal. It is about **1.7 GB** downloaded and is usually the simpler choice when you are not trying to match a very specific subject or attribute.
 
 - `SigLIP base-patch16-224` `[~5 GB]`: the smallest PromptMatch option. Best for lower-VRAM GPUs and basic subject matching when you still want the app to remain usable on tighter hardware. For NSFW folders, treat it as the entry-level fallback, not the highest-precision choice.
 - `SigLIP so400m-patch14-384` `[<8 GB]`: the default and best-balanced option. Good first choice when you want solid quality without paying the cost of the heavier OpenCLIP models. For NSFW use, this is the practical starting point when you want a stronger SigLIP model without needing a large amount of VRAM.
@@ -312,9 +335,11 @@ Use ImageReward when you care more about style, mood, or overall visual appeal t
 Large folders are faster because the app can build reusable proxy images with the longest edge capped at `1024px`.
 
 - Proxy creation is multithreaded.
-- Proxies are cached in the system temp directory under `HybridScorerPromptMatchProxyCache`.
+- On Windows by default, proxies are cached in the project under `cache/`.
+- On Linux by default, proxies stay in the system temp location.
 - The cache is reused while you keep working on the same folder.
 - When you switch folders in the UI, the previous folder's proxy cache is deleted.
+- `HYBRIDSCORER_CACHE_MODE=project` or `HYBRIDSCORER_CACHE_MODE=system` can override that default.
 - Export still copies the original source files, never the proxies.
 
 ### Reviewing And Manual Overrides
@@ -490,6 +515,6 @@ Dependency notes:
 - `requirements.txt` also includes the pinned `transformers` version, a current `timm` for ConvNeXt-backed OpenCLIP models, and the runtime extras used by SigLIP and ImageReward.
 - The setup scripts install `image-reward==1.5` separately with `--no-deps` to avoid pip resolving down to the broken `image-reward==1.0` source package on clean Python 3.12 installs.
 - Because `requirements.txt` includes OpenAI CLIP from GitHub, `git` must be installed and available in `PATH` during setup.
-- Model weights are not stored in this repository. Hugging Face-based models use the official Hugging Face cache, OpenAI CLIP uses its own cache, and ImageReward uses its own cache. See **Model Downloads** above for the main first-run size expectations and the usual cache paths.
+- Model weights are not committed to this repository. On Windows, they are downloaded into the project's `models/` folders by default, with Hugging Face-backed models still using the official Hugging Face cache mechanism inside `models/huggingface`. On Linux, the default is the normal system cache locations. `HYBRIDSCORER_CACHE_MODE=project` or `HYBRIDSCORER_CACHE_MODE=system` can override either default.
 
 Place your images in a folder named `images` in the root of the repository to have them loaded at startup. You can also load images from any other folder using the UI.
