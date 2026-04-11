@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.9.8] - 2026-04-11
+## [2.0.0] - 2026-04-11
 
 - Greatly sped up large-folder PromptMatch scoring by parallelizing image decode/preprocess work, adding one-batch-ahead host prefetch, and tuning the PromptMatch autobatch logic with better GPU-tier heuristics.
 - Greatly sped up large-folder ImageReward scoring with the same style of threaded host preprocessing, prefetching, and a dedicated ImageReward autobatch policy.
@@ -10,6 +10,7 @@
 - Added an end-to-end same-person embedding-pass timing line so large face-search runs can be measured directly in seconds.
 - Fixed same-person follow-up regressions so the first `Find same person` run on a folder works correctly again and PromptMatch/ImageReward keep working normally afterward.
 - Thresholds are now remembered per mode, so returning to PromptMatch, ImageReward, Similarity, or SamePerson restores that mode's own last threshold instead of inheriting the previous mode's slider value.
+- Reworked the main desktop layout so the full left control sidebar scrolls independently while the page itself stays fixed, which makes the lower setup panels reachable without dragging the entire gallery area around.
 
 ## [1.9.0] - 2026-04-11
 

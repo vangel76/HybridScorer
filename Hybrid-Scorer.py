@@ -5845,12 +5845,29 @@ def create_app():
         return (*current_view(main_threshold, aux_threshold), "\n".join(lines))
 
     css = """
+    html, body { height:100% !important; overflow:hidden !important; }
     body, .gradio-container { background:#0d0d11 !important; color:#ddd8cc !important; }
     body { margin:0 !important; }
     .gr-block,.gr-box,.panel { background:#14141c !important; border-color:#252530 !important; }
-    .gradio-container { max-width: 100% !important; margin:0 !important; padding: 6px 2px !important; }
-    .main { max-width: 100% !important; padding:0 !important; }
+    .gradio-container {
+        max-width: 100% !important;
+        margin:0 !important;
+        padding: 6px 2px !important;
+        min-height:100vh !important;
+        height:100vh !important;
+        overflow:hidden !important;
+    }
+    .main {
+        max-width: 100% !important;
+        padding:0 !important;
+        height:100% !important;
+        overflow:hidden !important;
+    }
     .main > .gradio-row { gap:6px !important; }
+    .app-shell {
+        gap:6px !important;
+        align-items:flex-start !important;
+    }
     footer { display: none !important; }
     .app-header {
         display:flex;
@@ -5862,8 +5879,51 @@ def create_app():
     }
     h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66; text-transform:uppercase; margin:0; font-size:1.4rem; }
     .header-meta { color:#667755; font-family:monospace; font-size:.78rem; white-space:nowrap; margin-left:auto; }
-    .sidebar-box { background:#171722; border:1px solid #2c2c39; border-radius:6px; padding:3px; }
+    .sidebar-box {
+        background:#171722;
+        border:1px solid #2c2c39;
+        border-radius:6px;
+        padding:3px;
+        display:block !important;
+        flex:0 0 320px !important;
+        width:320px !important;
+        max-width:320px !important;
+        align-self:flex-start !important;
+        position:sticky !important;
+        top:6px !important;
+        height:calc(100vh - 80px) !important;
+        max-height:calc(100vh - 80px) !important;
+        overflow-y:auto !important;
+        overflow-x:hidden !important;
+        scrollbar-gutter:stable !important;
+    }
+    .sidebar-scroll {
+        margin-top:2px !important;
+        max-height:none !important;
+        height:auto !important;
+        overflow:visible !important;
+        padding-right:2px !important;
+        background:transparent !important;
+        border:0 !important;
+        box-shadow:none !important;
+    }
+    .gallery-pane {
+        min-width:0 !important;
+        overflow:visible !important;
+    }
     .sidebar-box .gr-accordion { margin-bottom:2px !important; border:1px solid #2c2c39 !important; border-radius:4px !important; background:#151520 !important; }
+    .sidebar-scroll > .gr-accordion,
+    .sidebar-scroll > .gr-group,
+    .sidebar-scroll > .block,
+    .sidebar-scroll .gr-accordion,
+    .sidebar-scroll .gr-accordion .content,
+    .sidebar-scroll .gr-accordion .content > div {
+        flex:none !important;
+        min-height:auto !important;
+        max-height:none !important;
+        height:auto !important;
+        overflow:visible !important;
+    }
     .sidebar-box .gr-accordion summary, .sidebar-box .gr-accordion button { font-family:monospace !important; font-size:.9rem !important; color:#d7dbc8 !important; }
     .sidebar-box .gr-accordion summary { padding-top:2px !important; padding-bottom:2px !important; min-height:0 !important; }
     .sidebar-box .gr-accordion .label-wrap { padding-top:0 !important; padding-bottom:0 !important; }
@@ -6360,6 +6420,33 @@ def create_app():
         white-space:nowrap !important;
         overflow:hidden !important;
     }
+    @media (max-width: 900px) {
+        html, body {
+            height:auto !important;
+            overflow:auto !important;
+        }
+        .gradio-container,
+        .main {
+            height:auto !important;
+            min-height:0 !important;
+            overflow:visible !important;
+        }
+        .sidebar-box {
+            position:static !important;
+            top:auto !important;
+            width:auto !important;
+            max-width:none !important;
+            height:auto !important;
+            max-height:none !important;
+            overflow:visible !important;
+        }
+        .sidebar-scroll,
+        .gallery-pane {
+            max-height:none !important;
+            overflow:visible !important;
+        }
+        .sidebar-scroll { padding-right:0 !important; }
+    }
     """
 
     with gr.Blocks(title=APP_WINDOW_TITLE) as demo:
@@ -6370,164 +6457,165 @@ def create_app():
 </div>
 """.format(title=APP_NAME, tag=APP_GITHUB_TAG))
 
-        with gr.Row(equal_height=False):
+        with gr.Row(equal_height=False, elem_classes=["app-shell"]):
             with gr.Column(scale=1, min_width=300, elem_classes=["sidebar-box"]):
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
                 hist_width_tb = gr.Textbox(value="300", visible="hidden", elem_id="hy-hist-width")
                 shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
                 model_status_state = gr.Textbox(value=promptmatch_model_status_json(), visible="hidden", elem_id="hy-model-status")
-                with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
-                    method_dd = gr.Dropdown(
-                        choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
-                        value=METHOD_PROMPTMATCH,
-                        label="Method",
-                        elem_id="hy-method",
-                    )
-                    method_note = gr.Markdown(
-                        "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported.",
-                        elem_classes=["method-note"],
-                    )
-                    folder_input = gr.Textbox(
-                        value=source_dir,
-                        label="Image folder - paste a path here",
-                        lines=2,
-                        placeholder=folder_placeholder(),
-                        elem_id="hy-folder",
-                    )
-
-                with gr.Accordion("2. SCORING & Method/Settings", open=True, elem_id="hy-acc-scoring"):
-                    with gr.Group(visible=True) as promptmatch_group:
-                        model_dd = gr.Dropdown(
-                            choices=promptmatch_model_dropdown_choices(),
-                            value=label_for_backend(prompt_backend),
-                            label="PromptMatch model",
-                            elem_id="hy-model",
+                with gr.Group(elem_classes=["sidebar-scroll"]):
+                    with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
+                        method_dd = gr.Dropdown(
+                            choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
+                            value=METHOD_PROMPTMATCH,
+                            label="Method",
+                            elem_id="hy-method",
                         )
-                        pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
-                        neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
-                        promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
-
-                    with gr.Group(visible=False) as imagereward_group:
-                        ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=3, elem_id="hy-ir-pos")
-                        ir_negative_prompt_tb = gr.Textbox(
-                            value=DEFAULT_IR_NEGATIVE_PROMPT,
-                            label="Experimental penalty prompt",
+                        method_note = gr.Markdown(
+                            "PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported.",
+                            elem_classes=["method-note"],
+                        )
+                        folder_input = gr.Textbox(
+                            value=source_dir,
+                            label="Image folder - paste a path here",
                             lines=2,
-                            placeholder="Optional: undesirable style or mood to subtract",
-                            elem_id="hy-ir-neg",
+                            placeholder=folder_placeholder(),
+                            elem_id="hy-folder",
                         )
-                        ir_penalty_weight_tb = gr.Slider(
-                            value=DEFAULT_IR_PENALTY_WEIGHT,
-                            label="Penalty weight",
-                            minimum=0.0,
-                            maximum=4.0,
-                            step=0.1,
-                            elem_id="hy-ir-weight",
-                        )
-                        imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
 
-                with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
-                    with gr.Column(elem_classes=["preview-action-stack"]):
-                        find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
-                        find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
-                    with gr.Group(elem_classes=["preview-prompt-group"]):
-                        gr.Markdown("**Prompt from image**", elem_classes=["method-note"])
-                        prompt_generator_dd = gr.Dropdown(
-                            choices=list(PROMPT_GENERATOR_CHOICES),
-                            value=state["prompt_generator"],
-                            label="Prompt generator",
-                            elem_id="hy-prompt-generator",
-                        )
-                        generate_prompt_btn = gr.Button("Prompt from image", elem_id="hy-generate-prompt")
-                        promptgen_status_md = gr.Markdown(
-                            state["generated_prompt_status"],
-                            elem_classes=["promptgen-status"],
-                            elem_id="hy-promptgen-status",
-                        )
-                        generated_prompt_tb = gr.Textbox(
-                            value=state["generated_prompt"],
-                            label="Generated prompt",
-                            lines=4,
-                            placeholder="Preview an image, then generate an editable prompt here.",
-                            elem_id="hy-generated-prompt",
-                        )
-                        generated_prompt_detail_slider = gr.Slider(
-                            minimum=1,
-                            maximum=3,
-                            value=DEFAULT_GENERATED_PROMPT_DETAIL,
-                            step=1,
-                            label="Prompt detail",
-                            elem_id="hy-generated-prompt-detail",
-                        )
-                        insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
+                    with gr.Accordion("2. SCORING & Method/Settings", open=True, elem_id="hy-acc-scoring"):
+                        with gr.Group(visible=True) as promptmatch_group:
+                            model_dd = gr.Dropdown(
+                                choices=promptmatch_model_dropdown_choices(),
+                                value=label_for_backend(prompt_backend),
+                                label="PromptMatch model",
+                                elem_id="hy-model",
+                            )
+                            pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
+                            neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
+                            promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
 
-                with gr.Accordion("4. Thresholds", open=True, elem_id="hy-acc-thresholds"):
-                    hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
-                    with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
-                        main_slider = gr.Slider(
-                            minimum=-1.0,
-                            maximum=1.0,
-                            value=0.14,
-                            step=0.001,
-                            label=threshold_labels(METHOD_PROMPTMATCH)[0],
-                            elem_id="hy-main-slider",
-                            buttons=[],
-                        )
-                        with gr.Column(scale=0, min_width=58, elem_classes=["threshold-actions"]):
-                            main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=58, elem_classes=["threshold-mid"])
-                    with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
-                        aux_slider = gr.Slider(
-                            minimum=-1.0,
-                            maximum=1.0,
-                            value=NEGATIVE_THRESHOLD,
-                            step=0.001,
-                            label=threshold_labels(METHOD_PROMPTMATCH)[1],
-                            elem_id="hy-aux-slider",
-                            buttons=[],
-                        )
-                        aux_mid_btn = gr.Button("50%", elem_id="hy-aux-mid", scale=0, min_width=50, visible=True, elem_classes=["threshold-mid"])
-                    keep_pm_thresholds_cb = gr.Checkbox(
-                        value=True,
-                        label="Keep PromptMatch thresholds on prompt reruns",
-                        visible=True,
-                        elem_id="hy-keep-pm-thresholds",
-                    )
-                    keep_ir_thresholds_cb = gr.Checkbox(
-                        value=True,
-                        label="Keep ImageReward threshold on prompt reruns",
-                        visible=False,
-                        elem_id="hy-keep-ir-thresholds",
-                    )
-                    with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
-                        percentile_slider = gr.Slider(
-                            minimum=0,
-                            maximum=100,
-                            value=50,
-                            step=1,
-                            label=percentile_slider_label(METHOD_PROMPTMATCH),
-                            elem_id="hy-percentile",
-                            buttons=[],
-                        )
-                        percentile_mid_btn = gr.Button("50%", elem_id="hy-percentile-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
-                    proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
-                    status_md = gr.Markdown("", elem_classes=["status-md"])
+                        with gr.Group(visible=False) as imagereward_group:
+                            ir_prompt_tb = gr.Textbox(value=IR_PROMPT, label="ImageReward positive prompt", lines=3, elem_id="hy-ir-pos")
+                            ir_negative_prompt_tb = gr.Textbox(
+                                value=DEFAULT_IR_NEGATIVE_PROMPT,
+                                label="Experimental penalty prompt",
+                                lines=2,
+                                placeholder="Optional: undesirable style or mood to subtract",
+                                elem_id="hy-ir-neg",
+                            )
+                            ir_penalty_weight_tb = gr.Slider(
+                                value=DEFAULT_IR_PENALTY_WEIGHT,
+                                label="Penalty weight",
+                                minimum=0.0,
+                                maximum=4.0,
+                                step=0.1,
+                                elem_id="hy-ir-weight",
+                            )
+                            imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
 
-                with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export"):
-                    with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
-                        move_export_cb = gr.Checkbox(
-                            value=False,
-                            label="Move instead of copy",
-                            container=False,
-                            scale=0,
-                            min_width=150,
-                            elem_id="hy-export-move-enabled",
-                            elem_classes=["gallery-export-toggle", "export-move-toggle"],
-                        )
-                    export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
-                    export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
+                    with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
+                        with gr.Column(elem_classes=["preview-action-stack"]):
+                            find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
+                            find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
+                        with gr.Group(elem_classes=["preview-prompt-group"]):
+                            gr.Markdown("**Prompt from image**", elem_classes=["method-note"])
+                            prompt_generator_dd = gr.Dropdown(
+                                choices=list(PROMPT_GENERATOR_CHOICES),
+                                value=state["prompt_generator"],
+                                label="Prompt generator",
+                                elem_id="hy-prompt-generator",
+                            )
+                            generate_prompt_btn = gr.Button("Prompt from image", elem_id="hy-generate-prompt")
+                            promptgen_status_md = gr.Markdown(
+                                state["generated_prompt_status"],
+                                elem_classes=["promptgen-status"],
+                                elem_id="hy-promptgen-status",
+                            )
+                            generated_prompt_tb = gr.Textbox(
+                                value=state["generated_prompt"],
+                                label="Generated prompt",
+                                lines=4,
+                                placeholder="Preview an image, then generate an editable prompt here.",
+                                elem_id="hy-generated-prompt",
+                            )
+                            generated_prompt_detail_slider = gr.Slider(
+                                minimum=1,
+                                maximum=3,
+                                value=DEFAULT_GENERATED_PROMPT_DETAIL,
+                                step=1,
+                                label="Prompt detail",
+                                elem_id="hy-generated-prompt-detail",
+                            )
+                            insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
-            with gr.Column(scale=5):
+                    with gr.Accordion("4. Thresholds", open=True, elem_id="hy-acc-thresholds"):
+                        hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
+                        with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
+                            main_slider = gr.Slider(
+                                minimum=-1.0,
+                                maximum=1.0,
+                                value=0.14,
+                                step=0.001,
+                                label=threshold_labels(METHOD_PROMPTMATCH)[0],
+                                elem_id="hy-main-slider",
+                                buttons=[],
+                            )
+                            with gr.Column(scale=0, min_width=58, elem_classes=["threshold-actions"]):
+                                main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=58, elem_classes=["threshold-mid"])
+                        with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
+                            aux_slider = gr.Slider(
+                                minimum=-1.0,
+                                maximum=1.0,
+                                value=NEGATIVE_THRESHOLD,
+                                step=0.001,
+                                label=threshold_labels(METHOD_PROMPTMATCH)[1],
+                                elem_id="hy-aux-slider",
+                                buttons=[],
+                            )
+                            aux_mid_btn = gr.Button("50%", elem_id="hy-aux-mid", scale=0, min_width=50, visible=True, elem_classes=["threshold-mid"])
+                        keep_pm_thresholds_cb = gr.Checkbox(
+                            value=True,
+                            label="Keep PromptMatch thresholds on prompt reruns",
+                            visible=True,
+                            elem_id="hy-keep-pm-thresholds",
+                        )
+                        keep_ir_thresholds_cb = gr.Checkbox(
+                            value=True,
+                            label="Keep ImageReward threshold on prompt reruns",
+                            visible=False,
+                            elem_id="hy-keep-ir-thresholds",
+                        )
+                        with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
+                            percentile_slider = gr.Slider(
+                                minimum=0,
+                                maximum=100,
+                                value=50,
+                                step=1,
+                                label=percentile_slider_label(METHOD_PROMPTMATCH),
+                                elem_id="hy-percentile",
+                                buttons=[],
+                            )
+                            percentile_mid_btn = gr.Button("50%", elem_id="hy-percentile-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
+                        proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
+                        status_md = gr.Markdown("", elem_classes=["status-md"])
+
+                    with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export"):
+                        with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
+                            move_export_cb = gr.Checkbox(
+                                value=False,
+                                label="Move instead of copy",
+                                container=False,
+                                scale=0,
+                                min_width=150,
+                                elem_id="hy-export-move-enabled",
+                                elem_classes=["gallery-export-toggle", "export-move-toggle"],
+                            )
+                        export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
+                        export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
+
+            with gr.Column(scale=5, elem_classes=["gallery-pane"]):
                 with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
                     with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]):
                         with gr.Row(equal_height=False, elem_classes=["gallery-head-row"]):
