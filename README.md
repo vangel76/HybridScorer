@@ -6,15 +6,16 @@ Current version: `1.8.0` (`v1.8.0` on GitHub releases)
 
 ## Latest Updates
 
-- On Windows, model downloads and PromptMatch proxy caches are now kept locally inside the project folder under `models/` and `cache/` instead of filling the user profile or temp drive. 
-- On Linux, the default stays with the normal system-cache behavior.
-- The PromptMatch model dropdown now shows clear cached/download markers, and OpenCLIP cache detection now reports already-downloaded models correctly.
-- On Windows, PromptMatch proxy folders now live directly under `cache/` instead of an extra nested `PromptMatchProxyCache` folder.
-- Manual pinning survives rescoring the same folder, so hand-sorted images stay on their chosen side until they actually leave that folder.
-- The threshold panel now keeps thresholds more predictably across prompt reruns, uses clearer wording, and matches slider ranges to the graph ranges.
-- The export UI lives above the galleries: each bucket has its own enable toggle and editable folder name, plus an optional `Move instead of copy` mode in the export section.
-
-![Updated graph UI](screenshots/New_Graphs.jpg)
+- **Find similar images**: Quickly locate images that look like a specific preview image, perfect for finding variations or duplicates.
+- **Find same person**: Easily search for all images of a specific person in your folder using advanced face recognition.
+- **Better interface**: Cleaner organization of preview actions with dedicated sections for similarity and prompt generation.
+- **Faster performance**: Improved handling of large folders with smoother interactions and faster face recognition searches.
+- **Easier threshold control**: Smarter defaults and better slider behavior make it easier to fine-tune your results.
+- **Visual improvements**: Histograms now clearly show which images are kept or rejected with color-coded sections.
+- **Local in-app caching**: On Windows, models and caches are now stored locally in the project folder instead of the official system folders on C: drive for easier management.
+- **Manual overrides**: Your custom selections now persist when rescoring the same folder.
+- **Export improvements**: Each bucket has its own export toggle and editable folder names.
+- **Move instead of copy**: Optional mode to move files instead of copying during export.
 
 ## Screenshot
 
@@ -43,6 +44,10 @@ In practice, the workflow is:
 - review the `SELECTED` and `REJECTED` split
 - manually move the few mistakes
 - export the final result into folders you name yourself
+
+You can also:
+- **Find similar images**: Search for visually similar images using cached embeddings from the selected preview image
+- **Find same person**: Search for images of the same person using face recognition
 
 ## What This Is
 
