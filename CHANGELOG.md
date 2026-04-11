@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0] - 2026-04-11
+
+- Added `Find similar images` as a new preview action that reuses cached PromptMatch image embeddings to rank the current folder by image-image similarity from the selected preview image.
+- Reworked the preview-actions panel so similarity and prompt generation each have their own clearer section, and renamed the prompt action to `Prompt from image`.
+- Similarity search now has its own better-tuned threshold UX, including `Show the N most similar`, improved defaults, a cap that keeps the slider usable on huge folders, and fixes so the query image is not incorrectly counted against the similar-image total.
+- Added smarter same-person helper-threshold behavior and smoother large-folder interaction by keeping histogram feedback live while deferring the heavy gallery rebuilds until slider release.
+- Fixed the ImageReward histogram so it now colors the keep/reject sides red/green around the threshold like PromptMatch.
+- Added `Find same person` as a new preview action, powered by a dedicated `InsightFace buffalo_l` face-recognition backend instead of PromptMatch image embeddings.
+- Same-person search now reuses the existing split view, histogram, thresholding, helper slider, manual overrides, and export flow, while keeping the query image marked in the results.
+- Images with no detectable face are now handled gracefully as unmatched instead of crashing the same-person search flow.
+- Linux and Windows setup now install the required face-search dependencies by default, including the CUDA-enabled ONNX runtime needed for GPU-backed InsightFace use.
+- Same-person embedding extraction is now parallelized across a small worker pool, which makes large-folder face searches noticeably faster than the earlier strictly sequential pass.
+
 ## [1.8.5] - 2026-04-11
 
 - JoyCaption GGUF generation is now quieter and finally must faster because GPU powered.

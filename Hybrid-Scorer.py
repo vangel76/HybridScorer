@@ -21,15 +21,18 @@ import socket
 import string
 import sys
 import tempfile
+import threading
 import types
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from hashlib import sha256
+from importlib import metadata
 from importlib import import_module
 from importlib.machinery import ModuleSpec
 
 import gradio as gr
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -61,6 +64,19 @@ def load_app_version():
 APP_VERSION = load_app_version()
 APP_GITHUB_TAG = f"v{APP_VERSION}"
 APP_WINDOW_TITLE = f"{APP_DISPLAY_NAME} {APP_GITHUB_TAG}"
+SETUP_SCRIPT_HINT = "setup_update-windows.bat" if os.name == "nt" else "./setup_update-linux.sh"
+
+try:
+    from packaging.specifiers import SpecifierSet
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+except Exception:
+    SpecifierSet = None
+    InvalidVersion = Exception
+    Version = None
+
+    def canonicalize_name(name):
+        return re.sub(r"[-_.]+", "-", (name or "").strip()).lower()
 
 CACHE_MODE_PROJECT = "project"
 CACHE_MODE_SYSTEM = "system"
@@ -68,7 +84,12 @@ ENV_CACHE_MODE = "HYBRIDSCORER_CACHE_MODE"
 PROJECT_HF_CACHE_DIR = os.path.join("models", "huggingface")
 PROJECT_CLIP_CACHE_DIR = os.path.join("models", "clip")
 PROJECT_IMAGEREWARD_CACHE_DIR = os.path.join("models", "ImageReward")
+PROJECT_INSIGHTFACE_CACHE_DIR = os.path.join("models", "insightface")
 PROJECT_PROMPTMATCH_PROXY_CACHE_DIR = "cache"
+STARTUP_EXTRA_REQUIREMENTS = (
+    "image-reward==1.5",
+    "llama-cpp-python>=0.3.7",
+)
 
 
 def default_cache_mode():
@@ -89,6 +110,7 @@ def get_cache_config():
             "huggingface_dir": os.path.join(script_dir, PROJECT_HF_CACHE_DIR),
             "clip_dir": os.path.join(script_dir, PROJECT_CLIP_CACHE_DIR),
             "imagereward_dir": os.path.join(script_dir, PROJECT_IMAGEREWARD_CACHE_DIR),
+            "insightface_dir": os.path.join(script_dir, PROJECT_INSIGHTFACE_CACHE_DIR),
             "proxy_root": os.path.join(script_dir, PROJECT_PROMPTMATCH_PROXY_CACHE_DIR),
         }
 
@@ -99,6 +121,7 @@ def get_cache_config():
         "huggingface_dir": None,
         "clip_dir": os.path.join(home_cache_root, "clip"),
         "imagereward_dir": os.path.join(home_cache_root, "ImageReward"),
+        "insightface_dir": os.path.join(home_cache_root, "insightface"),
         "proxy_root": os.path.join(tempfile.gettempdir(), PROMPTMATCH_PROXY_CACHE_ROOT),
     }
 
@@ -106,8 +129,14 @@ def get_cache_config():
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
 METHOD_SIMILARITY = "Similarity"
+METHOD_SAMEPERSON = "SamePerson"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
 DEFAULT_IR_PENALTY_WEIGHT = 1.0
+SIMILARITY_TOPN_DEFAULT = 5
+SIMILARITY_TOPN_SLIDER_MAX = 50
+SIMILARITY_AUTO_TOPN_SCAN_LIMIT = 30
+SIMILARITY_AUTO_TOPN_MIN = 3
+SIMILARITY_AUTO_KNEE_MIN_DISTANCE = 0.06
 PROMPTMATCH_SLIDER_MIN = -1.0
 PROMPTMATCH_SLIDER_MAX = 1.0
 IMAGEREWARD_SLIDER_MIN = -5.0
@@ -131,6 +160,10 @@ JOYCAPTION_GGUF_FILENAME = "Llama-Joycaption-Beta-One-Hf-Llava-Q4_K_M.gguf"
 JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-f16.gguf"
 JOYCAPTION_GGUF_SETUP_HINT = "./setup_update-linux.sh"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
+FACE_MODEL_PACK = "buffalo_l"
+FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
+FACE_DET_SIZE = (640, 640)
+FACE_EMBEDDING_MAX_WORKERS = 12
 
 SEARCH_PROMPT = "ginger woman"
 NEGATIVE_PROMPT = ""
@@ -145,9 +178,9 @@ INPUT_FOLDER_NAME = "images"
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".avif")
 DEFAULT_BATCH_SIZE = 32
 MAX_BATCH_SIZE = 128
-PROMPTMATCH_BASE_BATCH_SIZE = 48
-PROMPTMATCH_MAX_BATCH_SIZE = 256
-PROMPTMATCH_BATCH_AGGRESSION = 1.35
+PROMPTMATCH_BASE_BATCH_SIZE = 64
+PROMPTMATCH_MAX_BATCH_SIZE = 384
+PROMPTMATCH_BATCH_AGGRESSION = 1.6
 PROMPTMATCH_PROXY_MAX_EDGE = 1024
 PROMPTMATCH_PROXY_CACHE_ROOT = "HybridScorerPromptMatchProxyCache"
 PROMPTMATCH_PROXY_PROGRESS_SHARE = 0.25
@@ -163,6 +196,103 @@ def normalize_prompt_text(text):
     text = re.sub(r"([(\[])\s+", r"\1", text)
     text = re.sub(r"\s+([)\]])", r"\1", text)
     return text.strip(" ,")
+
+
+def parse_requirement_entry(raw_line):
+    line = (raw_line or "").strip()
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("git+"):
+        if "openai/CLIP.git" in line:
+            return {
+                "raw": line,
+                "name": "clip",
+                "spec": None,
+            }
+        return None
+
+    match = re.match(r"^\s*([A-Za-z0-9_.-]+)\s*(.*)$", line)
+    if not match:
+        return None
+    name = match.group(1).strip()
+    remainder = (match.group(2) or "").strip()
+    marker = None
+    if ";" in remainder:
+        remainder, marker = remainder.split(";", 1)
+        marker = marker.strip()
+    return {
+        "raw": line,
+        "name": name,
+        "spec": remainder.strip() or None,
+        "marker": marker,
+    }
+
+
+def load_startup_requirements():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    requirement_sources = [
+        os.path.join(script_dir, "requirements.txt"),
+        os.path.join(script_dir, "requirements-gguf.txt"),
+    ]
+    parsed = []
+    seen = set()
+    for path in requirement_sources:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            entry = parse_requirement_entry(line)
+            if not entry:
+                continue
+            key = canonicalize_name(entry["name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append(entry)
+    for raw in STARTUP_EXTRA_REQUIREMENTS:
+        entry = parse_requirement_entry(raw)
+        if not entry:
+            continue
+        key = canonicalize_name(entry["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append(entry)
+    return parsed
+
+
+def runtime_requirement_issues():
+    issues = []
+    installed_versions = {}
+    try:
+        for dist in metadata.distributions():
+            dist_name = dist.metadata.get("Name") or dist.metadata.get("Summary") or ""
+            if not dist_name:
+                continue
+            installed_versions[canonicalize_name(dist_name)] = dist.version
+    except Exception:
+        installed_versions = {}
+
+    for requirement in load_startup_requirements():
+        name = requirement["name"]
+        installed_version = installed_versions.get(canonicalize_name(name))
+        if installed_version is None:
+            issues.append(f"{name}: not installed")
+            continue
+
+        spec = requirement.get("spec")
+        if not spec or SpecifierSet is None or Version is None:
+            continue
+        try:
+            spec_set = SpecifierSet(spec)
+            version = Version(installed_version)
+        except (InvalidVersion, Exception):
+            continue
+        if version not in spec_set:
+            issues.append(f"{name}: installed {installed_version}, needs {spec}")
+    return issues
 
 
 def render_promptmatch_segments(segments, skip_weighted_index=None):
@@ -407,6 +537,22 @@ def describe_joycaption_gguf_source():
         and huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_MMPROJ_FILENAME)
     )
     return "disk cache" if cached else "network download"
+
+
+def describe_insightface_source():
+    model_dir = os.path.join(get_cache_config()["insightface_dir"], "models", FACE_MODEL_PACK)
+    if not os.path.isdir(model_dir):
+        return "network download"
+    for name in os.listdir(model_dir):
+        if name.lower().endswith(".onnx"):
+            return "disk cache"
+    return "network download"
+
+
+def face_embedding_worker_count(total_images):
+    if total_images <= 1:
+        return 1
+    return max(1, min(FACE_EMBEDDING_MAX_WORKERS, total_images))
 
 
 def describe_prompt_generator_source(generator_name):
@@ -1182,6 +1328,14 @@ def sanitize_export_name(name):
     return cleaned
 
 
+def uses_similarity_topn(method):
+    return method in (METHOD_SIMILARITY, METHOD_SAMEPERSON)
+
+
+def uses_pos_similarity_scores(method):
+    return method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY, METHOD_SAMEPERSON)
+
+
 def export_destination(folder, filename):
     return os.path.join(folder, filename)
 
@@ -1193,6 +1347,13 @@ def threshold_labels(method):
             "Negative similarity is unused for image similarity search",
             "Minimum similarity",
             "Negative similarity",
+        )
+    if method == METHOD_SAMEPERSON:
+        return (
+            "Minimum face similarity to keep (higher = fewer kept)",
+            "Negative face similarity is unused for same-person search",
+            "Minimum face similarity",
+            "Negative face similarity",
         )
     if method == METHOD_PROMPTMATCH:
         return (
@@ -1232,7 +1393,25 @@ def imagereward_slider_range(scores):
 
 
 def threshold_for_percentile(method, scores, percentile):
-    if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
+    if uses_similarity_topn(method):
+        valid_items = [
+            item for item in (scores or {}).values()
+            if not item.get("failed", False) and item.get("pos") is not None
+        ]
+        if not valid_items:
+            return 0.0
+        valid_items.sort(key=lambda item: -float(item["pos"]))
+        query_offset = 1 if valid_items and valid_items[0].get("query") else 0
+        vals = [float(item["pos"]) for item in valid_items[query_offset:]]
+        if not vals:
+            return round(float(valid_items[0]["pos"]), 3)
+        try:
+            top_n = int(round(float(percentile)))
+        except Exception:
+            top_n = SIMILARITY_TOPN_DEFAULT
+        top_n = max(1, min(len(vals), top_n))
+        return round(vals[top_n - 1], 3)
+    if uses_pos_similarity_scores(method):
         vals = sorted([v["pos"] for v in scores.values() if not v.get("failed", False)], reverse=True)
     else:
         vals = sorted([v["score"] for v in scores.values() if v["score"] > -1000], reverse=True)
@@ -1244,6 +1423,100 @@ def threshold_for_percentile(method, scores, percentile):
         return min(vals) - 0.01
     idx = max(0, int(len(vals) * (percentile / 100.0)) - 1)
     return round(vals[idx], 3)
+
+
+def percentile_slider_label(method):
+    if method == METHOD_SIMILARITY:
+        return "Show the N most similar"
+    if method == METHOD_SAMEPERSON:
+        return "Show the N closest face matches"
+    return "Or keep top N%"
+
+
+def estimate_similarity_topn(scores=None):
+    valid_items = [
+        item for item in (scores or {}).values()
+        if not item.get("failed", False) and item.get("pos") is not None
+    ]
+    if not valid_items:
+        return 1
+
+    valid_items.sort(key=lambda item: -float(item["pos"]))
+    query_offset = 1 if valid_items and valid_items[0].get("query") else 0
+    ranked_scores = [float(item["pos"]) for item in valid_items[query_offset:query_offset + SIMILARITY_AUTO_TOPN_SCAN_LIMIT]]
+
+    if len(ranked_scores) < 2:
+        return max(1, min(len(ranked_scores), SIMILARITY_TOPN_SLIDER_MAX))
+
+    first = ranked_scores[0]
+    last = ranked_scores[-1]
+    if abs(first - last) < 1e-9:
+        fallback = min(len(ranked_scores), SIMILARITY_TOPN_DEFAULT)
+        return max(1, fallback)
+
+    best_idx = 0
+    best_distance = -float("inf")
+    span = max(1, len(ranked_scores) - 1)
+    for idx, score in enumerate(ranked_scores):
+        x = idx / span
+        y = (score - last) / (first - last)
+        distance = y - (1.0 - x)
+        if distance > best_distance:
+            best_distance = distance
+            best_idx = idx
+
+    if best_distance < SIMILARITY_AUTO_KNEE_MIN_DISTANCE:
+        fallback = min(len(ranked_scores), SIMILARITY_TOPN_DEFAULT)
+        return max(1, min(fallback, SIMILARITY_TOPN_SLIDER_MAX))
+
+    auto_topn = best_idx + 1
+    min_topn = min(len(ranked_scores), max(1, SIMILARITY_AUTO_TOPN_MIN))
+    auto_topn = max(min_topn, auto_topn)
+    auto_topn = min(len(ranked_scores), auto_topn, SIMILARITY_TOPN_SLIDER_MAX)
+    return max(1, auto_topn)
+
+
+def similarity_topn_defaults(scores=None):
+    valid_items = [
+        item for item in (scores or {}).values()
+        if not item.get("failed", False) and item.get("pos") is not None
+    ]
+    if not valid_items:
+        return 1, SIMILARITY_TOPN_DEFAULT
+    valid_items.sort(key=lambda item: -float(item["pos"]))
+    query_offset = 1 if valid_items and valid_items[0].get("query") else 0
+    similar_count = len(valid_items) - query_offset
+    if similar_count <= 0:
+        return 1, 1
+    slider_max = min(SIMILARITY_TOPN_SLIDER_MAX, similar_count)
+    auto_default = estimate_similarity_topn(scores)
+    return slider_max, min(auto_default, slider_max)
+
+
+def percentile_slider_update(method, scores=None):
+    if uses_similarity_topn(method):
+        max_items, default_items = similarity_topn_defaults(scores)
+        return gr.update(
+            minimum=1,
+            maximum=max_items,
+            value=default_items,
+            step=1,
+            label=percentile_slider_label(method),
+        )
+    return gr.update(
+        minimum=0,
+        maximum=100,
+        value=50,
+        step=1,
+        label=percentile_slider_label(method),
+    )
+
+
+def percentile_reset_button_update(method, scores=None):
+    if uses_similarity_topn(method):
+        _, default_items = similarity_topn_defaults(scores)
+        return gr.update(value=str(default_items))
+    return gr.update(value="50%")
 
 
 def slider_step_floor(value, step=0.001):
@@ -1433,7 +1706,7 @@ def status_line(method, left_items, right_items, scores, overrides):
     left_name, right_name, _, _ = method_labels(method)
     if not scores:
         failed = 0
-    elif method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY) and all("pos" in v for v in scores.values()):
+    elif uses_pos_similarity_scores(method) and all("pos" in v for v in scores.values()):
         failed = sum(1 for v in scores.values() if v.get("failed", False))
     elif method == METHOD_IMAGEREWARD and all("score" in v for v in scores.values()):
         failed = sum(1 for v in scores.values() if v["score"] < -1000)
@@ -1454,12 +1727,12 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
     if not scores:
         return left, right
 
-    if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY) and not all("pos" in item for item in scores.values()):
+    if uses_pos_similarity_scores(method) and not all("pos" in item for item in scores.values()):
         return left, right
     if method == METHOD_IMAGEREWARD and not all("score" in item for item in scores.values()):
         return left, right
 
-    if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
+    if uses_pos_similarity_scores(method):
         ordered = sorted(scores.items(), key=lambda x: -x[1]["pos"])
         for fname, item in ordered:
             side = overrides.get(fname)
@@ -1529,6 +1802,7 @@ def create_app():
         "preview_fname": None,
         "backend": prompt_backend,
         "ir_model": None,
+        "face_backend": None,
         "hist_geom": None,
         "hist_width": 300,
         "proxy_folder_key": None,
@@ -1542,6 +1816,10 @@ def create_app():
         "pm_cached_feature_paths": None,
         "pm_cached_image_features": None,
         "pm_cached_failed_paths": None,
+        "face_cached_signature": None,
+        "face_cached_feature_paths": None,
+        "face_cached_embeddings": None,
+        "face_cached_failures": None,
         "ir_cached_signature": None,
         "ir_cached_positive_prompt": None,
         "ir_cached_negative_prompt": None,
@@ -1557,6 +1835,8 @@ def create_app():
         "generated_prompt_status": "Preview an image, then generate a prompt from it.",
         "similarity_query_fname": None,
         "similarity_model_label": None,
+        "sameperson_query_fname": None,
+        "sameperson_model_label": None,
         "zoom_columns": 5,
     }
 
@@ -1573,6 +1853,10 @@ def create_app():
             state["pm_cached_feature_paths"] = None
             state["pm_cached_image_features"] = None
             state["pm_cached_failed_paths"] = None
+            state["face_cached_signature"] = None
+            state["face_cached_feature_paths"] = None
+            state["face_cached_embeddings"] = None
+            state["face_cached_failures"] = None
             state["ir_cached_signature"] = None
             state["ir_cached_positive_prompt"] = None
             state["ir_cached_negative_prompt"] = None
@@ -1586,9 +1870,11 @@ def create_app():
             return False
         return all(path in proxy_map for path in image_paths)
 
-    def clear_similarity_context():
+    def clear_preview_search_context():
         state["similarity_query_fname"] = None
         state["similarity_model_label"] = None
+        state["sameperson_query_fname"] = None
+        state["sameperson_model_label"] = None
 
     def tooltip_head(pairs):
         mapping = json.dumps(pairs)
@@ -2374,8 +2660,9 @@ def create_app():
       negLine.style.opacity = "0";
       return;
     }}
-    const chartLo = geom.method === "PromptMatch" ? geom.pos_lo : geom.lo;
-    const chartHi = geom.method === "PromptMatch" ? geom.pos_hi : geom.hi;
+    const usesPositiveSimilarityChart = ["PromptMatch", "Similarity", "SamePerson"].includes(geom.method);
+    const chartLo = usesPositiveSimilarityChart ? geom.pos_lo : geom.lo;
+    const chartHi = usesPositiveSimilarityChart ? geom.pos_hi : geom.hi;
     if (!Number.isFinite(chartLo) || !Number.isFinite(chartHi) || Math.abs(chartHi - chartLo) < 1e-9) {{
       line.style.opacity = "0";
       negLine.style.opacity = "0";
@@ -2386,13 +2673,13 @@ def create_app():
     const chartX = (geom.PAD_L + (((hoverScores.main - chartLo) / (chartHi - chartLo)) * (geom.W - geom.PAD_L - geom.PAD_R))) * scaleX;
     const clampedX = Math.max(geom.PAD_L * scaleX, Math.min((geom.W - geom.PAD_R) * scaleX, chartX));
     const chartTop = (geom.PAD_TOP || 0) * scaleY;
-    const chartHeight = (geom.method === "PromptMatch" ? geom.CH : (geom.H - geom.PAD_TOP - geom.PAD_BOT)) * scaleY;
+    const chartHeight = (usesPositiveSimilarityChart ? geom.CH : (geom.H - geom.PAD_TOP - geom.PAD_BOT)) * scaleY;
     line.style.left = `${{Math.round(img.offsetLeft + clampedX)}}px`;
     line.style.top = `${{Math.round(img.offsetTop + chartTop)}}px`;
     line.style.height = `${{Math.max(12, Math.round(chartHeight))}}px`;
     line.style.opacity = "1";
     negLine.style.opacity = "0";
-    if (geom.method === "PromptMatch" && geom.has_neg && Number.isFinite(hoverScores.neg) && Number.isFinite(geom.neg_lo) && Number.isFinite(geom.neg_hi) && Math.abs(geom.neg_hi - geom.neg_lo) >= 1e-9) {{
+    if (usesPositiveSimilarityChart && geom.has_neg && Number.isFinite(hoverScores.neg) && Number.isFinite(geom.neg_lo) && Number.isFinite(geom.neg_hi) && Math.abs(geom.neg_hi - geom.neg_lo) >= 1e-9) {{
       const negX = (geom.PAD_L + (((hoverScores.neg - geom.neg_lo) / (geom.neg_hi - geom.neg_lo)) * (geom.W - geom.PAD_L - geom.PAD_R))) * scaleX;
       const clampedNegX = Math.max(geom.PAD_L * scaleX, Math.min((geom.W - geom.PAD_R) * scaleX, negX));
       const negTop = (geom.PAD_TOP + geom.CH + geom.GAP) * scaleY;
@@ -2771,7 +3058,7 @@ def create_app():
         "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score. Press Ctrl+Enter to run scoring.",
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
         "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
-        "hy-generate-prompt": "Use the currently previewed image to generate a dense editable prompt with the selected caption backend.",
+        "hy-generate-prompt": "Use the currently previewed image to draft an editable prompt with the selected caption backend.",
         "hy-find-similar": "Use the currently previewed image as the query and rank the current folder by visual similarity with the active PromptMatch model.",
         "hy-generated-prompt": "Editable scratch prompt generated from the previewed image. You can tweak it before scoring or reinsert it into the active method.",
         "hy-generated-prompt-detail": "Choose whether the caption backend should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
@@ -2785,8 +3072,8 @@ def create_app():
         "hy-aux-mid": "Set the negative threshold to 50% of the current negative-score range.",
         "hy-keep-pm-thresholds": "Keep the exact PromptMatch thresholds when rerunning with changed prompts. They reset automatically if folder or PromptMatch model changes.",
         "hy-keep-ir-thresholds": "Keep the exact ImageReward threshold when rerunning with changed prompts. It resets automatically if the folder changes.",
-        "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent.",
-        "hy-percentile-mid": "Set the percentile control back to 50%.",
+        "hy-percentile": "Automatically set the main threshold to keep roughly the top N percent, or show the N most similar images in FSI mode.",
+        "hy-percentile-mid": "Reset the helper control to its default value for the current mode.",
         "hy-zoom-ui": "Choose how many thumbnails appear per row in both galleries.",
         "hy-use-proxy-display": "Show gallery images from cached proxies for faster browsing on large folders.",
         "hy-hist": "Histogram of current scores. In PromptMatch, click the top chart for positive threshold or bottom chart for negative threshold.",
@@ -3003,7 +3290,7 @@ def create_app():
                 display_base = os.path.basename(display_path)
                 media_lookup[display_base] = fname
                 media_lookup[display_path] = fname
-            if state["method"] in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
+            if uses_pos_similarity_scores(state["method"]):
                 if item.get("failed", False) or "pos" not in item:
                     continue
                 score_lookup[fname] = {
@@ -3075,7 +3362,7 @@ def create_app():
                     tx = x
                 draw.text((int(tx), y), text, fill="#667755")
 
-        if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
+        if uses_pos_similarity_scores(method):
             if not all("pos" in item for item in scores.values()):
                 state["hist_geom"] = None
                 return None
@@ -3249,6 +3536,9 @@ def create_app():
         if state["method"] == METHOD_SIMILARITY and state.get("similarity_query_fname"):
             model_label = state.get("similarity_model_label") or "PromptMatch model"
             status = f"Similarity from {state['similarity_query_fname']} via {model_label}  •  {status}"
+        elif state["method"] == METHOD_SAMEPERSON and state.get("sameperson_query_fname"):
+            model_label = state.get("sameperson_model_label") or FACE_MODEL_LABEL
+            status = f"Same person from {state['sameperson_query_fname']} via {model_label}  •  {status}"
         return (
             f"**{len(left_items)} images**",
             gallery_update(gallery_display_items(left_items), columns=zoom_columns),
@@ -3603,6 +3893,8 @@ def create_app():
                 gr.update(visible=True),
                 gr.update(visible=True),
                 gr.update(visible=False),
+                percentile_slider_update(method),
+                percentile_reset_button_update(method),
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
             )
         if method == METHOD_SIMILARITY:
@@ -3614,7 +3906,22 @@ def create_app():
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=False),
+                percentile_slider_update(method),
+                percentile_reset_button_update(method),
                 gr.update(value="Similarity search ranks the current folder by image-image similarity using the active PromptMatch model."),
+            )
+        if method == METHOD_SAMEPERSON:
+            return (
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                percentile_slider_update(method),
+                percentile_reset_button_update(method),
+                gr.update(value=f"Same-person search ranks the current folder by face identity similarity using {FACE_MODEL_LABEL}."),
             )
         return (
             gr.update(visible=False),
@@ -3624,11 +3931,13 @@ def create_app():
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=True),
+            percentile_slider_update(method),
+            percentile_reset_button_update(method),
             gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score."),
         )
 
     def empty_result(message, method):
-        _, _, main_upd, aux_upd, _, _, _, _ = configure_controls(method)
+        _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
         return (
             "### LEFT",
             gallery_update([]),
@@ -3640,6 +3949,8 @@ def create_app():
             marked_state_json(),
             main_upd,
             aux_upd,
+            percentile_upd,
+            percentile_mid_upd,
             promptmatch_model_status_json(),
         )
 
@@ -3648,7 +3959,7 @@ def create_app():
         return gr.update(choices=promptmatch_model_dropdown_choices(), value=selected)
 
     def middle_threshold_values(method):
-        if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
+        if uses_pos_similarity_scores(method):
             if state["scores"]:
                 _, _, pos_mid, _, _, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             else:
@@ -3683,6 +3994,54 @@ def create_app():
         else:
             progress(0, desc=f"Using loaded PromptMatch model from memory: {model_label}")
         return state["backend"]
+
+    def ensure_face_backend_loaded(progress):
+        def build_face_backend():
+            face_root = get_cache_config()["insightface_dir"]
+            os.environ.setdefault("INSIGHTFACE_HOME", face_root)
+
+            try:
+                import onnxruntime as ort
+            except Exception as exc:
+                raise RuntimeError(
+                    "InsightFace runtime is missing. Re-run the normal setup script to install onnxruntime-gpu."
+                ) from exc
+
+            available_providers = set(ort.get_available_providers())
+            if "CUDAExecutionProvider" not in available_providers:
+                raise RuntimeError(
+                    "InsightFace needs a CUDA-enabled onnxruntime-gpu install, but CUDAExecutionProvider is unavailable. "
+                    "Re-run the normal setup script so the GPU runtime is installed."
+                )
+
+            try:
+                from insightface.app import FaceAnalysis
+            except Exception as exc:
+                raise RuntimeError(
+                    "InsightFace could not be imported. Re-run the normal setup script to install the face-search dependencies."
+                ) from exc
+
+            try:
+                backend = FaceAnalysis(
+                    name=FACE_MODEL_PACK,
+                    root=face_root,
+                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                    allowed_modules=["detection", "recognition"],
+                )
+                backend.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
+            except Exception as exc:
+                raise RuntimeError(f"InsightFace {FACE_MODEL_PACK} could not be initialized: {exc}") from exc
+            return backend
+
+        if state.get("face_backend") is not None:
+            progress(0, desc=f"Using loaded face model from memory: {FACE_MODEL_LABEL}")
+            return state["face_backend"]
+
+        progress(0, desc=f"Loading face model from {describe_insightface_source()}: {FACE_MODEL_LABEL}")
+        state["face_backend_builder"] = build_face_backend
+        state["face_backend_worker_local"] = threading.local()
+        state["face_backend"] = build_face_backend()
+        return state["face_backend"]
 
     def ensure_promptmatch_feature_cache(image_paths, model_label, progress, reuse_desc, encode_desc, progress_label):
         image_signature = get_image_paths_signature(image_paths)
@@ -3756,6 +4115,110 @@ def create_app():
             list(state.get("pm_cached_failed_paths") or []),
         )
 
+    def choose_primary_face(faces):
+        if not faces:
+            return None
+
+        def face_area(face):
+            bbox = getattr(face, "bbox", None)
+            if bbox is None or len(bbox) < 4:
+                return 0.0
+            return max(0.0, float(bbox[2] - bbox[0])) * max(0.0, float(bbox[3] - bbox[1]))
+
+        return max(faces, key=face_area)
+
+    def ensure_face_feature_cache(image_paths, progress):
+        image_signature = get_image_paths_signature(image_paths)
+        can_reuse_face_cache = (
+            state.get("face_cached_signature") == image_signature
+            and state.get("face_cached_feature_paths") is not None
+            and state.get("face_cached_embeddings") is not None
+            and state.get("face_cached_failures") is not None
+        )
+        if can_reuse_face_cache:
+            progress(0, desc=f"Reusing cached face embeddings for {len(image_paths)} images")
+            return (
+                image_signature,
+                list(state.get("face_cached_feature_paths") or []),
+                state.get("face_cached_embeddings"),
+                dict(state.get("face_cached_failures") or {}),
+            )
+
+        ensure_face_backend_loaded(progress)
+        total = len(image_paths)
+        worker_count = face_embedding_worker_count(total)
+        results = {}
+
+        def worker_backend():
+            local_state = state.get("face_backend_worker_local")
+            if local_state is None:
+                local_state = threading.local()
+                state["face_backend_worker_local"] = local_state
+            backend = getattr(local_state, "backend", None)
+            if backend is None:
+                builder = state.get("face_backend_builder")
+                if builder is None:
+                    raise RuntimeError("Face backend builder is unavailable.")
+                backend = builder()
+                local_state.backend = backend
+            return backend
+
+        def extract_one(image_path):
+            try:
+                with Image.open(image_path) as src_img:
+                    rgb = src_img.convert("RGB")
+                    bgr = np.asarray(rgb)[:, :, ::-1].copy()
+                primary_face = choose_primary_face(worker_backend().get(bgr))
+                if primary_face is None:
+                    return image_path, None, "No face detected."
+
+                embedding = getattr(primary_face, "normed_embedding", None)
+                if embedding is None:
+                    raw_embedding = getattr(primary_face, "embedding", None)
+                    if raw_embedding is None:
+                        return image_path, None, "No face embedding returned."
+                    embedding = F.normalize(torch.as_tensor(raw_embedding, dtype=torch.float32), dim=0).cpu().numpy()
+
+                return image_path, torch.as_tensor(embedding, dtype=torch.float32), None
+            except Exception as exc:
+                return image_path, None, str(exc) or "Face analysis failed."
+
+        completed = 0
+        progress(0, desc=f"Extracting face embeddings 0/{total} (workers {worker_count})")
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {executor.submit(extract_one, image_path): image_path for image_path in image_paths}
+            for future in as_completed(future_map):
+                image_path, embedding, failure = future.result()
+                results[image_path] = (embedding, failure)
+                completed += 1
+                progress(
+                    completed / max(total, 1),
+                    desc=f"Extracting face embeddings {completed}/{total} (workers {worker_count})",
+                )
+
+        feature_paths = []
+        face_embeddings = []
+        failures = {}
+        for image_path in image_paths:
+            embedding, failure = results.get(image_path, (None, "Face analysis failed."))
+            if embedding is None:
+                failures[image_path] = failure or "Face analysis failed."
+                continue
+            feature_paths.append(image_path)
+            face_embeddings.append(embedding)
+
+        if face_embeddings:
+            embedding_tensor = torch.stack(face_embeddings, dim=0)
+            embedding_tensor = F.normalize(embedding_tensor, dim=1)
+        else:
+            embedding_tensor = torch.empty((0, 0), dtype=torch.float32)
+
+        state["face_cached_signature"] = image_signature
+        state["face_cached_feature_paths"] = list(feature_paths)
+        state["face_cached_embeddings"] = embedding_tensor
+        state["face_cached_failures"] = dict(failures)
+        return image_signature, feature_paths, embedding_tensor, failures
+
     def score_similarity_cached_features(feature_paths, image_features, failed_paths, query_path):
         if not feature_paths or image_features is None or image_features.numel() == 0:
             raise RuntimeError("No PromptMatch image embeddings are available for similarity search.")
@@ -3788,6 +4251,42 @@ def create_app():
                 "path": original_path,
                 "failed": True,
                 "query": fname == query_fname,
+            }
+        return results
+
+    def score_sameperson_cached_features(feature_paths, face_embeddings, failures, query_path):
+        if not feature_paths or face_embeddings is None or face_embeddings.numel() == 0:
+            raise RuntimeError("No face embeddings are available for same-person search.")
+        if query_path in failures:
+            raise RuntimeError(f"{os.path.basename(query_path)}: {failures[query_path]}")
+        try:
+            query_index = feature_paths.index(query_path)
+        except ValueError as exc:
+            raise RuntimeError(f"{os.path.basename(query_path)} is missing from the cached face embeddings.") from exc
+
+        results = {}
+        query_embedding = face_embeddings[query_index:query_index + 1]
+        sims = (face_embeddings @ query_embedding.T).squeeze(1).tolist()
+        query_fname = os.path.basename(query_path)
+        for original_path, score in zip(feature_paths, sims):
+            fname = os.path.basename(original_path)
+            results[fname] = {
+                "pos": float(score),
+                "neg": None,
+                "path": original_path,
+                "failed": False,
+                "query": fname == query_fname,
+            }
+
+        for failed_path, reason in failures.items():
+            fname = os.path.basename(failed_path)
+            results[fname] = {
+                "pos": 0.0,
+                "neg": None,
+                "path": failed_path,
+                "failed": True,
+                "query": fname == query_fname,
+                "reason": reason,
             }
         return results
 
@@ -3836,7 +4335,7 @@ def create_app():
         state["left_marked"] = []
         state["right_marked"] = []
         state["preview_fname"] = None
-        clear_similarity_context()
+        clear_preview_search_context()
 
         if method == METHOD_PROMPTMATCH:
             try:
@@ -3883,6 +4382,8 @@ def create_app():
                 mark_state,
                 gr.update(minimum=safe_pos_min, maximum=safe_pos_max, value=next_main, label=main_label),
                 gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
+                percentile_slider_update(METHOD_PROMPTMATCH, state["scores"]),
+                percentile_reset_button_update(METHOD_PROMPTMATCH, state["scores"]),
                 promptmatch_model_status_json(),
             )
 
@@ -3915,6 +4416,8 @@ def create_app():
                 mark_state,
             gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+            percentile_slider_update(METHOD_IMAGEREWARD, state["scores"]),
+            percentile_reset_button_update(METHOD_IMAGEREWARD, state["scores"]),
             promptmatch_model_status_json(),
         )
 
@@ -3924,6 +4427,8 @@ def create_app():
             return (
                 gr.update(value=f"Invalid folder: {folder!r}"),
                 *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
@@ -3936,6 +4441,8 @@ def create_app():
                 *current_view(main_threshold, aux_threshold),
                 gr.update(),
                 gr.update(),
+                gr.update(),
+                gr.update(),
                 promptmatch_model_status_json(),
             )
 
@@ -3944,6 +4451,8 @@ def create_app():
             return (
                 gr.update(value="Select a preview image first, then find similar images."),
                 *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
@@ -3955,6 +4464,8 @@ def create_app():
             return (
                 gr.update(value=f"{preview_fname} is not part of the current folder, so similarity search cannot run."),
                 *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
@@ -3995,6 +4506,8 @@ def create_app():
                 *current_view(main_threshold, aux_threshold),
                 gr.update(),
                 gr.update(),
+                gr.update(),
+                gr.update(),
                 promptmatch_model_status_json(),
             )
 
@@ -4005,11 +4518,13 @@ def create_app():
         state["left_marked"] = []
         state["right_marked"] = []
         state["preview_fname"] = preview_fname
+        clear_preview_search_context()
         state["similarity_query_fname"] = preview_fname
         state["similarity_model_label"] = model_label
 
-        pos_min, pos_max, pos_mid, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
-        next_main = pos_mid
+        pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
+        _, default_top_n = similarity_topn_defaults(state["scores"])
+        next_main = threshold_for_percentile(METHOD_SIMILARITY, state["scores"], default_top_n)
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
         status_text = f"Similarity search using {model_label} from {preview_fname}."
@@ -4030,6 +4545,129 @@ def create_app():
                 interactive=False,
                 label=threshold_labels(METHOD_SIMILARITY)[1],
             ),
+            percentile_slider_update(METHOD_SIMILARITY, state["scores"]),
+            percentile_reset_button_update(METHOD_SIMILARITY, state["scores"]),
+            promptmatch_model_status_json(),
+        )
+
+    def find_same_person_images(folder, main_threshold, aux_threshold, progress=gr.Progress()):
+        folder = (folder or "").strip()
+        if not folder or not os.path.isdir(folder):
+            return (
+                gr.update(value=f"Invalid folder: {folder!r}"),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        image_paths = scan_image_paths(folder)
+        if not image_paths:
+            return (
+                gr.update(value=f"No images found in {folder}"),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        _, preview_fname = get_preview_image_path()
+        if not preview_fname:
+            return (
+                gr.update(value="Select a preview image first, then find the same person."),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        folder_name_map = {os.path.basename(path): path for path in image_paths}
+        query_path = folder_name_map.get(preview_fname)
+        if not query_path:
+            return (
+                gr.update(value=f"{preview_fname} is not part of the current folder, so same-person search cannot run."),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        previous_folder = state.get("source_dir")
+        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
+        folder_key = normalize_folder_identity(folder)
+        available_names = set(folder_name_map.keys())
+        preserved_overrides = {}
+        if previous_folder_key == folder_key:
+            preserved_overrides = {
+                fname: side
+                for fname, side in state.get("overrides", {}).items()
+                if fname in available_names
+            }
+
+        try:
+            sync_promptmatch_proxy_cache(folder)
+            _, feature_paths, face_embeddings, failures = ensure_face_feature_cache(image_paths, progress)
+            sameperson_scores = score_sameperson_cached_features(
+                feature_paths,
+                face_embeddings,
+                failures,
+                query_path,
+            )
+        except Exception as exc:
+            return (
+                gr.update(value=f"Same-person search failed: {exc}"),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        state["method"] = METHOD_SAMEPERSON
+        state["source_dir"] = folder
+        state["scores"] = sameperson_scores
+        state["overrides"] = preserved_overrides
+        state["left_marked"] = []
+        state["right_marked"] = []
+        state["preview_fname"] = preview_fname
+        clear_preview_search_context()
+        state["sameperson_query_fname"] = preview_fname
+        state["sameperson_model_label"] = FACE_MODEL_LABEL
+
+        pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
+        _, default_top_n = similarity_topn_defaults(state["scores"])
+        next_main = threshold_for_percentile(METHOD_SAMEPERSON, state["scores"], default_top_n)
+        safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
+        safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
+        status_text = f"Same-person search using {FACE_MODEL_LABEL} from {preview_fname}."
+        return (
+            gr.update(value=status_text),
+            *current_view(next_main, NEGATIVE_THRESHOLD),
+            gr.update(
+                minimum=safe_pos_min,
+                maximum=safe_pos_max,
+                value=next_main,
+                label=threshold_labels(METHOD_SAMEPERSON)[0],
+            ),
+            gr.update(
+                minimum=safe_neg_min,
+                maximum=safe_neg_max,
+                value=NEGATIVE_THRESHOLD,
+                visible=False,
+                interactive=False,
+                label=threshold_labels(METHOD_SAMEPERSON)[1],
+            ),
+            percentile_slider_update(METHOD_SAMEPERSON, state["scores"]),
+            percentile_reset_button_update(METHOD_SAMEPERSON, state["scores"]),
             promptmatch_model_status_json(),
         )
 
@@ -4062,6 +4700,9 @@ def create_app():
 
     def update_split(main_threshold, aux_threshold):
         return current_view(main_threshold, aux_threshold)
+
+    def update_histogram_only(main_threshold, aux_threshold):
+        return render_histogram(state["method"], state["scores"], main_threshold, aux_threshold)
 
     def update_prompt_generator(generator_name, detail_level, current_generated_prompt):
         return select_cached_generated_prompt(generator_name, detail_level, current_generated_prompt)
@@ -4381,6 +5022,10 @@ def create_app():
         new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
         return (*current_view(new_threshold, aux_threshold), gr.update(value=new_threshold))
 
+    def update_histogram_from_percentile(percentile, aux_threshold):
+        new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
+        return render_histogram(state["method"], state["scores"], new_threshold, aux_threshold)
+
     def reset_main_threshold_to_middle(main_threshold, aux_threshold):
         new_main, _, _ = middle_threshold_values(state["method"])
         return (
@@ -4404,7 +5049,10 @@ def create_app():
         )
 
     def reset_percentile_to_middle(main_threshold, aux_threshold):
-        percentile = 50
+        if uses_similarity_topn(state["method"]):
+            _, percentile = similarity_topn_defaults(state["scores"])
+        else:
+            percentile = 50
         if state["scores"]:
             new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
         else:
@@ -4431,7 +5079,7 @@ def create_app():
             return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
         try:
             cx, cy = sel.index
-            if geom["method"] in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
+            if uses_pos_similarity_scores(geom["method"]):
                 W = geom["W"]
                 PAD_L = geom["PAD_L"]
                 PAD_R = geom["PAD_R"]
@@ -4516,8 +5164,11 @@ def create_app():
             state["right_marked"] = [name for name in state.get("right_marked", []) if name not in moved_set]
             if state.get("preview_fname") in moved_set:
                 state["preview_fname"] = None
-            if state.get("similarity_query_fname") in moved_set:
-                clear_similarity_context()
+            if (
+                state.get("similarity_query_fname") in moved_set
+                or state.get("sameperson_query_fname") in moved_set
+            ):
+                clear_preview_search_context()
         return (*current_view(main_threshold, aux_threshold), "\n".join(lines))
 
     css = """
@@ -4612,6 +5263,18 @@ def create_app():
     .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:4px; padding:2px 4px; }
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
     .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
+    .preview-action-stack { gap:4px !important; }
+    .preview-action-stack .gr-button,
+    .preview-action-stack > .gr-button,
+    .preview-action-stack button {
+        margin-top:0 !important;
+        margin-bottom:0 !important;
+    }
+    .preview-prompt-group {
+        margin-top:4px !important;
+        padding-top:4px !important;
+        border-top:1px solid rgba(88, 199, 214, 0.22) !important;
+    }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
     .hist-img, .hist-img > div { width:100% !important; max-width:100% !important; }
     .hist-img img { cursor:crosshair !important; border-radius:6px; width:100% !important; max-width:100% !important; display:block !important; }
@@ -4696,7 +5359,7 @@ def create_app():
     }
     .sel-info p { font-family:monospace !important; font-size:1.08em !important; font-weight:700 !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
     #hy-folder textarea, #hy-folder input { min-height:36px !important; font-size:.96rem !important; }
-    #hy-run-pm, #hy-run-ir, #hy-export, #hy-generate-prompt, #hy-find-similar, #hy-insert-prompt { border-radius:6px !important; }
+    #hy-run-pm, #hy-run-ir, #hy-export, #hy-generate-prompt, #hy-find-similar, #hy-find-same-person, #hy-insert-prompt { border-radius:6px !important; }
     #hy-run-pm, #hy-run-pm button, #hy-run-ir, #hy-run-ir button, #hy-export, #hy-export button {
         background:#2f8f45 !important;
         background-image:none !important;
@@ -4705,7 +5368,7 @@ def create_app():
         font-weight:700 !important;
         box-shadow:0 0 0 1px rgba(25, 55, 30, 0.15) inset !important;
     }
-    #hy-run-pm button, #hy-run-ir button, #hy-export button, #hy-generate-prompt button, #hy-find-similar button, #hy-insert-prompt button {
+    #hy-run-pm button, #hy-run-ir button, #hy-export button, #hy-generate-prompt button, #hy-find-similar button, #hy-find-same-person button, #hy-insert-prompt button {
         min-height:34px !important;
         border-radius:6px !important;
     }
@@ -4748,6 +5411,22 @@ def create_app():
     #hy-find-similar button:disabled {
         background:#1b5f5f !important;
         color:#d6efef !important;
+    }
+    #hy-find-same-person, #hy-find-same-person button {
+        background:#6f4aa9 !important;
+        background-image:none !important;
+        border:1px solid #b590e8 !important;
+        color:#f7f1ff !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(54, 32, 83, 0.2) inset !important;
+    }
+    #hy-find-same-person:hover, #hy-find-same-person button:hover {
+        background:#8057bf !important;
+        background-image:none !important;
+    }
+    #hy-find-same-person button:disabled {
+        background:#5a3a86 !important;
+        color:#eadfff !important;
     }
     #hy-left-gallery .preview .thumbnails,
     #hy-right-gallery .preview .thumbnails,
@@ -5076,15 +5755,18 @@ def create_app():
                         imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
 
                 with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
-                    with gr.Group():
+                    with gr.Column(elem_classes=["preview-action-stack"]):
+                        find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
+                        find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
+                    with gr.Group(elem_classes=["preview-prompt-group"]):
+                        gr.Markdown("**Prompt from image**", elem_classes=["method-note"])
                         prompt_generator_dd = gr.Dropdown(
                             choices=list(PROMPT_GENERATOR_CHOICES),
                             value=state["prompt_generator"],
                             label="Prompt generator",
                             elem_id="hy-prompt-generator",
                         )
-                        generate_prompt_btn = gr.Button("Generate prompt from preview", elem_id="hy-generate-prompt")
-                        find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
+                        generate_prompt_btn = gr.Button("Prompt from image", elem_id="hy-generate-prompt")
                         promptgen_status_md = gr.Markdown(
                             state["generated_prompt_status"],
                             elem_classes=["promptgen-status"],
@@ -5150,7 +5832,7 @@ def create_app():
                             maximum=100,
                             value=50,
                             step=1,
-                            label="Or keep top N%",
+                            label=percentile_slider_label(METHOD_PROMPTMATCH),
                             elem_id="hy-percentile",
                             buttons=[],
                         )
@@ -5224,18 +5906,18 @@ def create_app():
         method_dd.change(
             fn=configure_controls,
             inputs=[method_dd],
-            outputs=[promptmatch_group, imagereward_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, method_note],
+            outputs=[promptmatch_group, imagereward_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
         )
 
         promptmatch_run_btn.click(
             fn=score_folder,
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
         )
         imagereward_run_btn.click(
             fn=score_folder,
             inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
         )
         prompt_generator_dd.change(
             fn=update_prompt_generator,
@@ -5250,7 +5932,12 @@ def create_app():
         find_similar_btn.click(
             fn=find_similar_images,
             inputs=[folder_input, model_dd, main_slider, aux_slider],
-            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
+            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
+        )
+        find_same_person_btn.click(
+            fn=find_same_person_images,
+            inputs=[folder_input, main_slider, aux_slider],
+            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
         )
         generated_prompt_detail_slider.change(
             fn=update_generated_prompt_detail,
@@ -5263,12 +5950,21 @@ def create_app():
             outputs=[promptgen_status_md, pos_prompt_tb, ir_prompt_tb],
         )
 
-        main_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
-        aux_slider.change(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
-        percentile_slider.change(
+        main_slider.input(fn=update_histogram_only, inputs=[main_slider, aux_slider], outputs=[hist_plot], queue=False)
+        aux_slider.input(fn=update_histogram_only, inputs=[main_slider, aux_slider], outputs=[hist_plot], queue=False)
+        main_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state], queue=False)
+        aux_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state], queue=False)
+        percentile_slider.input(
+            fn=update_histogram_from_percentile,
+            inputs=[percentile_slider, aux_slider],
+            outputs=[hist_plot],
+            queue=False,
+        )
+        percentile_slider.release(
             fn=set_from_percentile,
             inputs=[percentile_slider, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider],
+            queue=False,
         )
         main_mid_btn.click(
             fn=reset_main_threshold_to_middle,
@@ -5303,7 +5999,7 @@ def create_app():
         shortcut_action.change(
             fn=handle_shortcut_action,
             inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
         )
         model_status_state.change(
             fn=refresh_promptmatch_model_dropdown,
@@ -5331,8 +6027,72 @@ def create_app():
     return demo, css, tooltip_head(tooltips)
 
 
+def create_setup_required_app(requirement_issues):
+    issue_lines = "\n".join(f"    <li><code>{issue}</code></li>" for issue in requirement_issues) or "    <li><code>Unknown dependency mismatch</code></li>"
+    css = """
+    body, .gradio-container { background:#120d0d !important; color:#f4eaea !important; }
+    .gradio-container { max-width:960px !important; margin:0 auto !important; padding:24px 16px 40px !important; }
+    .setup-alert {
+        border:2px solid #d86161;
+        border-radius:14px;
+        background:linear-gradient(180deg, rgba(62, 19, 19, 0.96), rgba(28, 11, 11, 0.98));
+        box-shadow:0 0 0 2px rgba(255,255,255,0.03) inset, 0 18px 50px rgba(0,0,0,0.35);
+        padding:22px 22px 18px;
+    }
+    .setup-alert h1 {
+        margin:0 0 12px 0;
+        color:#ffb3b3;
+        font-size:2rem;
+        line-height:1.1;
+        font-family:monospace;
+        text-transform:uppercase;
+        letter-spacing:.05em;
+    }
+    .setup-alert p, .setup-alert li, .setup-alert code {
+        font-family:monospace !important;
+        font-size:1rem !important;
+        line-height:1.55 !important;
+        color:#f7eaea !important;
+    }
+    .setup-alert .cmd {
+        margin:14px 0;
+        padding:12px 14px;
+        border-radius:10px;
+        background:#0f0b0b;
+        border:1px solid #7d3d3d;
+        color:#fff1f1;
+    }
+    .setup-alert .soft {
+        color:#e3c9c9 !important;
+    }
+    """
+    body = f"""
+<div class="setup-alert">
+  <h1>Setup Update Required</h1>
+  <p>The app code was updated, but the current <code>venv312</code> does not match the packages this version expects.</p>
+  <p>Please rerun setup before using this version:</p>
+  <div class="cmd"><code>{SETUP_SCRIPT_HINT}</code></div>
+  <p>Dependency issues found:</p>
+  <ul class="soft">
+{issue_lines}
+  </ul>
+  <p class="soft">After setup finishes, restart the launcher and reload the page.</p>
+</div>
+"""
+    with gr.Blocks(title=APP_WINDOW_TITLE) as demo:
+        gr.HTML(body)
+    return demo, css, ""
+
+
 if __name__ == "__main__":
-    app, css, head = create_app()
+    requirement_issues = runtime_requirement_issues()
+    if requirement_issues:
+        print("[Startup check] Dependency mismatch detected. Please rerun setup.")
+        for issue in requirement_issues:
+            print(f"  - {issue}")
+        app, css, head = create_setup_required_app(requirement_issues)
+    else:
+        app, css, head = create_app()
     port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)

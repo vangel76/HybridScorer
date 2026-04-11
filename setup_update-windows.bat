@@ -159,6 +159,10 @@ if errorlevel 1 exit /b 1
 python -m pip install -r "%CD%\requirements.txt"
 if errorlevel 1 exit /b 1
 
+python -m pip uninstall -y onnxruntime onnxruntime-gpu >nul 2>nul
+python -m pip install onnxruntime-gpu
+if errorlevel 1 exit /b 1
+
 python -m pip install --no-deps image-reward==1.5
 if errorlevel 1 exit /b 1
 

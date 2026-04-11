@@ -124,6 +124,8 @@ python -m pip install \
   --index-url "$PYTORCH_CUDA_INDEX_URL"
 
 python -m pip install -r "$SCRIPT_DIR/requirements.txt"
+python -m pip uninstall -y onnxruntime onnxruntime-gpu >/dev/null 2>&1 || true
+python -m pip install onnxruntime-gpu
 python -m pip install --no-deps image-reward==1.5
 
 echo

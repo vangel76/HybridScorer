@@ -8,4 +8,6 @@ transformers==4.57.3
 sentencepiece
 protobuf
 hf_xet
+insightface>=0.7.3
+opencv-python-headless>=4.9.0
 git+https://github.com/openai/CLIP.git
