@@ -105,6 +105,7 @@ def get_cache_config():
 # High-level app modes and default thresholds/prompts.
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
+METHOD_SIMILARITY = "Similarity"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
 DEFAULT_IR_PENALTY_WEIGHT = 1.0
 PROMPTMATCH_SLIDER_MIN = -1.0
@@ -144,6 +145,9 @@ INPUT_FOLDER_NAME = "images"
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".avif")
 DEFAULT_BATCH_SIZE = 32
 MAX_BATCH_SIZE = 128
+PROMPTMATCH_BASE_BATCH_SIZE = 48
+PROMPTMATCH_MAX_BATCH_SIZE = 256
+PROMPTMATCH_BATCH_AGGRESSION = 1.35
 PROMPTMATCH_PROXY_MAX_EDGE = 1024
 PROMPTMATCH_PROXY_CACHE_ROOT = "HybridScorerPromptMatchProxyCache"
 PROMPTMATCH_PROXY_PROGRESS_SHARE = 0.25
@@ -464,9 +468,9 @@ def get_image_paths_signature(image_paths):
     return digest.hexdigest()
 
 
-def ensure_promptmatch_proxy(original_path, cache_dir, max_edge=PROMPTMATCH_PROXY_MAX_EDGE):
+def ensure_promptmatch_proxy(original_path, cache_dir, proxy_path=None, max_edge=PROMPTMATCH_PROXY_MAX_EDGE):
     os.makedirs(cache_dir, exist_ok=True)
-    proxy_path = build_promptmatch_proxy_path(original_path, cache_dir, max_edge=max_edge)
+    proxy_path = proxy_path or build_promptmatch_proxy_path(original_path, cache_dir, max_edge=max_edge)
     if os.path.isfile(proxy_path):
         return proxy_path
 
@@ -505,7 +509,7 @@ def prepare_promptmatch_proxies(image_paths, cache_dir, progress_cb=None):
             proxy_path = build_promptmatch_proxy_path(original_path, cache_dir)
             if os.path.isfile(proxy_path):
                 return original_path, proxy_path, False, None
-            proxy_path = ensure_promptmatch_proxy(original_path, cache_dir)
+            proxy_path = ensure_promptmatch_proxy(original_path, cache_dir, proxy_path=proxy_path)
             return original_path, proxy_path, True, None
         except Exception as exc:
             return original_path, original_path, False, exc
@@ -558,7 +562,14 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
     if device != "cuda" or not torch.cuda.is_available():
         return DEFAULT_BATCH_SIZE
 
+    base_batch_size = DEFAULT_BATCH_SIZE
+    max_batch_size = MAX_BATCH_SIZE
+    aggression = 1.0
+
     if backend is not None:
+        base_batch_size = PROMPTMATCH_BASE_BATCH_SIZE
+        max_batch_size = PROMPTMATCH_MAX_BATCH_SIZE
+        aggression = PROMPTMATCH_BATCH_AGGRESSION
         reference_vram_gb = 20
         if backend.backend == "openclip":
             model_name = backend._openclip_model.lower()
@@ -584,14 +595,16 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
         return DEFAULT_BATCH_SIZE
 
     free_gb = free_bytes / (1024 ** 3)
-    scaled = max(1, int(DEFAULT_BATCH_SIZE * (free_gb / float(reference_vram_gb))))
+    scaled = max(1, int(base_batch_size * aggression * (free_gb / float(reference_vram_gb))))
 
-    if scaled >= 16:
+    if scaled >= 32:
+        scaled = max(32, (scaled // 16) * 16)
+    elif scaled >= 16:
         scaled = max(16, (scaled // 8) * 8)
     elif scaled >= 8:
         scaled = max(8, (scaled // 4) * 4)
 
-    return max(1, min(MAX_BATCH_SIZE, scaled))
+    return max(1, min(max_batch_size, scaled))
 
 
 def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=None):
@@ -602,6 +615,47 @@ def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=Non
     batch_size = get_auto_batch_size(device)
     model = model.to(device).eval()
     print(f"[ImageReward] Using batch size {batch_size}")
+    text_input = model.blip.tokenizer(
+        prompt,
+        padding="max_length",
+        truncation=True,
+        max_length=35,
+        return_tensors="pt",
+    ).to(device)
+
+    def _score_batch(batch_paths, batch_source_paths):
+        tensors = []
+        loaded = []
+        for scoring_path, source_path in zip(batch_paths, batch_source_paths):
+            try:
+                with Image.open(scoring_path) as src_img:
+                    tensors.append(model.preprocess(src_img.convert("RGB")))
+                loaded.append((scoring_path, source_path))
+            except Exception as exc:
+                print(f"  [WARN] {source_path}: {exc}")
+                scores[os.path.basename(source_path)] = {"score": -float("inf"), "path": source_path}
+
+        if not tensors:
+            return
+
+        images = torch.stack(tensors, dim=0).to(device)
+        image_embeds = model.blip.visual_encoder(images)
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=device)
+        batch_len = image_embeds.shape[0]
+        text_output = model.blip.text_encoder(
+            text_input.input_ids.expand(batch_len, -1),
+            attention_mask=text_input.attention_mask.expand(batch_len, -1),
+            encoder_hidden_states=image_embeds,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
+        )
+        txt_features = text_output.last_hidden_state[:, 0, :].float()
+        rewards = model.mlp(txt_features)
+        rewards = (rewards - model.mean) / model.std
+        rewards = torch.squeeze(rewards, dim=-1).detach().cpu().tolist()
+
+        for (_, source_path), reward in zip(loaded, rewards):
+            scores[os.path.basename(source_path)] = {"score": float(reward), "path": source_path}
 
     while done < total:
         current_size = min(batch_size, total - done)
@@ -610,10 +664,8 @@ def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=Non
         batch_filenames = [os.path.basename(p) for p in batch_source_paths]
 
         try:
-            with torch.no_grad():
-                _, batch_rewards = model.inference_rank(prompt, batch_paths)
-            for filename, source_path, reward in zip(batch_filenames, batch_source_paths, batch_rewards):
-                scores[filename] = {"score": float(reward), "path": source_path}
+            with torch.inference_mode():
+                _score_batch(batch_paths, batch_source_paths)
             done += len(batch_paths)
             yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
         except Exception as exc:
@@ -1135,6 +1187,13 @@ def export_destination(folder, filename):
 
 
 def threshold_labels(method):
+    if method == METHOD_SIMILARITY:
+        return (
+            "Minimum similarity to keep (higher = fewer kept)",
+            "Negative similarity is unused for image similarity search",
+            "Minimum similarity",
+            "Negative similarity",
+        )
     if method == METHOD_PROMPTMATCH:
         return (
             "Minimum positive similarity to keep (higher = fewer kept)",
@@ -1173,7 +1232,7 @@ def imagereward_slider_range(scores):
 
 
 def threshold_for_percentile(method, scores, percentile):
-    if method == METHOD_PROMPTMATCH:
+    if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
         vals = sorted([v["pos"] for v in scores.values() if not v.get("failed", False)], reverse=True)
     else:
         vals = sorted([v["score"] for v in scores.values() if v["score"] > -1000], reverse=True)
@@ -1374,7 +1433,7 @@ def status_line(method, left_items, right_items, scores, overrides):
     left_name, right_name, _, _ = method_labels(method)
     if not scores:
         failed = 0
-    elif method == METHOD_PROMPTMATCH and all("pos" in v for v in scores.values()):
+    elif method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY) and all("pos" in v for v in scores.values()):
         failed = sum(1 for v in scores.values() if v.get("failed", False))
     elif method == METHOD_IMAGEREWARD and all("score" in v for v in scores.values()):
         failed = sum(1 for v in scores.values() if v["score"] < -1000)
@@ -1395,12 +1454,12 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
     if not scores:
         return left, right
 
-    if method == METHOD_PROMPTMATCH and not all("pos" in item for item in scores.values()):
+    if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY) and not all("pos" in item for item in scores.values()):
         return left, right
     if method == METHOD_IMAGEREWARD and not all("score" in item for item in scores.values()):
         return left, right
 
-    if method == METHOD_PROMPTMATCH:
+    if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
         ordered = sorted(scores.items(), key=lambda x: -x[1]["pos"])
         for fname, item in ordered:
             side = overrides.get(fname)
@@ -1412,7 +1471,8 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
                     neg_ok = (item["neg"] is None) or (item["neg"] < aux_threshold)
                     side = left_name if (pos_ok and neg_ok) else right_name
             score_text = "FAILED" if item.get("failed", False) else f"{item['pos']:.3f}"
-            caption = f"{'✋ ' if fname in overrides else ''}{score_text} | {fname}"
+            query_suffix = " | QUERY" if item.get("query") else ""
+            caption = f"{'✋ ' if fname in overrides else ''}{score_text}{query_suffix} | {fname}"
             entry = (item["path"], caption)
             if side == left_name:
                 left.append(entry)
@@ -1473,6 +1533,7 @@ def create_app():
         "hist_width": 300,
         "proxy_folder_key": None,
         "proxy_cache_dir": None,
+        "proxy_signature": None,
         "proxy_map": {},
         "use_proxy_display": True,
         "ir_penalty_weight": DEFAULT_IR_PENALTY_WEIGHT,
@@ -1494,6 +1555,8 @@ def create_app():
         "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
         "generated_prompt_variants": {},
         "generated_prompt_status": "Preview an image, then generate a prompt from it.",
+        "similarity_query_fname": None,
+        "similarity_model_label": None,
         "zoom_columns": 5,
     }
 
@@ -1503,6 +1566,7 @@ def create_app():
             clear_promptmatch_proxy_cache(state.get("proxy_cache_dir"))
             state["proxy_folder_key"] = folder_key
             state["proxy_cache_dir"] = get_promptmatch_proxy_cache_dir(folder)
+            state["proxy_signature"] = None
             state["proxy_map"] = {}
             state["pm_cached_signature"] = None
             state["pm_cached_model_label"] = None
@@ -1515,6 +1579,16 @@ def create_app():
             state["ir_cached_base_scores"] = None
             state["ir_cached_penalty_scores"] = None
         return state["proxy_cache_dir"]
+
+    def can_reuse_proxy_map(image_paths, image_signature):
+        proxy_map = state.get("proxy_map") or {}
+        if state.get("proxy_signature") != image_signature or not proxy_map:
+            return False
+        return all(path in proxy_map for path in image_paths)
+
+    def clear_similarity_context():
+        state["similarity_query_fname"] = None
+        state["similarity_model_label"] = None
 
     def tooltip_head(pairs):
         mapping = json.dumps(pairs)
@@ -2698,6 +2772,7 @@ def create_app():
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
         "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
         "hy-generate-prompt": "Use the currently previewed image to generate a dense editable prompt with the selected caption backend.",
+        "hy-find-similar": "Use the currently previewed image as the query and rank the current folder by visual similarity with the active PromptMatch model.",
         "hy-generated-prompt": "Editable scratch prompt generated from the previewed image. You can tweak it before scoring or reinsert it into the active method.",
         "hy-generated-prompt-detail": "Choose whether the caption backend should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
         "hy-insert-prompt": "Copy the editable generated prompt back into the active method's main prompt field.",
@@ -2727,6 +2802,7 @@ def create_app():
         "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
         "hy-fit-threshold": "Adjust the score threshold just enough so the marked images flip to the other bucket. Uses the previewed image if nothing is marked.",
         "hy-clear-status": "Remove manual override status from all marked images so they snap back to their scored bucket.",
+        "hy-clear-all-status": "Remove manual override status from every pinned image in the current folder so everything snaps back to the scored buckets.",
     }
 
     def ensure_imagereward_model():
@@ -2906,7 +2982,7 @@ def create_app():
         left_count = len(state.get("left_marked", []))
         right_count = len(state.get("right_marked", []))
         if not left_count and not right_count:
-            return "Shift+click to mark multiple images, or drag one image or a marked batch between galleries."
+            return "Shift+click to mark multiple, or drag & drop."
         return f"Marked: **{left_count}** in SELECTED, **{right_count}** in REJECTED"
 
     def marked_state_json(visible_fnames=None):
@@ -2927,7 +3003,7 @@ def create_app():
                 display_base = os.path.basename(display_path)
                 media_lookup[display_base] = fname
                 media_lookup[display_path] = fname
-            if state["method"] == METHOD_PROMPTMATCH:
+            if state["method"] in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
                 if item.get("failed", False) or "pos" not in item:
                     continue
                 score_lookup[fname] = {
@@ -2999,7 +3075,7 @@ def create_app():
                     tx = x
                 draw.text((int(tx), y), text, fill="#667755")
 
-        if method == METHOD_PROMPTMATCH:
+        if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
             if not all("pos" in item for item in scores.values()):
                 state["hist_geom"] = None
                 return None
@@ -3123,6 +3199,12 @@ def create_app():
         img = Image.new("RGB", (W, H), "#0d0d11")
         draw = ImageDraw.Draw(img)
         draw.rectangle([PAD_L, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#0f0f16")
+        tx = PAD_L + int(((main_threshold - lo) / (hi - lo)) * cW)
+        tx = max(PAD_L, min(W - PAD_R, tx))
+        if tx > PAD_L:
+            draw.rectangle([PAD_L, PAD_TOP, tx, PAD_TOP + H - PAD_BOT], fill="#241416")
+        if tx < (W - PAD_R):
+            draw.rectangle([tx, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#142418")
         max_c = max(counts) if counts else 1
         bw = cW / bins
         for i, count in enumerate(counts):
@@ -3132,8 +3214,6 @@ def create_app():
             x0 = PAD_L + int(i * bw) + 1
             x1 = PAD_L + int((i + 1) * bw) - 1
             draw.rectangle([x0, PAD_TOP + (H - PAD_BOT - bh), x1, PAD_TOP + H - PAD_BOT], fill="#3a7a3a")
-        tx = PAD_L + int(((main_threshold - lo) / (hi - lo)) * cW)
-        tx = max(PAD_L, min(W - PAD_R, tx))
         for yy in range(PAD_TOP, PAD_TOP + H - PAD_BOT, 6):
             draw.line([(tx, yy), (tx, min(yy + 3, PAD_TOP + H - PAD_BOT))], fill="#aadd66", width=2)
         draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, PAD_TOP + H - PAD_BOT + 4, lo, hi)
@@ -3154,7 +3234,6 @@ def create_app():
 
     def current_view(main_threshold, aux_threshold):
         # Single place that rebuilds gallery contents, status text, histogram, and marked-state JSON.
-        left_name, right_name, _, _ = method_labels(state["method"])
         zoom_columns = int(state.get("zoom_columns", 5))
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
@@ -3166,12 +3245,16 @@ def create_app():
         state["left_marked"] = [name for name in state.get("left_marked", []) if name in left_names]
         state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
         visible_names = left_names | right_names
+        status = status_line(state["method"], left_items, right_items, state["scores"], state["overrides"])
+        if state["method"] == METHOD_SIMILARITY and state.get("similarity_query_fname"):
+            model_label = state.get("similarity_model_label") or "PromptMatch model"
+            status = f"Similarity from {state['similarity_query_fname']} via {model_label}  •  {status}"
         return (
             f"**{len(left_items)} images**",
             gallery_update(gallery_display_items(left_items), columns=zoom_columns),
             f"**{len(right_items)} images**",
             gallery_update(gallery_display_items(right_items), columns=zoom_columns),
-            status_line(state["method"], left_items, right_items, state["scores"], state["overrides"]),
+            status,
             render_histogram(state["method"], state["scores"], main_threshold, aux_threshold),
             selection_info(),
             json.dumps({
@@ -3379,7 +3462,11 @@ def create_app():
         cache_dir = state.get("proxy_cache_dir")
         scoring_paths = list(folder_paths)
 
-        if cache_dir:
+        if cache_dir and can_reuse_proxy_map(folder_paths, image_signature):
+            proxy_map = dict(state.get("proxy_map") or {})
+            scoring_paths = [proxy_map.get(path, path) for path in folder_paths]
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached ImageReward proxies for {len(folder_paths)} images")
+        elif cache_dir:
             print(f"[ImageReward] Proxy cache dir: {cache_dir}")
             def _proxy_prep_cb(done, total, generated, reused):
                 desc = f"Preparing ImageReward proxies {done}/{total}"
@@ -3394,6 +3481,7 @@ def create_app():
                 progress_cb=_proxy_prep_cb,
             )
             state["proxy_map"] = dict(proxy_map)
+            state["proxy_signature"] = image_signature
             scoring_paths = [proxy_map.get(path, path) for path in folder_paths]
             print(f"[ImageReward] Proxy prep complete in {cache_dir}: {generated} new, {reused} reused")
 
@@ -3517,6 +3605,17 @@ def create_app():
                 gr.update(visible=False),
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
             )
+        if method == METHOD_SIMILARITY:
+            return (
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(value="Similarity search ranks the current folder by image-image similarity using the active PromptMatch model."),
+            )
         return (
             gr.update(visible=False),
             gr.update(visible=True),
@@ -3549,7 +3648,7 @@ def create_app():
         return gr.update(choices=promptmatch_model_dropdown_choices(), value=selected)
 
     def middle_threshold_values(method):
-        if method == METHOD_PROMPTMATCH:
+        if method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
             if state["scores"]:
                 _, _, pos_mid, _, _, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             else:
@@ -3560,6 +3659,137 @@ def create_app():
         else:
             main_mid = IMAGEREWARD_THRESHOLD
         return round(float(main_mid), 3), NEGATIVE_THRESHOLD, False
+
+    def ensure_promptmatch_backend_loaded(model_label, progress):
+        cfg = get_model_config(model_label)
+        if cfg is None:
+            raise RuntimeError(f"Unknown PromptMatch model: {model_label}")
+        _, backend_name, kwargs = cfg
+        if label_for_backend(state["backend"]) != model_label:
+            if backend_name == "openai":
+                source = describe_openai_clip_source(kwargs.get("clip_model"))
+            elif backend_name == "openclip":
+                source = describe_openclip_source(kwargs.get("openclip_model"), kwargs.get("openclip_pretrained"))
+            else:
+                source = describe_siglip_source(kwargs.get("siglip_model"))
+            progress(0, desc=f"Loading PromptMatch model from {source}: {model_label}")
+            state["backend"] = ModelBackend(
+                device,
+                backend=backend_name,
+                clip_cache_dir=get_cache_config()["clip_dir"],
+                huggingface_cache_dir=get_cache_config()["huggingface_dir"],
+                **kwargs,
+            )
+        else:
+            progress(0, desc=f"Using loaded PromptMatch model from memory: {model_label}")
+        return state["backend"]
+
+    def ensure_promptmatch_feature_cache(image_paths, model_label, progress, reuse_desc, encode_desc, progress_label):
+        image_signature = get_image_paths_signature(image_paths)
+        can_reuse_promptmatch_cache = (
+            state.get("pm_cached_signature") == image_signature
+            and state.get("pm_cached_model_label") == model_label
+            and state.get("pm_cached_feature_paths") is not None
+            and state.get("pm_cached_image_features") is not None
+            and state.get("pm_cached_failed_paths") is not None
+        )
+
+        proxy_map = {}
+        cache_dir = state.get("proxy_cache_dir")
+        if can_reuse_promptmatch_cache:
+            proxy_map = dict(state.get("proxy_map") or {})
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=reuse_desc.format(count=len(image_paths)))
+        elif cache_dir and can_reuse_proxy_map(image_paths, image_signature):
+            proxy_map = dict(state.get("proxy_map") or {})
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached PromptMatch proxies for {len(image_paths)} images")
+        elif cache_dir:
+            print(f"[PromptMatch] Proxy cache dir: {cache_dir}")
+
+            def _proxy_prep_cb(done, total, generated, reused):
+                desc = f"Preparing PromptMatch proxies {done}/{total}"
+                if generated or reused:
+                    desc += f" ({generated} new, {reused} reused)"
+                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE * (done / max(total, 1)), desc=desc)
+
+            progress(0, desc=f"Preparing PromptMatch proxies 0/{len(image_paths)}")
+            proxy_map, generated, reused = prepare_promptmatch_proxies(
+                image_paths,
+                cache_dir,
+                progress_cb=_proxy_prep_cb,
+            )
+            state["proxy_map"] = dict(proxy_map)
+            state["proxy_signature"] = image_signature
+            print(f"[PromptMatch] Proxy prep complete in {cache_dir}: {generated} new, {reused} reused")
+
+        if not can_reuse_promptmatch_cache:
+            progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=encode_desc.format(count=len(image_paths)))
+
+            def _cb(done, total, batch_size, oom_retry):
+                label = f"{progress_label} {done}/{total} (autobatch {batch_size})"
+                if oom_retry:
+                    label = f"{progress_label} OOM, retrying autobatch {batch_size}"
+                progress(
+                    PROMPTMATCH_PROXY_PROGRESS_SHARE
+                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (done / max(total, 1))),
+                    desc=label,
+                )
+
+            def _proxy_resolver(original_path):
+                return proxy_map.get(original_path, original_path)
+
+            feature_paths, image_features, failed_paths = encode_all_promptmatch_images(
+                image_paths,
+                state["backend"],
+                progress_cb=_cb,
+                proxy_resolver=_proxy_resolver,
+            )
+            state["pm_cached_signature"] = image_signature
+            state["pm_cached_model_label"] = model_label
+            state["pm_cached_feature_paths"] = list(feature_paths)
+            state["pm_cached_image_features"] = image_features
+            state["pm_cached_failed_paths"] = list(failed_paths)
+
+        return (
+            image_signature,
+            list(state.get("pm_cached_feature_paths") or []),
+            state.get("pm_cached_image_features"),
+            list(state.get("pm_cached_failed_paths") or []),
+        )
+
+    def score_similarity_cached_features(feature_paths, image_features, failed_paths, query_path):
+        if not feature_paths or image_features is None or image_features.numel() == 0:
+            raise RuntimeError("No PromptMatch image embeddings are available for similarity search.")
+        if query_path in failed_paths:
+            raise RuntimeError(f"{os.path.basename(query_path)} could not be encoded for similarity search.")
+        try:
+            query_index = feature_paths.index(query_path)
+        except ValueError as exc:
+            raise RuntimeError(f"{os.path.basename(query_path)} is missing from the cached PromptMatch embeddings.") from exc
+
+        results = {}
+        query_feature = image_features[query_index:query_index + 1]
+        sims = (image_features @ query_feature.T).squeeze(1).tolist()
+        query_fname = os.path.basename(query_path)
+        for original_path, score in zip(feature_paths, sims):
+            fname = os.path.basename(original_path)
+            results[fname] = {
+                "pos": float(score),
+                "neg": None,
+                "path": original_path,
+                "failed": False,
+                "query": fname == query_fname,
+            }
+
+        for original_path in failed_paths:
+            fname = os.path.basename(original_path)
+            results[fname] = {
+                "pos": 0.0,
+                "neg": None,
+                "path": original_path,
+                "failed": True,
+                "query": fname == query_fname,
+            }
+        return results
 
     def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         # Main entrypoint for "Run scoring"; both methods converge back into current_view().
@@ -3606,109 +3836,33 @@ def create_app():
         state["left_marked"] = []
         state["right_marked"] = []
         state["preview_fname"] = None
+        clear_similarity_context()
 
         if method == METHOD_PROMPTMATCH:
-            cfg = get_model_config(model_label)
-            if cfg is None:
-                return empty_result(f"Unknown PromptMatch model: {model_label}", method)
-            _, backend_name, kwargs = cfg
-            if label_for_backend(state["backend"]) != model_label:
-                if backend_name == "openai":
-                    source = describe_openai_clip_source(kwargs.get("clip_model"))
-                elif backend_name == "openclip":
-                    source = describe_openclip_source(kwargs.get("openclip_model"), kwargs.get("openclip_pretrained"))
-                else:
-                    source = describe_siglip_source(kwargs.get("siglip_model"))
-                progress(0, desc=f"Loading PromptMatch model from {source}: {model_label}")
-                try:
-                    state["backend"] = ModelBackend(
-                        device,
-                        backend=backend_name,
-                        clip_cache_dir=get_cache_config()["clip_dir"],
-                        huggingface_cache_dir=get_cache_config()["huggingface_dir"],
-                        **kwargs,
-                    )
-                except Exception as exc:
-                    return empty_result(str(exc), method)
-            else:
-                progress(0, desc=f"Using loaded PromptMatch model from memory: {model_label}")
-
-            can_reuse_promptmatch_cache = (
-                state.get("pm_cached_signature") == image_signature
-                and state.get("pm_cached_model_label") == model_label
-                and state.get("pm_cached_feature_paths") is not None
-                and state.get("pm_cached_image_features") is not None
-                and state.get("pm_cached_failed_paths") is not None
-            )
-
-            proxy_map = {}
-            cache_dir = state.get("proxy_cache_dir")
-            if can_reuse_promptmatch_cache:
-                proxy_map = dict(state.get("proxy_map") or {})
-                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached PromptMatch image embeddings for {len(image_paths)} images")
-            elif cache_dir:
-                print(f"[PromptMatch] Proxy cache dir: {cache_dir}")
-                def _proxy_prep_cb(done, total, generated, reused):
-                    desc = f"Preparing PromptMatch proxies {done}/{total}"
-                    if generated or reused:
-                        desc += f" ({generated} new, {reused} reused)"
-                    progress(PROMPTMATCH_PROXY_PROGRESS_SHARE * (done / max(total, 1)), desc=desc)
-
-                progress(0, desc=f"Preparing PromptMatch proxies 0/{len(image_paths)}")
-                proxy_map, generated, reused = prepare_promptmatch_proxies(
+            try:
+                ensure_promptmatch_backend_loaded(model_label, progress)
+                _, feature_paths, image_features, failed_paths = ensure_promptmatch_feature_cache(
                     image_paths,
-                    cache_dir,
-                    progress_cb=_proxy_prep_cb,
+                    model_label,
+                    progress,
+                    reuse_desc="Reusing cached PromptMatch image embeddings for {count} images",
+                    encode_desc="Encoding PromptMatch image embeddings for {count} images...",
+                    progress_label="PromptMatch",
                 )
-                state["proxy_map"] = dict(proxy_map)
-                print(f"[PromptMatch] Proxy prep complete in {cache_dir}: {generated} new, {reused} reused")
+            except Exception as exc:
+                return empty_result(str(exc), method)
 
             pos_prompt = (pos_prompt or "").strip() or SEARCH_PROMPT
             neg_prompt = (neg_prompt or "").strip()
             pos_emb = state["backend"].encode_text(pos_prompt)
             neg_emb = state["backend"].encode_text(neg_prompt) if neg_prompt else None
-            if can_reuse_promptmatch_cache:
-                state["scores"] = score_promptmatch_cached_features(
-                    state["pm_cached_feature_paths"],
-                    state["pm_cached_image_features"],
-                    state["pm_cached_failed_paths"],
-                    pos_emb,
-                    neg_emb,
-                )
-            else:
-                progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(image_paths)} images with PromptMatch...")
-
-                def _cb(done, total, batch_size, oom_retry):
-                    label = f"PromptMatch {done}/{total} (autobatch {batch_size})"
-                    if oom_retry:
-                        label = f"PromptMatch OOM, retrying autobatch {batch_size}"
-                    progress(
-                        PROMPTMATCH_PROXY_PROGRESS_SHARE
-                        + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (done / max(total, 1))),
-                        desc=label,
-                    )
-
-                def _proxy_resolver(original_path):
-                    return proxy_map.get(original_path, original_path)
-
-                feature_paths, image_features, failed_paths = encode_all_promptmatch_images(
-                    image_paths,
-                    state["backend"],
-                    progress_cb=_cb,
-                    proxy_resolver=_proxy_resolver,
-                )
-                state["pm_cached_signature"] = image_signature
-                state["pm_cached_model_label"] = model_label
-                state["pm_cached_feature_paths"] = list(feature_paths)
-                state["pm_cached_image_features"] = image_features
-                state["pm_cached_failed_paths"] = list(failed_paths)
-                state["scores"] = score_promptmatch_cached_features(
-                    feature_paths,
-                    image_features,
-                    failed_paths,
-                    pos_emb,
-                    neg_emb,
-                )
+            state["scores"] = score_promptmatch_cached_features(
+                feature_paths,
+                image_features,
+                failed_paths,
+                pos_emb,
+                neg_emb,
+            )
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             next_main = clamp_threshold(main_threshold, pos_min, pos_max) if preserve_promptmatch_thresholds else pos_mid
             next_aux = clamp_threshold(aux_threshold, neg_min, neg_max) if preserve_promptmatch_thresholds else neg_mid
@@ -3761,6 +3915,121 @@ def create_app():
                 mark_state,
             gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+            promptmatch_model_status_json(),
+        )
+
+    def find_similar_images(folder, model_label, main_threshold, aux_threshold, progress=gr.Progress()):
+        folder = (folder or "").strip()
+        if not folder or not os.path.isdir(folder):
+            return (
+                gr.update(value=f"Invalid folder: {folder!r}"),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        image_paths = scan_image_paths(folder)
+        if not image_paths:
+            return (
+                gr.update(value=f"No images found in {folder}"),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        _, preview_fname = get_preview_image_path()
+        if not preview_fname:
+            return (
+                gr.update(value="Select a preview image first, then find similar images."),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        folder_name_map = {os.path.basename(path): path for path in image_paths}
+        query_path = folder_name_map.get(preview_fname)
+        if not query_path:
+            return (
+                gr.update(value=f"{preview_fname} is not part of the current folder, so similarity search cannot run."),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        previous_folder = state.get("source_dir")
+        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
+        folder_key = normalize_folder_identity(folder)
+        available_names = set(folder_name_map.keys())
+        preserved_overrides = {}
+        if previous_folder_key == folder_key:
+            preserved_overrides = {
+                fname: side
+                for fname, side in state.get("overrides", {}).items()
+                if fname in available_names
+            }
+
+        try:
+            sync_promptmatch_proxy_cache(folder)
+            ensure_promptmatch_backend_loaded(model_label, progress)
+            _, feature_paths, image_features, failed_paths = ensure_promptmatch_feature_cache(
+                image_paths,
+                model_label,
+                progress,
+                reuse_desc="Reusing cached similarity embeddings for {count} images",
+                encode_desc="Encoding similarity embeddings for {count} images...",
+                progress_label="Similarity",
+            )
+            similarity_scores = score_similarity_cached_features(
+                feature_paths,
+                image_features,
+                failed_paths,
+                query_path,
+            )
+        except Exception as exc:
+            return (
+                gr.update(value=f"Similarity search failed: {exc}"),
+                *current_view(main_threshold, aux_threshold),
+                gr.update(),
+                gr.update(),
+                promptmatch_model_status_json(),
+            )
+
+        state["method"] = METHOD_SIMILARITY
+        state["source_dir"] = folder
+        state["scores"] = similarity_scores
+        state["overrides"] = preserved_overrides
+        state["left_marked"] = []
+        state["right_marked"] = []
+        state["preview_fname"] = preview_fname
+        state["similarity_query_fname"] = preview_fname
+        state["similarity_model_label"] = model_label
+
+        pos_min, pos_max, pos_mid, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
+        next_main = pos_mid
+        safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
+        safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
+        status_text = f"Similarity search using {model_label} from {preview_fname}."
+        return (
+            gr.update(value=status_text),
+            *current_view(next_main, NEGATIVE_THRESHOLD),
+            gr.update(
+                minimum=safe_pos_min,
+                maximum=safe_pos_max,
+                value=next_main,
+                label=threshold_labels(METHOD_SIMILARITY)[0],
+            ),
+            gr.update(
+                minimum=safe_neg_min,
+                maximum=safe_neg_max,
+                value=NEGATIVE_THRESHOLD,
+                visible=False,
+                interactive=False,
+                label=threshold_labels(METHOD_SIMILARITY)[1],
+            ),
             promptmatch_model_status_json(),
         )
 
@@ -4036,6 +4305,12 @@ def create_app():
         state["right_marked"] = []
         return current_view(main_threshold, aux_threshold)
 
+    def clear_all_status(main_threshold, aux_threshold):
+        state["overrides"].clear()
+        state["left_marked"] = []
+        state["right_marked"] = []
+        return current_view(main_threshold, aux_threshold)
+
     def fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=None):
         left_targets, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = left_targets or right_targets
@@ -4156,7 +4431,7 @@ def create_app():
             return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
         try:
             cx, cy = sel.index
-            if geom["method"] == METHOD_PROMPTMATCH:
+            if geom["method"] in (METHOD_PROMPTMATCH, METHOD_SIMILARITY):
                 W = geom["W"]
                 PAD_L = geom["PAD_L"]
                 PAD_R = geom["PAD_R"]
@@ -4241,6 +4516,8 @@ def create_app():
             state["right_marked"] = [name for name in state.get("right_marked", []) if name not in moved_set]
             if state.get("preview_fname") in moved_set:
                 state["preview_fname"] = None
+            if state.get("similarity_query_fname") in moved_set:
+                clear_similarity_context()
         return (*current_view(main_threshold, aux_threshold), "\n".join(lines))
 
     css = """
@@ -4404,20 +4681,22 @@ def create_app():
         background:#92cf7b !important;
         background-image:none !important;
     }
-    #hy-clear-status, #hy-clear-status button {
+    #hy-clear-status, #hy-clear-status button,
+    #hy-clear-all-status, #hy-clear-all-status button {
         background:#d2b44a !important;
         background-image:none !important;
         border:1px solid #ecd98d !important;
         color:#2d2408 !important;
         font-weight:700 !important;
     }
-    #hy-clear-status:hover, #hy-clear-status button:hover {
+    #hy-clear-status:hover, #hy-clear-status button:hover,
+    #hy-clear-all-status:hover, #hy-clear-all-status button:hover {
         background:#dfc35a !important;
         background-image:none !important;
     }
     .sel-info p { font-family:monospace !important; font-size:1.08em !important; font-weight:700 !important; color:#aabb88 !important; text-align:center; word-break:break-all; }
     #hy-folder textarea, #hy-folder input { min-height:36px !important; font-size:.96rem !important; }
-    #hy-run-pm, #hy-run-ir, #hy-export, #hy-generate-prompt, #hy-insert-prompt { border-radius:6px !important; }
+    #hy-run-pm, #hy-run-ir, #hy-export, #hy-generate-prompt, #hy-find-similar, #hy-insert-prompt { border-radius:6px !important; }
     #hy-run-pm, #hy-run-pm button, #hy-run-ir, #hy-run-ir button, #hy-export, #hy-export button {
         background:#2f8f45 !important;
         background-image:none !important;
@@ -4426,7 +4705,7 @@ def create_app():
         font-weight:700 !important;
         box-shadow:0 0 0 1px rgba(25, 55, 30, 0.15) inset !important;
     }
-    #hy-run-pm button, #hy-run-ir button, #hy-export button, #hy-generate-prompt button, #hy-insert-prompt button {
+    #hy-run-pm button, #hy-run-ir button, #hy-export button, #hy-generate-prompt button, #hy-find-similar button, #hy-insert-prompt button {
         min-height:34px !important;
         border-radius:6px !important;
     }
@@ -4453,6 +4732,22 @@ def create_app():
     #hy-generate-prompt button:disabled {
         background:#254f86 !important;
         color:#d9e8ff !important;
+    }
+    #hy-find-similar, #hy-find-similar button {
+        background:#1f7b7b !important;
+        background-image:none !important;
+        border:1px solid #66caca !important;
+        color:#f0ffff !important;
+        font-weight:700 !important;
+        box-shadow:0 0 0 1px rgba(12, 55, 55, 0.22) inset !important;
+    }
+    #hy-find-similar:hover, #hy-find-similar button:hover {
+        background:#259191 !important;
+        background-image:none !important;
+    }
+    #hy-find-similar button:disabled {
+        background:#1b5f5f !important;
+        color:#d6efef !important;
     }
     #hy-left-gallery .preview .thumbnails,
     #hy-right-gallery .preview .thumbnails,
@@ -4631,6 +4926,38 @@ def create_app():
     .export-move-toggle {
         min-width:0 !important;
     }
+    .export-move-toggle label {
+        align-items:center !important;
+        gap:8px !important;
+        padding:6px 10px !important;
+        border:1px solid #9f7b2c !important;
+        border-radius:6px !important;
+        background:linear-gradient(180deg, rgba(70, 56, 18, 0.92), rgba(49, 38, 12, 0.92)) !important;
+        box-shadow:inset 0 1px 0 rgba(255, 226, 154, 0.08) !important;
+    }
+    .export-move-toggle .wrap {
+        width:100% !important;
+        max-width:none !important;
+    }
+    .export-move-toggle .checkbox,
+    .export-move-toggle .checkbox-wrap {
+        transform:scale(1.16) !important;
+        transform-origin:left center !important;
+    }
+    .export-move-toggle input[type="checkbox"] {
+        accent-color:#e1b24b !important;
+    }
+    .export-move-toggle span {
+        font-size:.8rem !important;
+        font-weight:800 !important;
+        letter-spacing:.06em !important;
+        color:#f1d78b !important;
+        text-transform:uppercase !important;
+    }
+    .export-move-toggle:hover label {
+        border-color:#d3a84a !important;
+        background:linear-gradient(180deg, rgba(84, 67, 23, 0.95), rgba(58, 45, 16, 0.95)) !important;
+    }
     .gallery-export-name {
         flex:0 1 156px !important;
         min-width:120px !important;
@@ -4748,7 +5075,7 @@ def create_app():
                         )
                         imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
 
-                with gr.Accordion("3. Prompt from preview image", open=False, elem_id="hy-acc-prompt"):
+                with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
                     with gr.Group():
                         prompt_generator_dd = gr.Dropdown(
                             choices=list(PROMPT_GENERATOR_CHOICES),
@@ -4757,6 +5084,7 @@ def create_app():
                             elem_id="hy-prompt-generator",
                         )
                         generate_prompt_btn = gr.Button("Generate prompt from preview", elem_id="hy-generate-prompt")
+                        find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
                         promptgen_status_md = gr.Markdown(
                             state["generated_prompt_status"],
                             elem_classes=["promptgen-status"],
@@ -4888,7 +5216,8 @@ def create_app():
                         move_right_btn = gr.Button("Move >>", elem_id="hy-move-right")
                         fit_threshold_btn = gr.Button("Fit thresh to filter image", elem_id="hy-fit-threshold")
                         move_left_btn = gr.Button("<< Move", elem_id="hy-move-left")
-                        clear_status_btn = gr.Button("Clear status", elem_id="hy-clear-status")
+                        clear_status_btn = gr.Button("Clear marked", elem_id="hy-clear-status")
+                        clear_all_status_btn = gr.Button("Clear all", elem_id="hy-clear-all-status")
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         right_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
 
@@ -4917,6 +5246,11 @@ def create_app():
             fn=generate_prompt_from_preview,
             inputs=[prompt_generator_dd, generated_prompt_tb, generated_prompt_detail_slider],
             outputs=[promptgen_status_md, generated_prompt_tb, generated_prompt_detail_slider],
+        )
+        find_similar_btn.click(
+            fn=find_similar_images,
+            inputs=[folder_input, model_dd, main_slider, aux_slider],
+            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, model_status_state],
         )
         generated_prompt_detail_slider.change(
             fn=update_generated_prompt_detail,
@@ -4986,6 +5320,7 @@ def create_app():
         fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
+        clear_all_status_btn.click(fn=clear_all_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
         hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
         export_btn.click(
             fn=export_files,
