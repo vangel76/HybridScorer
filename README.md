@@ -6,16 +6,19 @@ Current version: `2.0.0` (`v2.0.0` on GitHub releases)
 
 ## Latest Updates
 
-- **Find similar images**: Quickly locate images that look like a specific preview image, perfect for finding variations or duplicates.
-- **Find same person**: Easily search for all images of a specific person in your folder using advanced face recognition.
-- **Better interface**: Cleaner organization of preview actions with dedicated sections for similarity and prompt generation.
-- **Faster performance**: Improved handling of large folders with smoother interactions and faster face recognition searches.
-- **Easier threshold control**: Smarter defaults and better slider behavior make it easier to fine-tune your results.
-- **Visual improvements**: Histograms now clearly show which images are kept or rejected with color-coded sections.
-- **Local in-app caching**: On Windows, models and caches are now stored locally in the project folder instead of the official system folders on C: drive for easier management.
-- **Manual overrides**: Your custom selections now persist when rescoring the same folder.
-- **Export improvements**: Each bucket has its own export toggle and editable folder names.
-- **Move instead of copy**: Optional mode to move files instead of copying during export.
+- **Faster performance**: Large folders now process much faster
+- **Find similar images**: Locate images that look alike
+- **Find same person**: Search for images of the same person
+- **Prompt weighting**: Support for fragment weights in prompts
+- **Keyboard shortcuts**: Ctrl+Enter for faster scoring
+- **Better setup**: Easier installation on Windows and Linux
+- **Better interface**: Cleaner organization of tools
+- **Easier threshold control**: Smarter defaults and sliders
+- **Visual improvements**: Clearer histogram feedback
+- **Local caching**: Models stored in project folder
+- **Manual overrides**: Custom selections persist
+- **Export improvements**: Each bucket has its own export toggle
+- **Move instead of copy**: Optional file moving during export
 
 ## Screenshot
 
