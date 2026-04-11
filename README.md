@@ -2,7 +2,7 @@
 
 Stop manually digging through huge image folders. `HybridScorer` helps you score, sort, and cut large sets down fast with GPU-accelerated AI plus human review. Windows/Linux.
 
-Current version: `1.8.0` (`v1.8.0` on GitHub releases)
+Current version: `1.9.0` (`v1.9.0` on GitHub releases)
 
 ## Latest Updates
 

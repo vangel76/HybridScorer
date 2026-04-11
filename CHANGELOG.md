@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.9.8] - 2026-04-11
+
+- Greatly sped up large-folder PromptMatch scoring by parallelizing image decode/preprocess work, adding one-batch-ahead host prefetch, and tuning the PromptMatch autobatch logic with better GPU-tier heuristics.
+- Greatly sped up large-folder ImageReward scoring with the same style of threaded host preprocessing, prefetching, and a dedicated ImageReward autobatch policy.
+- Added per-batch timing logs for PromptMatch and ImageReward plus free-VRAM reporting, which makes it much easier to see whether a run is CPU-bound or GPU-bound.
+- Improved same-person search throughput by allowing more InsightFace workers when VRAM headroom exists, while keeping safer defaults for smaller 8 GB / 12 GB class GPUs.
+- Reduced same-person terminal noise by muting ONNX Runtime provider/session info spam and trimming the custom progress logging down to the useful parts.
+- Added an end-to-end same-person embedding-pass timing line so large face-search runs can be measured directly in seconds.
+- Fixed same-person follow-up regressions so the first `Find same person` run on a folder works correctly again and PromptMatch/ImageReward keep working normally afterward.
+- Thresholds are now remembered per mode, so returning to PromptMatch, ImageReward, Similarity, or SamePerson restores that mode's own last threshold instead of inheriting the previous mode's slider value.
+
 ## [1.9.0] - 2026-04-11
 
 - Added `Find similar images` as a new preview action that reuses cached PromptMatch image embeddings to rank the current folder by image-image similarity from the selected preview image.

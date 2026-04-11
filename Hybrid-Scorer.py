@@ -11,6 +11,7 @@ HybridSelector — PromptMatch + ImageReward in one UI
 """
 
 import base64
+import gc
 import io
 import json
 import math
@@ -22,6 +23,7 @@ import string
 import sys
 import tempfile
 import threading
+import time
 import types
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -163,7 +165,10 @@ DEFAULT_GENERATED_PROMPT_DETAIL = 2
 FACE_MODEL_PACK = "buffalo_l"
 FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
 FACE_DET_SIZE = (640, 640)
-FACE_EMBEDDING_MAX_WORKERS = 12
+FACE_EMBEDDING_ABSOLUTE_MAX_WORKERS = 16
+FACE_EMBEDDING_MIN_FREE_VRAM_GB = 2.5
+FACE_EMBEDDING_PER_WORKER_VRAM_GB = 0.6
+PROMPTMATCH_HOST_MAX_WORKERS = 16
 
 SEARCH_PROMPT = "ginger woman"
 NEGATIVE_PROMPT = ""
@@ -178,12 +183,18 @@ INPUT_FOLDER_NAME = "images"
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".avif")
 DEFAULT_BATCH_SIZE = 32
 MAX_BATCH_SIZE = 128
+IMAGEREWARD_BASE_BATCH_SIZE = 48
+IMAGEREWARD_MAX_BATCH_SIZE = 256
+IMAGEREWARD_BATCH_AGGRESSION = 1.5
+IMAGEREWARD_MIN_FREE_VRAM_GB = 2.0
 PROMPTMATCH_BASE_BATCH_SIZE = 64
 PROMPTMATCH_MAX_BATCH_SIZE = 384
-PROMPTMATCH_BATCH_AGGRESSION = 1.6
+PROMPTMATCH_BATCH_AGGRESSION = 1.75
+PROMPTMATCH_MIN_FREE_VRAM_GB = 3.0
 PROMPTMATCH_PROXY_MAX_EDGE = 1024
 PROMPTMATCH_PROXY_CACHE_ROOT = "HybridScorerPromptMatchProxyCache"
 PROMPTMATCH_PROXY_PROGRESS_SHARE = 0.25
+PROMPTMATCH_TORCH_THREAD_CAP = 8
 EXPLICIT_PROMPT_WEIGHT_RE = re.compile(r"\(([^()]*?)\s*:\s*([0-9]*\.?[0-9]+)\)")
 
 
@@ -552,7 +563,231 @@ def describe_insightface_source():
 def face_embedding_worker_count(total_images):
     if total_images <= 1:
         return 1
-    return max(1, min(FACE_EMBEDDING_MAX_WORKERS, total_images))
+
+    cpu_cap = os.cpu_count() or 1
+    hard_cap = max(1, min(FACE_EMBEDDING_ABSOLUTE_MAX_WORKERS, cpu_cap, total_images))
+
+    if not torch.cuda.is_available():
+        return 1
+
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    except RuntimeError:
+        return max(1, min(2, hard_cap))
+
+    free_gb = free_bytes / (1024 ** 3)
+    total_gb = total_bytes / (1024 ** 3)
+
+    # FaceAnalysis is loaded once per worker thread, so worker count needs to
+    # scale with available VRAM instead of a fixed magic number.
+    if free_gb <= FACE_EMBEDDING_MIN_FREE_VRAM_GB:
+        return 1
+
+    extra_budget_gb = max(0.0, free_gb - FACE_EMBEDDING_MIN_FREE_VRAM_GB)
+    vram_cap = 1 + int(extra_budget_gb / FACE_EMBEDDING_PER_WORKER_VRAM_GB)
+
+    # Keep smaller cards safe, but let larger cards actually use the GPU.
+    if total_gb < 9:
+        vram_cap = min(vram_cap, 4)
+    elif total_gb < 12:
+        vram_cap = min(vram_cap, 6)
+    elif total_gb < 16:
+        vram_cap = min(vram_cap, 8)
+    elif total_gb < 24:
+        vram_cap = min(vram_cap, 12)
+    else:
+        vram_cap = min(vram_cap, FACE_EMBEDDING_ABSOLUTE_MAX_WORKERS)
+
+    # If there is obviously abundant free memory, allow a little extra headroom
+    # beyond the simple per-worker estimate.
+    if total_gb >= 24 and free_gb >= 16:
+        vram_cap = max(vram_cap, min(FACE_EMBEDDING_ABSOLUTE_MAX_WORKERS, 12))
+    if total_gb >= 32 and free_gb >= 20:
+        vram_cap = max(vram_cap, min(FACE_EMBEDDING_ABSOLUTE_MAX_WORKERS, 14))
+
+    return max(1, min(hard_cap, vram_cap))
+
+
+def promptmatch_host_worker_count(total_items):
+    if total_items <= 1:
+        return 1
+    cpu_cap = os.cpu_count() or 1
+    return max(1, min(PROMPTMATCH_HOST_MAX_WORKERS, cpu_cap, total_items))
+
+
+def configure_torch_cpu_threads():
+    cpu_cap = os.cpu_count() or 1
+    desired = max(1, min(PROMPTMATCH_TORCH_THREAD_CAP, cpu_cap))
+    try:
+        current = torch.get_num_threads()
+    except Exception:
+        current = None
+    try:
+        if current is None or current != desired:
+            torch.set_num_threads(desired)
+    except Exception:
+        pass
+
+
+def load_promptmatch_rgb_images(valid_items):
+    if not valid_items:
+        return [], []
+
+    def _load_one(item):
+        original_path, scoring_path = item
+        with Image.open(scoring_path) as src_img:
+            rgb = src_img.convert("RGB")
+            rgb.load()
+        return item, rgb, None
+
+    loaded_items = []
+    pil_imgs = []
+    max_workers = promptmatch_host_worker_count(len(valid_items))
+    if max_workers <= 1:
+        results = [_load_one(item) for item in valid_items]
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(_load_one, valid_items))
+
+    for item, image, exc in results:
+        if exc is not None:
+            raise exc
+        loaded_items.append(item)
+        pil_imgs.append(image)
+    return loaded_items, pil_imgs
+
+
+def promptmatch_timing_ms(start_time):
+    return (time.perf_counter() - start_time) * 1000.0
+
+
+def current_free_vram_gb():
+    if not torch.cuda.is_available():
+        return None
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    except RuntimeError:
+        return None
+    return free_bytes / (1024 ** 3), total_bytes / (1024 ** 3)
+
+
+def promptmatch_log_batch_timing(prefix, batch_start, batch_end, total, timings):
+    parts = []
+    for key, value in timings.items():
+        if value is None:
+            continue
+        if key in {"free_vram_gb"}:
+            parts.append(f"{key}={value:.1f}GB")
+        else:
+            parts.append(f"{key}={value:.1f}ms")
+    if parts:
+        print(f"[PromptMatch] {prefix} {batch_start}-{batch_end}/{total}  " + "  ".join(parts))
+
+
+def imagereward_log_batch_timing(prefix, batch_start, batch_end, total, timings):
+    parts = []
+    for key, value in timings.items():
+        if value is None:
+            continue
+        if key in {"free_vram_gb"}:
+            parts.append(f"{key}={value:.1f}GB")
+        else:
+            parts.append(f"{key}={value:.1f}ms")
+    if parts:
+        print(f"[ImageReward] {prefix} {batch_start}-{batch_end}/{total}  " + "  ".join(parts))
+
+
+def prepare_promptmatch_loaded_batch(batch, proxy_resolver=None):
+    load_started = time.perf_counter()
+    valid_items = []
+    failed_paths = []
+
+    for original_path in batch:
+        try:
+            scoring_path = proxy_resolver(original_path) if proxy_resolver is not None else original_path
+            valid_items.append((original_path, scoring_path))
+        except Exception as exc:
+            print(f"  [WARN] {original_path}: {exc}")
+            failed_paths.append(original_path)
+
+    if not valid_items:
+        return [], [], failed_paths, {"load": promptmatch_timing_ms(load_started)}
+
+    try:
+        loaded_items, pil_imgs = load_promptmatch_rgb_images(valid_items)
+        return loaded_items, pil_imgs, failed_paths, {"load": promptmatch_timing_ms(load_started)}
+    except Exception as exc:
+        print(f"  [WARN] batch image-load error, retrying individually: {exc}")
+
+    loaded_items = []
+    pil_imgs = []
+    for original_path, scoring_path in valid_items:
+        try:
+            single_loaded, single_imgs = load_promptmatch_rgb_images([(original_path, scoring_path)])
+            loaded_items.extend(single_loaded)
+            pil_imgs.extend(single_imgs)
+        except Exception as single_exc:
+            print(f"  [WARN] {original_path}: {single_exc}")
+            failed_paths.append(original_path)
+
+    return loaded_items, pil_imgs, failed_paths, {"load": promptmatch_timing_ms(load_started)}
+
+
+def prepare_imagereward_loaded_batch(batch_paths, batch_source_paths, model):
+    load_started = time.perf_counter()
+
+    def _load_one(item):
+        scoring_path, source_path = item
+        with Image.open(scoring_path) as src_img:
+            rgb = src_img.convert("RGB")
+            rgb.load()
+        return scoring_path, source_path, rgb
+
+    pairs = list(zip(batch_paths, batch_source_paths))
+    workers = promptmatch_host_worker_count(len(pairs))
+    loaded_images = []
+    failed_entries = []
+
+    if workers <= 1:
+        for scoring_path, source_path in pairs:
+            try:
+                _, _, rgb = _load_one((scoring_path, source_path))
+                loaded_images.append((scoring_path, source_path, rgb))
+            except Exception as exc:
+                failed_entries.append((scoring_path, source_path, exc))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(_load_one, item): item for item in pairs}
+            for future in as_completed(future_map):
+                scoring_path, source_path = future_map[future]
+                try:
+                    _, _, rgb = future.result()
+                    loaded_images.append((scoring_path, source_path, rgb))
+                except Exception as exc:
+                    failed_entries.append((scoring_path, source_path, exc))
+
+    preprocess_started = time.perf_counter()
+
+    def _preprocess_one(entry):
+        scoring_path, source_path, rgb = entry
+        tensor = model.preprocess(rgb)
+        return scoring_path, source_path, tensor
+
+    preprocessed = []
+    if loaded_images:
+        preprocess_workers = promptmatch_host_worker_count(len(loaded_images))
+        if preprocess_workers <= 1:
+            for entry in loaded_images:
+                preprocessed.append(_preprocess_one(entry))
+        else:
+            with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
+                preprocessed = list(executor.map(_preprocess_one, loaded_images))
+
+    timings = {
+        "load": promptmatch_timing_ms(load_started),
+        "preprocess": promptmatch_timing_ms(preprocess_started),
+    }
+    return preprocessed, failed_entries, timings
 
 
 def describe_prompt_generator_source(generator_name):
@@ -703,7 +938,7 @@ def is_cuda_oom_error(exc):
     return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
 
 
-def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
+def get_auto_batch_size(device, backend=None, reference_vram_gb=32, mode=None):
     # Scale batch size from currently free VRAM so large models do not OOM instantly.
     if device != "cuda" or not torch.cuda.is_available():
         return DEFAULT_BATCH_SIZE
@@ -711,37 +946,122 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32):
     base_batch_size = DEFAULT_BATCH_SIZE
     max_batch_size = MAX_BATCH_SIZE
     aggression = 1.0
+    reserve_gb = 2.0
 
-    if backend is not None:
+    if mode == "imagereward":
+        base_batch_size = IMAGEREWARD_BASE_BATCH_SIZE
+        max_batch_size = IMAGEREWARD_MAX_BATCH_SIZE
+        aggression = IMAGEREWARD_BATCH_AGGRESSION
+        reference_vram_gb = 16
+        reserve_gb = IMAGEREWARD_MIN_FREE_VRAM_GB
+    elif backend is not None:
         base_batch_size = PROMPTMATCH_BASE_BATCH_SIZE
         max_batch_size = PROMPTMATCH_MAX_BATCH_SIZE
         aggression = PROMPTMATCH_BATCH_AGGRESSION
         reference_vram_gb = 20
+        reserve_gb = PROMPTMATCH_MIN_FREE_VRAM_GB
         if backend.backend == "openclip":
             model_name = backend._openclip_model.lower()
             if "bigg" in model_name or "xxlarge" in model_name:
                 reference_vram_gb = 32
+                max_batch_size = min(max_batch_size, 384)
             elif "large_d_320" in model_name:
                 reference_vram_gb = 28
+                max_batch_size = min(max_batch_size, 384)
             elif "vit-h" in model_name:
                 reference_vram_gb = 24
+                max_batch_size = min(max_batch_size, 448)
             elif "base_w" in model_name:
                 reference_vram_gb = 20
+                max_batch_size = min(max_batch_size, 288)
+            elif "vit-l" in model_name:
+                max_batch_size = min(max_batch_size, 288)
         elif backend.backend == "openai" and "@336px" in backend._clip_model:
             reference_vram_gb = 24
+            max_batch_size = min(max_batch_size, 384)
         elif backend.backend == "siglip":
             if "large" in backend._siglip_model:
                 reference_vram_gb = 24
+                max_batch_size = min(max_batch_size, 288)
             elif "base" in backend._siglip_model:
                 reference_vram_gb = 16
+                max_batch_size = min(max_batch_size, 256)
+            else:
+                max_batch_size = min(max_batch_size, 256)
 
     try:
-        free_bytes, _ = torch.cuda.mem_get_info()
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
     except RuntimeError:
         return DEFAULT_BATCH_SIZE
 
     free_gb = free_bytes / (1024 ** 3)
-    scaled = max(1, int(base_batch_size * aggression * (free_gb / float(reference_vram_gb))))
+    total_gb = total_bytes / (1024 ** 3)
+    effective_free_gb = max(0.0, free_gb - reserve_gb)
+
+    if mode == "imagereward":
+        if total_gb < 9:
+            base_batch_size = min(base_batch_size, 24)
+            max_batch_size = min(max_batch_size, 64)
+            reference_vram_gb = max(reference_vram_gb, 10)
+            aggression *= 0.9
+        elif total_gb < 12:
+            base_batch_size = min(base_batch_size, 32)
+            max_batch_size = min(max_batch_size, 96)
+            reference_vram_gb = max(reference_vram_gb, 12)
+        elif total_gb < 16:
+            base_batch_size = min(base_batch_size, 40)
+            max_batch_size = min(max_batch_size, 128)
+            reference_vram_gb = max(reference_vram_gb, 14)
+        elif total_gb < 24:
+            max_batch_size = min(max_batch_size, 192)
+
+        if free_gb >= 24:
+            aggression *= 1.2
+        elif free_gb >= 16:
+            aggression *= 1.1
+        elif free_gb >= 12:
+            aggression *= 1.05
+
+        if total_gb >= 16 and free_gb >= 12:
+            base_batch_size = max(base_batch_size, 64)
+        if total_gb >= 24 and free_gb >= 16:
+            base_batch_size = max(base_batch_size, 80)
+        if total_gb >= 32 and free_gb >= 24:
+            max_batch_size = min(max_batch_size, 256)
+    elif backend is not None:
+        if total_gb < 9:
+            base_batch_size = min(base_batch_size, 24)
+            max_batch_size = min(max_batch_size, 64)
+            reference_vram_gb = max(reference_vram_gb, 12)
+            aggression *= 0.85
+        elif total_gb < 12:
+            base_batch_size = min(base_batch_size, 32)
+            max_batch_size = min(max_batch_size, 96)
+            reference_vram_gb = max(reference_vram_gb, 14)
+            aggression *= 0.92
+        elif total_gb < 16:
+            base_batch_size = min(base_batch_size, 48)
+            max_batch_size = min(max_batch_size, 160)
+            reference_vram_gb = max(reference_vram_gb, 16)
+        elif total_gb < 24:
+            max_batch_size = min(max_batch_size, 256)
+
+        if free_gb >= 24:
+            aggression *= 1.15
+        elif free_gb >= 16:
+            aggression *= 1.08
+        elif free_gb >= 12:
+            aggression *= 1.04
+
+        if total_gb >= 24 and free_gb >= 16:
+            base_batch_size = max(base_batch_size, 96)
+        if total_gb >= 32 and free_gb >= 24:
+            base_batch_size = max(base_batch_size, 112)
+
+    if effective_free_gb <= 0:
+        return 1 if mode == "imagereward" else max(1, min(8, max_batch_size))
+
+    scaled = max(1, int(base_batch_size * aggression * (effective_free_gb / float(reference_vram_gb))))
 
     if scaled >= 32:
         scaled = max(32, (scaled // 16) * 16)
@@ -758,7 +1078,7 @@ def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=Non
     scores = {}
     total = len(image_paths)
     done = 0
-    batch_size = get_auto_batch_size(device)
+    batch_size = get_auto_batch_size(device, mode="imagereward")
     model = model.to(device).eval()
     print(f"[ImageReward] Using batch size {batch_size}")
     text_input = model.blip.tokenizer(
@@ -769,22 +1089,27 @@ def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=Non
         return_tensors="pt",
     ).to(device)
 
-    def _score_batch(batch_paths, batch_source_paths):
-        tensors = []
-        loaded = []
-        for scoring_path, source_path in zip(batch_paths, batch_source_paths):
-            try:
-                with Image.open(scoring_path) as src_img:
-                    tensors.append(model.preprocess(src_img.convert("RGB")))
-                loaded.append((scoring_path, source_path))
-            except Exception as exc:
-                print(f"  [WARN] {source_path}: {exc}")
-                scores[os.path.basename(source_path)] = {"score": -float("inf"), "path": source_path}
+    def _mark_failed(source_path):
+        scores[os.path.basename(source_path)] = {"score": -float("inf"), "path": source_path}
 
-        if not tensors:
-            return
+    def _submit_prefetch(executor, start_index, size):
+        if start_index >= total:
+            return None
+        next_paths = image_paths[start_index:start_index + size]
+        next_source_paths = source_paths[start_index:start_index + size] if source_paths is not None else next_paths
+        return executor.submit(prepare_imagereward_loaded_batch, next_paths, next_source_paths, model)
 
+    def _run_scoring_batch(loaded_tensors):
+        if not loaded_tensors:
+            return None, None
+
+        transfer_started = time.perf_counter()
+        loaded = [(scoring_path, source_path) for scoring_path, source_path, _ in loaded_tensors]
+        tensors = [tensor for _, _, tensor in loaded_tensors]
         images = torch.stack(tensors, dim=0).to(device)
+        transfer_ms = promptmatch_timing_ms(transfer_started)
+
+        gpu_started = time.perf_counter()
         image_embeds = model.blip.visual_encoder(images)
         image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=device)
         batch_len = image_embeds.shape[0]
@@ -798,38 +1123,112 @@ def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=Non
         txt_features = text_output.last_hidden_state[:, 0, :].float()
         rewards = model.mlp(txt_features)
         rewards = (rewards - model.mean) / model.std
+        if device == "cuda":
+            torch.cuda.synchronize()
+        gpu_ms = promptmatch_timing_ms(gpu_started)
+
+        copy_started = time.perf_counter()
         rewards = torch.squeeze(rewards, dim=-1).detach().cpu().tolist()
+        copy_ms = promptmatch_timing_ms(copy_started)
 
         for (_, source_path), reward in zip(loaded, rewards):
             scores[os.path.basename(source_path)] = {"score": float(reward), "path": source_path}
+        return loaded, {
+            "host_to_device": transfer_ms,
+            "gpu_encode": gpu_ms,
+            "device_to_host": copy_ms,
+        }
 
-    while done < total:
-        current_size = min(batch_size, total - done)
-        batch_paths = image_paths[done:done + current_size]
-        batch_source_paths = source_paths[done:done + current_size] if source_paths is not None else batch_paths
-        batch_filenames = [os.path.basename(p) for p in batch_source_paths]
+    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+    prefetched = None
+    prefetched_start = None
+    prefetched_size = None
+    prefetched_future = None
+    try:
+        while done < total:
+            current_size = min(batch_size, total - done)
+            batch_paths = image_paths[done:done + current_size]
+            batch_source_paths = source_paths[done:done + current_size] if source_paths is not None else batch_paths
+            batch_start = done + 1
+            batch_end = done + len(batch_paths)
+            print(f"[ImageReward] Batch {batch_start}-{batch_end}/{total} ({len(batch_paths)} images)")
 
-        try:
-            with torch.inference_mode():
-                _score_batch(batch_paths, batch_source_paths)
-            done += len(batch_paths)
-            yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
-        except Exception as exc:
-            if device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
-                batch_size = max(1, current_size // 2)
-                print(f"[ImageReward] CUDA OOM, retrying with batch size {batch_size}")
-                torch.cuda.empty_cache()
-                yield {"type": "oom", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
-                continue
+            prefetch_wait_ms = 0.0
+            if prefetched is not None and prefetched_start == done and prefetched_size == current_size:
+                loaded_tensors, failed_entries, load_timings = prefetched
+                prefetched = None
+            else:
+                wait_started = time.perf_counter()
+                loaded_tensors, failed_entries, load_timings = prepare_imagereward_loaded_batch(batch_paths, batch_source_paths, model)
+                prefetch_wait_ms = promptmatch_timing_ms(wait_started)
 
-            print(f"Batch error at {done}: {exc}", file=sys.stderr)
-            for filename, source_path in zip(batch_filenames, batch_source_paths):
-                scores[filename] = {"score": -float('inf'), "path": source_path}
-            done += len(batch_paths)
-            yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
-        finally:
-            if device == "cuda":
-                torch.cuda.empty_cache()
+            for _, source_path, exc in failed_entries:
+                print(f"  [WARN] {source_path}: {exc}")
+                _mark_failed(source_path)
+
+            next_start = done + len(batch_paths)
+            next_size = min(batch_size, total - next_start) if next_start < total else 0
+            prefetched_start = next_start if next_size else None
+            prefetched_size = next_size if next_size else None
+            prefetched_future = _submit_prefetch(prefetch_executor, next_start, next_size) if next_size else None
+
+            try:
+                with torch.inference_mode():
+                    _, run_timings = _run_scoring_batch(loaded_tensors)
+                vram_info = current_free_vram_gb()
+                imagereward_log_batch_timing(
+                    "score timings",
+                    batch_start,
+                    batch_end,
+                    total,
+                        {
+                            "load": load_timings.get("load"),
+                            "prefetch_wait": prefetch_wait_ms,
+                            "preprocess": load_timings.get("preprocess"),
+                            "host_to_device": run_timings.get("host_to_device") if run_timings else None,
+                            "gpu_encode": run_timings.get("gpu_encode") if run_timings else None,
+                            "device_to_host": run_timings.get("device_to_host") if run_timings else None,
+                            "free_vram_gb": vram_info[0] if vram_info is not None else None,
+                        },
+                    )
+                done += len(batch_paths)
+                yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
+            except Exception as exc:
+                if device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
+                    batch_size = max(1, current_size // 2)
+                    print(f"[ImageReward] CUDA OOM, retrying with batch size {batch_size}")
+                    if prefetched_future is not None:
+                        prefetched_future.cancel()
+                        prefetched_future = None
+                    prefetched = None
+                    prefetched_start = None
+                    prefetched_size = None
+                    prefetch_executor.shutdown(wait=False, cancel_futures=True)
+                    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+                    torch.cuda.empty_cache()
+                    yield {"type": "oom", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
+                    continue
+
+                print(f"Batch error at {done}: {exc}", file=sys.stderr)
+                for source_path in batch_source_paths:
+                    _mark_failed(source_path)
+                done += len(batch_paths)
+                yield {"type": "progress", "done": done, "total": total, "batch_size": batch_size, "scores": dict(scores)}
+            finally:
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+
+            if prefetched_future is not None:
+                prefetched = prefetched_future.result()
+                prefetched_future = None
+            else:
+                prefetched = None
+                prefetched_start = None
+                prefetched_size = None
+    finally:
+        if prefetched_future is not None:
+            prefetched_future.cancel()
+        prefetch_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def get_imagereward_penalty_offset(penalty_values):
@@ -999,17 +1398,60 @@ class ModelBackend:
             print(f"[PromptMatch] Weighted prompt fragments: {', '.join(summary)}")
         return self._blend_text_embeddings(weighted_prompts)
 
-    def encode_images_batch(self, pil_images):
+    def encode_images_batch(self, pil_images, return_timings=False):
+        timings = {}
         with torch.no_grad():
             if self.backend in ("openai", "openclip"):
-                tensors = torch.stack([self._preprocess(img) for img in pil_images]).to(self.device)
+                preprocess_started = time.perf_counter()
+                preprocess_workers = promptmatch_host_worker_count(len(pil_images))
+                if preprocess_workers <= 1:
+                    processed = [self._preprocess(img) for img in pil_images]
+                else:
+                    with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
+                        processed = list(executor.map(self._preprocess, pil_images))
+                timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
+                transfer_started = time.perf_counter()
+                tensors = torch.stack(processed).to(self.device)
                 tensors = tensors.to(next(self._model.parameters()).dtype)
+                timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
+                gpu_started = time.perf_counter()
                 feat = self._model.encode_image(tensors)
+            elif self.backend == "siglip":
+                preprocess_started = time.perf_counter()
+                preprocess_workers = promptmatch_host_worker_count(len(pil_images))
+
+                def _process_one(img):
+                    batch = self._processor(images=img, return_tensors="pt")
+                    return batch["pixel_values"].squeeze(0)
+
+                if preprocess_workers <= 1:
+                    processed = [_process_one(img) for img in pil_images]
+                else:
+                    with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
+                        processed = list(executor.map(_process_one, pil_images))
+                timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
+                transfer_started = time.perf_counter()
+                pixel_values = torch.stack(processed).to(self.device)
+                pixel_values = pixel_values.to(next(self._model.parameters()).dtype)
+                timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
+                gpu_started = time.perf_counter()
+                feat = self._model.get_image_features(pixel_values=pixel_values)
             else:
+                preprocess_started = time.perf_counter()
                 inputs = self._processor(images=pil_images, return_tensors="pt").to(self.device)
                 inputs["pixel_values"] = inputs["pixel_values"].to(next(self._model.parameters()).dtype)
+                timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
+                gpu_started = time.perf_counter()
                 feat = self._model.get_image_features(**inputs)
-            return F.normalize(feat.float(), dim=-1)
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            timings["gpu_encode"] = promptmatch_timing_ms(gpu_started)
+            normalize_started = time.perf_counter()
+            normalized = F.normalize(feat.float(), dim=-1)
+            timings["normalize"] = promptmatch_timing_ms(normalize_started)
+            if return_timings:
+                return normalized, timings
+            return normalized
 
 
 def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_resolver=None):
@@ -1020,78 +1462,146 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
     batch_size = get_auto_batch_size(backend.device, backend)
     print(f"[PromptMatch] Using batch size {batch_size}")
 
-    def _score_items(valid_items):
-        pil_imgs = []
-        loaded = []
-        for original_path, scoring_path in valid_items:
-            try:
-                with Image.open(scoring_path) as src_img:
-                    pil_imgs.append(src_img.convert("RGB"))
-                loaded.append((original_path, scoring_path))
-            except Exception as exc:
-                print(f"  [WARN] {original_path}: {exc}")
-                results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
-        if not pil_imgs:
-            return
+    def _mark_failed(original_path):
+        results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
 
-        feat = backend.encode_images_batch(pil_imgs)
-        pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
-        neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(loaded)
-        for (original_path, _), pos_score, neg_score in zip(loaded, pos_sims, neg_sims):
-            results[os.path.basename(original_path)] = {
-                "pos": float(pos_score),
-                "neg": float(neg_score) if neg_score is not None else None,
-                "path": original_path,
-                "failed": False,
-            }
+    def _submit_prefetch(executor, start_index, size):
+        if start_index >= total:
+            return None
+        batch = image_paths[start_index:start_index + size]
+        return executor.submit(prepare_promptmatch_loaded_batch, batch, proxy_resolver)
 
-    while done < total:
-        current_size = min(batch_size, total - done)
-        batch = image_paths[done:done + current_size]
-        batch_start = done + 1
-        batch_end = done + len(batch)
-        print(f"[PromptMatch] Batch {batch_start}-{batch_end}/{total} ({len(batch)} images)")
-        valid = []
-        for original_path in batch:
-            try:
-                scoring_path = proxy_resolver(original_path) if proxy_resolver is not None else original_path
-                valid.append((original_path, scoring_path))
-            except Exception as exc:
-                print(f"  [WARN] {original_path}: {exc}")
-                results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
-        if valid:
-            try:
-                _score_items(valid)
-            except Exception as exc:
-                if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
-                    batch_size = max(1, current_size // 2)
-                    print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
-                    torch.cuda.empty_cache()
-                    if progress_cb:
-                        progress_cb(done, total, batch_size, True)
-                    continue
-                print(f"  [WARN] batch error, retrying individually: {exc}")
-                recovered = 0
-                failed = 0
-                for item in valid:
-                    try:
-                        _score_items([item])
-                        original_path, _ = item
-                        if not results.get(os.path.basename(original_path), {}).get("failed", False):
+    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+    prefetched = None
+    prefetched_start = None
+    prefetched_size = None
+    prefetched_future = None
+    try:
+        while done < total:
+            current_size = min(batch_size, total - done)
+            batch = image_paths[done:done + current_size]
+            batch_start = done + 1
+            batch_end = done + len(batch)
+            print(f"[PromptMatch] Batch {batch_start}-{batch_end}/{total} ({len(batch)} images)")
+
+            prefetch_wait_ms = 0.0
+            if prefetched is not None and prefetched_start == done and prefetched_size == current_size:
+                loaded, pil_imgs, failed_paths, load_timings = prefetched
+                prefetched = None
+            else:
+                load_started = time.perf_counter()
+                loaded, pil_imgs, failed_paths, load_timings = prepare_promptmatch_loaded_batch(batch, proxy_resolver)
+                prefetch_wait_ms = promptmatch_timing_ms(load_started)
+
+            for original_path in failed_paths:
+                _mark_failed(original_path)
+
+            next_start = done + len(batch)
+            next_size = min(batch_size, total - next_start) if next_start < total else 0
+            prefetched_start = next_start if next_size else None
+            prefetched_size = next_size if next_size else None
+            prefetched_future = _submit_prefetch(prefetch_executor, next_start, next_size) if next_size else None
+
+            if pil_imgs:
+                try:
+                    encode_started = time.perf_counter()
+                    feat, encode_timings = backend.encode_images_batch(pil_imgs, return_timings=True)
+                    score_started = time.perf_counter()
+                    pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
+                    neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(loaded)
+                    for (original_path, _), pos_score, neg_score in zip(loaded, pos_sims, neg_sims):
+                        results[os.path.basename(original_path)] = {
+                            "pos": float(pos_score),
+                            "neg": float(neg_score) if neg_score is not None else None,
+                            "path": original_path,
+                            "failed": False,
+                        }
+                    score_ms = promptmatch_timing_ms(score_started)
+                    total_encode_ms = promptmatch_timing_ms(encode_started)
+                    vram_info = current_free_vram_gb()
+                    promptmatch_log_batch_timing(
+                        "score timings",
+                        batch_start,
+                        batch_end,
+                        total,
+                        {
+                            "load": load_timings.get("load"),
+                            "prefetch_wait": prefetch_wait_ms,
+                            "preprocess": encode_timings.get("preprocess"),
+                            "host_to_device": encode_timings.get("host_to_device"),
+                            "gpu_encode": encode_timings.get("gpu_encode"),
+                            "normalize": encode_timings.get("normalize"),
+                            "score_merge": score_ms,
+                            "encode_total": total_encode_ms,
+                            "free_vram_gb": vram_info[0] if vram_info is not None else None,
+                        },
+                    )
+                except Exception as exc:
+                    if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
+                        batch_size = max(1, current_size // 2)
+                        print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
+                        if prefetched_future is not None:
+                            prefetched_future.cancel()
+                            prefetched_future = None
+                        prefetched = None
+                        prefetched_start = None
+                        prefetched_size = None
+                        prefetch_executor.shutdown(wait=False, cancel_futures=True)
+                        prefetch_executor = ThreadPoolExecutor(max_workers=1)
+                        torch.cuda.empty_cache()
+                        if progress_cb:
+                            progress_cb(done, total, batch_size, True)
+                        continue
+                    print(f"  [WARN] batch error, retrying individually: {exc}")
+                    recovered = 0
+                    failed = 0
+                    for original_path, _ in loaded:
+                        try:
+                            single_loaded, single_imgs, single_failed = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
+                            for failed_path in single_failed:
+                                _mark_failed(failed_path)
+                            if not single_imgs:
+                                failed += 1
+                                continue
+                            single_feat = backend.encode_images_batch(single_imgs)
+                            pos_score = float((single_feat @ pos_emb.T).squeeze().item())
+                            neg_score = float((single_feat @ neg_emb.T).squeeze().item()) if neg_emb is not None else None
+                            results[os.path.basename(original_path)] = {
+                                "pos": pos_score,
+                                "neg": neg_score,
+                                "path": original_path,
+                                "failed": False,
+                            }
                             recovered += 1
-                        else:
+                        except Exception as single_exc:
+                            print(f"  [WARN] single-image error for {original_path}: {single_exc}")
+                            _mark_failed(original_path)
                             failed += 1
-                    except Exception as single_exc:
-                        original_path, _ = item
-                        print(f"  [WARN] single-image error for {original_path}: {single_exc}")
-                        results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
-                        failed += 1
-                print(f"[PromptMatch] Individual retry result: {recovered} recovered, {failed} failed")
-            if backend.device == "cuda":
-                torch.cuda.empty_cache()
-        done += len(batch)
-        if progress_cb:
-            progress_cb(done, total, batch_size, False)
+                    print(f"[PromptMatch] Individual retry result: {recovered} recovered, {failed} failed")
+                if backend.device == "cuda":
+                    torch.cuda.empty_cache()
+
+            done += len(batch)
+            if progress_cb:
+                progress_cb(done, total, batch_size, False)
+
+            if prefetched_future is not None:
+                prefetch_result_started = time.perf_counter()
+                prefetched = prefetched_future.result()
+                if prefetched and len(prefetched) >= 4:
+                    loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch = prefetched
+                    timing_prefetch = dict(timing_prefetch or {})
+                    timing_prefetch["prefetch_ready_wait"] = promptmatch_timing_ms(prefetch_result_started)
+                    prefetched = (loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch)
+                prefetched_future = None
+            else:
+                prefetched = None
+                prefetched_start = None
+                prefetched_size = None
+    finally:
+        if prefetched_future is not None:
+            prefetched_future.cancel()
+        prefetch_executor.shutdown(wait=False, cancel_futures=True)
     return results
 
 
@@ -1111,73 +1621,138 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
             failed_seen.add(original_path)
             failed_paths.append(original_path)
 
-    def _encode_items(valid_items):
-        pil_imgs = []
-        loaded = []
-        for original_path, scoring_path in valid_items:
-            try:
-                with Image.open(scoring_path) as src_img:
-                    pil_imgs.append(src_img.convert("RGB"))
-                loaded.append((original_path, scoring_path))
-            except Exception as exc:
-                print(f"  [WARN] {original_path}: {exc}")
-                _mark_failed(original_path)
-        if not pil_imgs:
-            return
+    def _submit_prefetch(executor, start_index, size):
+        if start_index >= total:
+            return None
+        batch = image_paths[start_index:start_index + size]
+        return executor.submit(prepare_promptmatch_loaded_batch, batch, proxy_resolver)
 
-        feat = backend.encode_images_batch(pil_imgs).detach().cpu()
-        for (original_path, _), row in zip(loaded, feat):
-            feature_paths.append(original_path)
-            feature_rows.append(row)
+    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+    prefetched = None
+    prefetched_start = None
+    prefetched_size = None
+    prefetched_future = None
+    try:
+        while done < total:
+            current_size = min(batch_size, total - done)
+            batch = image_paths[done:done + current_size]
+            batch_start = done + 1
+            batch_end = done + len(batch)
+            print(f"[PromptMatch] Batch {batch_start}-{batch_end}/{total} ({len(batch)} images)")
 
-    while done < total:
-        current_size = min(batch_size, total - done)
-        batch = image_paths[done:done + current_size]
-        batch_start = done + 1
-        batch_end = done + len(batch)
-        print(f"[PromptMatch] Batch {batch_start}-{batch_end}/{total} ({len(batch)} images)")
-        valid = []
-        for original_path in batch:
-            try:
-                scoring_path = proxy_resolver(original_path) if proxy_resolver is not None else original_path
-                valid.append((original_path, scoring_path))
-            except Exception as exc:
-                print(f"  [WARN] {original_path}: {exc}")
+            prefetch_wait_ms = 0.0
+            if prefetched is not None and prefetched_start == done and prefetched_size == current_size:
+                loaded, pil_imgs, batch_failed, load_timings = prefetched
+                prefetched = None
+            else:
+                load_started = time.perf_counter()
+                loaded, pil_imgs, batch_failed, load_timings = prepare_promptmatch_loaded_batch(batch, proxy_resolver)
+                prefetch_wait_ms = promptmatch_timing_ms(load_started)
+
+            for original_path in batch_failed:
                 _mark_failed(original_path)
-        if valid:
-            try:
-                _encode_items(valid)
-            except Exception as exc:
-                if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
-                    batch_size = max(1, current_size // 2)
-                    print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
-                    torch.cuda.empty_cache()
-                    if progress_cb:
-                        progress_cb(done, total, batch_size, True)
-                    continue
-                print(f"  [WARN] batch error, retrying individually: {exc}")
-                recovered = 0
-                failed = 0
-                for item in valid:
-                    original_path, _ = item
-                    before_count = len(feature_paths)
-                    before_failed = len(failed_paths)
-                    try:
-                        _encode_items([item])
-                        if len(feature_paths) > before_count:
-                            recovered += 1
-                        elif len(failed_paths) > before_failed:
+
+            next_start = done + len(batch)
+            next_size = min(batch_size, total - next_start) if next_start < total else 0
+            prefetched_start = next_start if next_size else None
+            prefetched_size = next_size if next_size else None
+            prefetched_future = _submit_prefetch(prefetch_executor, next_start, next_size) if next_size else None
+
+            if pil_imgs:
+                try:
+                    encode_started = time.perf_counter()
+                    feat, encode_timings = backend.encode_images_batch(pil_imgs, return_timings=True)
+                    copy_started = time.perf_counter()
+                    feat = feat.detach().cpu()
+                    for (original_path, _), row in zip(loaded, feat):
+                        feature_paths.append(original_path)
+                        feature_rows.append(row)
+                    copy_ms = promptmatch_timing_ms(copy_started)
+                    total_encode_ms = promptmatch_timing_ms(encode_started)
+                    vram_info = current_free_vram_gb()
+                    promptmatch_log_batch_timing(
+                        "cache timings",
+                        batch_start,
+                        batch_end,
+                        total,
+                        {
+                            "load": load_timings.get("load"),
+                            "prefetch_wait": prefetch_wait_ms,
+                            "preprocess": encode_timings.get("preprocess"),
+                            "host_to_device": encode_timings.get("host_to_device"),
+                            "gpu_encode": encode_timings.get("gpu_encode"),
+                            "normalize": encode_timings.get("normalize"),
+                            "device_to_host": copy_ms,
+                            "encode_total": total_encode_ms,
+                            "free_vram_gb": vram_info[0] if vram_info is not None else None,
+                        },
+                    )
+                except Exception as exc:
+                    if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
+                        batch_size = max(1, current_size // 2)
+                        print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
+                        if prefetched_future is not None:
+                            prefetched_future.cancel()
+                            prefetched_future = None
+                        prefetched = None
+                        prefetched_start = None
+                        prefetched_size = None
+                        prefetch_executor.shutdown(wait=False, cancel_futures=True)
+                        prefetch_executor = ThreadPoolExecutor(max_workers=1)
+                        torch.cuda.empty_cache()
+                        if progress_cb:
+                            progress_cb(done, total, batch_size, True)
+                        continue
+                    print(f"  [WARN] batch error, retrying individually: {exc}")
+                    recovered = 0
+                    failed = 0
+                    for original_path, _ in loaded:
+                        before_count = len(feature_paths)
+                        before_failed = len(failed_paths)
+                        try:
+                            single_loaded, single_imgs, single_failed = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
+                            for failed_path in single_failed:
+                                _mark_failed(failed_path)
+                            if not single_imgs:
+                                failed += 1
+                                continue
+                            single_feat = backend.encode_images_batch(single_imgs).detach().cpu()
+                            for (_, _), row in zip(single_loaded, single_feat):
+                                feature_paths.append(original_path)
+                                feature_rows.append(row)
+                            if len(feature_paths) > before_count:
+                                recovered += 1
+                            elif len(failed_paths) > before_failed:
+                                failed += 1
+                        except Exception as single_exc:
+                            print(f"  [WARN] single-image error for {original_path}: {single_exc}")
+                            _mark_failed(original_path)
                             failed += 1
-                    except Exception as single_exc:
-                        print(f"  [WARN] single-image error for {original_path}: {single_exc}")
-                        _mark_failed(original_path)
-                        failed += 1
-                print(f"[PromptMatch] Individual retry result: {recovered} recovered, {failed} failed")
-            if backend.device == "cuda":
-                torch.cuda.empty_cache()
-        done += len(batch)
-        if progress_cb:
-            progress_cb(done, total, batch_size, False)
+                    print(f"[PromptMatch] Individual retry result: {recovered} recovered, {failed} failed")
+                if backend.device == "cuda":
+                    torch.cuda.empty_cache()
+
+            done += len(batch)
+            if progress_cb:
+                progress_cb(done, total, batch_size, False)
+
+            if prefetched_future is not None:
+                prefetch_result_started = time.perf_counter()
+                prefetched = prefetched_future.result()
+                if prefetched and len(prefetched) >= 4:
+                    loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch = prefetched
+                    timing_prefetch = dict(timing_prefetch or {})
+                    timing_prefetch["prefetch_ready_wait"] = promptmatch_timing_ms(prefetch_result_started)
+                    prefetched = (loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch)
+                prefetched_future = None
+            else:
+                prefetched = None
+                prefetched_start = None
+                prefetched_size = None
+    finally:
+        if prefetched_future is not None:
+            prefetched_future.cancel()
+        prefetch_executor.shutdown(wait=False, cancel_futures=True)
 
     feature_tensor = torch.stack(feature_rows) if feature_rows else torch.empty((0, 0), dtype=torch.float32)
     return feature_paths, feature_tensor, failed_paths
@@ -1772,6 +2347,7 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
 
 def create_app():
     require_cuda()
+    configure_torch_cpu_threads()
     device = "cuda"
     script_dir = os.path.dirname(os.path.abspath(__file__))
     source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)
@@ -1837,6 +2413,12 @@ def create_app():
         "similarity_model_label": None,
         "sameperson_query_fname": None,
         "sameperson_model_label": None,
+        "mode_thresholds": {
+            METHOD_PROMPTMATCH: {"main": None, "aux": None},
+            METHOD_IMAGEREWARD: {"main": None, "aux": None},
+            METHOD_SIMILARITY: {"main": None, "aux": None},
+            METHOD_SAMEPERSON: {"main": None, "aux": None},
+        },
         "zoom_columns": 5,
     }
 
@@ -1875,6 +2457,23 @@ def create_app():
         state["similarity_model_label"] = None
         state["sameperson_query_fname"] = None
         state["sameperson_model_label"] = None
+
+    def remember_mode_thresholds(method, main_threshold, aux_threshold):
+        if method not in state["mode_thresholds"]:
+            state["mode_thresholds"][method] = {}
+        state["mode_thresholds"][method]["main"] = float(main_threshold)
+        state["mode_thresholds"][method]["aux"] = float(aux_threshold)
+
+    def recalled_mode_thresholds(method, default_main, default_aux):
+        entry = state.get("mode_thresholds", {}).get(method) or {}
+        main_value = entry.get("main")
+        aux_value = entry.get("aux")
+        has_saved = (main_value is not None) or (aux_value is not None)
+        if main_value is None:
+            main_value = default_main
+        if aux_value is None:
+            aux_value = default_aux
+        return float(main_value), float(aux_value), bool(has_saved)
 
     def tooltip_head(pairs):
         mapping = json.dumps(pairs)
@@ -3100,6 +3699,41 @@ def create_app():
             )
         return state["ir_model"]
 
+    def release_inactive_gpu_models(target_method):
+        released = []
+
+        def _clear_torch_model(model):
+            if model is None:
+                return
+            try:
+                model.to("cpu")
+            except Exception:
+                pass
+
+        if target_method != METHOD_IMAGEREWARD and state.get("ir_model") is not None:
+            _clear_torch_model(state.get("ir_model"))
+            state["ir_model"] = None
+            released.append("ImageReward")
+
+        if target_method != METHOD_SAMEPERSON and state.get("face_backend") is not None:
+            state["face_backend"] = None
+            state["face_backend_builder"] = None
+            state["face_backend_worker_local"] = None
+            released.append("InsightFace")
+
+        if state.get("prompt_backend_cache"):
+            for backend_name, cached in list((state.get("prompt_backend_cache") or {}).items()):
+                model = cached.get("model") if isinstance(cached, dict) else None
+                _clear_torch_model(model)
+                released.append(backend_name)
+            state["prompt_backend_cache"] = {}
+
+        if released:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"[GPU] Released inactive models: {', '.join(released)}")
+
     def ensure_florence_model():
         cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_FLORENCE)
         if cached and cached.get("model") is not None and cached.get("processor") is not None:
@@ -3521,6 +4155,7 @@ def create_app():
 
     def current_view(main_threshold, aux_threshold):
         # Single place that rebuilds gallery contents, status text, histogram, and marked-state JSON.
+        remember_mode_thresholds(state["method"], main_threshold, aux_threshold)
         zoom_columns = int(state.get("zoom_columns", 5))
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
@@ -4007,6 +4642,13 @@ def create_app():
                     "InsightFace runtime is missing. Re-run the normal setup script to install onnxruntime-gpu."
                 ) from exc
 
+            try:
+                # Silence ONNX Runtime's info-level provider/session spam from
+                # each worker-local InsightFace initialization.
+                ort.set_default_logger_severity(3)
+            except Exception:
+                pass
+
             available_providers = set(ort.get_available_providers())
             if "CUDAExecutionProvider" not in available_providers:
                 raise RuntimeError(
@@ -4148,6 +4790,14 @@ def create_app():
         total = len(image_paths)
         worker_count = face_embedding_worker_count(total)
         results = {}
+        worker_desc = f"Extracting face embeddings 0/{total} (workers {worker_count})"
+        extraction_started = time.perf_counter()
+        vram_info = current_free_vram_gb()
+        if vram_info is not None:
+            print(
+                f"[InsightFace] Using {worker_count} workers "
+                f"(free_vram={vram_info[0]:.1f}GB)"
+            )
 
         def worker_backend():
             local_state = state.get("face_backend_worker_local")
@@ -4184,7 +4834,7 @@ def create_app():
                 return image_path, None, str(exc) or "Face analysis failed."
 
         completed = 0
-        progress(0, desc=f"Extracting face embeddings 0/{total} (workers {worker_count})")
+        progress(0, desc=worker_desc)
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_map = {executor.submit(extract_one, image_path): image_path for image_path in image_paths}
             for future in as_completed(future_map):
@@ -4217,6 +4867,11 @@ def create_app():
         state["face_cached_feature_paths"] = list(feature_paths)
         state["face_cached_embeddings"] = embedding_tensor
         state["face_cached_failures"] = dict(failures)
+        print(
+            f"[InsightFace] Face embedding pass finished in "
+            f"{(time.perf_counter() - extraction_started):.2f}s "
+            f"for {total} images with {worker_count} workers"
+        )
         return image_signature, feature_paths, embedding_tensor, failures
 
     def score_similarity_cached_features(feature_paths, image_features, failed_paths, query_path):
@@ -4296,6 +4951,13 @@ def create_app():
         if not folder or not os.path.isdir(folder):
             return empty_result(f"Invalid folder: {folder!r}", method)
         main_label, aux_label, _, _ = threshold_labels(method)
+        previous_method = state.get("method")
+        recalled_main, recalled_aux, has_recalled = recalled_mode_thresholds(method, main_threshold, aux_threshold)
+        requested_main = float(main_threshold)
+        requested_aux = float(aux_threshold)
+        if previous_method != method and has_recalled:
+            requested_main = recalled_main
+            requested_aux = recalled_aux
 
         image_paths = scan_image_paths(folder)
         if not image_paths:
@@ -4363,10 +5025,14 @@ def create_app():
                 neg_emb,
             )
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
-            next_main = clamp_threshold(main_threshold, pos_min, pos_max) if preserve_promptmatch_thresholds else pos_mid
-            next_aux = clamp_threshold(aux_threshold, neg_min, neg_max) if preserve_promptmatch_thresholds else neg_mid
-            safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, main_threshold, next_main)
-            safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, aux_threshold, next_aux)
+            if preserve_promptmatch_thresholds or (previous_method != METHOD_PROMPTMATCH and has_recalled):
+                next_main = clamp_threshold(requested_main, pos_min, pos_max)
+                next_aux = clamp_threshold(requested_aux, neg_min, neg_max)
+            else:
+                next_main = pos_mid
+                next_aux = neg_mid
+            safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, requested_main, next_main)
+            safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, requested_aux, next_aux)
             state["last_scored_method"] = METHOD_PROMPTMATCH
             state["last_scored_folder_key"] = folder_key
             state["last_promptmatch_model_label"] = model_label
@@ -4400,8 +5066,11 @@ def create_app():
             progress,
         )
         lo, hi, mid = imagereward_slider_range(state["scores"])
-        next_main = clamp_threshold(main_threshold, lo, hi) if preserve_imagereward_threshold else mid
-        safe_lo, safe_hi = expand_slider_bounds(lo, hi, main_threshold, next_main)
+        if preserve_imagereward_threshold or (previous_method != METHOD_IMAGEREWARD and has_recalled):
+            next_main = clamp_threshold(requested_main, lo, hi)
+        else:
+            next_main = mid
+        safe_lo, safe_hi = expand_slider_bounds(lo, hi, requested_main, next_main)
         state["last_scored_method"] = METHOD_IMAGEREWARD
         state["last_scored_folder_key"] = folder_key
         left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
@@ -4423,6 +5092,7 @@ def create_app():
 
     def find_similar_images(folder, model_label, main_threshold, aux_threshold, progress=gr.Progress()):
         folder = (folder or "").strip()
+        recalled_main, _, has_recalled = recalled_mode_thresholds(METHOD_SIMILARITY, main_threshold, aux_threshold)
         if not folder or not os.path.isdir(folder):
             return (
                 gr.update(value=f"Invalid folder: {folder!r}"),
@@ -4524,7 +5194,8 @@ def create_app():
 
         pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
         _, default_top_n = similarity_topn_defaults(state["scores"])
-        next_main = threshold_for_percentile(METHOD_SIMILARITY, state["scores"], default_top_n)
+        default_main = threshold_for_percentile(METHOD_SIMILARITY, state["scores"], default_top_n)
+        next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
         status_text = f"Similarity search using {model_label} from {preview_fname}."
@@ -4552,6 +5223,7 @@ def create_app():
 
     def find_same_person_images(folder, main_threshold, aux_threshold, progress=gr.Progress()):
         folder = (folder or "").strip()
+        recalled_main, _, has_recalled = recalled_mode_thresholds(METHOD_SAMEPERSON, main_threshold, aux_threshold)
         if not folder or not os.path.isdir(folder):
             return (
                 gr.update(value=f"Invalid folder: {folder!r}"),
@@ -4645,7 +5317,8 @@ def create_app():
 
         pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
         _, default_top_n = similarity_topn_defaults(state["scores"])
-        next_main = threshold_for_percentile(METHOD_SAMEPERSON, state["scores"], default_top_n)
+        default_main = threshold_for_percentile(METHOD_SAMEPERSON, state["scores"], default_top_n)
+        next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
         status_text = f"Same-person search using {FACE_MODEL_LABEL} from {preview_fname}."
