@@ -1,13 +1,30 @@
 """
-HybridSelector — PromptMatch + ImageReward in one UI
-----------------------------------------------------
-• Switch scoring method inside one app
-• PromptMatch: positive + optional negative prompt with CLIP-family models
-• ImageReward: positive aesthetic prompt with optional penalty prompt
-• Manual move between buckets
-• Lossless export into method-specific output folders
-• AI note: also read blueprint.txt in this repo root for extra local context and review guidance.
-• Created by vangel
+HybridScorer — image triage
+
+Single-file Gradio app (`Hybrid-Scorer.py`)
+
+Modes:
+- PromptMatch → CLIP-based text-image similarity
+- ImageReward → aesthetic/preference scoring
+- Similarity → image-image search from preview
+- SamePerson → face search from preview
+- LLM Search → PromptMatch shortlist + local vision-language rerank
+
+Core:
+- manual bucket overrides
+- preview-driven actions
+- prompt generation from preview
+- cached scoring + proxy images
+- export to structured folders
+
+See:
+- README.md
+- docs/architecture.md
+- docs/behavior-notes.md
+
+Important:
+- callback return signatures must match exactly
+- UI behavior may live in Python and injected JS
 """
 
 import base64
@@ -130,6 +147,7 @@ def get_cache_config():
 # High-level app modes and default thresholds/prompts.
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
+METHOD_LLMSEARCH = "LLM Search"
 METHOD_SIMILARITY = "Similarity"
 METHOD_SAMEPERSON = "SamePerson"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
@@ -162,6 +180,11 @@ JOYCAPTION_GGUF_FILENAME = "Llama-Joycaption-Beta-One-Hf-Llava-Q4_K_M.gguf"
 JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-f16.gguf"
 JOYCAPTION_GGUF_SETUP_HINT = "./setup_update-linux.sh"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
+DEFAULT_LLMSEARCH_BACKEND = PROMPT_GENERATOR_JOYCAPTION
+LLMSEARCH_DEFAULT_PROMPT = "woman in red dress, cinematic portrait, soft warm light"
+LLMSEARCH_SHORTLIST_DEFAULT = 64
+LLMSEARCH_SHORTLIST_MIN = 8
+LLMSEARCH_SHORTLIST_MAX = 128
 FACE_MODEL_PACK = "buffalo_l"
 FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
 FACE_DET_SIZE = (640, 640)
@@ -802,6 +825,18 @@ def describe_prompt_generator_source(generator_name):
 
 def prompt_generator_supports_torch_cleanup(generator_name):
     return generator_name in {PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION}
+
+
+def llmsearch_backend_choices():
+    return list(PROMPT_GENERATOR_CHOICES)
+
+
+def llmsearch_backend_label(generator_name):
+    return generator_name
+
+
+def describe_llmsearch_backend_source(generator_name):
+    return describe_prompt_generator_source(generator_name)
 
 
 def cuda_prefers_bfloat16():
@@ -1908,7 +1943,7 @@ def uses_similarity_topn(method):
 
 
 def uses_pos_similarity_scores(method):
-    return method in (METHOD_PROMPTMATCH, METHOD_SIMILARITY, METHOD_SAMEPERSON)
+    return method in (METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_SIMILARITY, METHOD_SAMEPERSON)
 
 
 def export_destination(folder, filename):
@@ -1916,6 +1951,13 @@ def export_destination(folder, filename):
 
 
 def threshold_labels(method):
+    if method == METHOD_LLMSEARCH:
+        return (
+            "Minimum LLM rerank score to keep (higher = fewer kept)",
+            "Negative score is unused for LLM rerank search",
+            "Minimum LLM rerank score",
+            "Negative score",
+        )
     if method == METHOD_SIMILARITY:
         return (
             "Minimum similarity to keep (higher = fewer kept)",
@@ -2001,6 +2043,8 @@ def threshold_for_percentile(method, scores, percentile):
 
 
 def percentile_slider_label(method):
+    if method == METHOD_LLMSEARCH:
+        return "Or keep top N%"
     if method == METHOD_SIMILARITY:
         return "Show the N most similar"
     if method == METHOD_SAMEPERSON:
@@ -2270,6 +2314,36 @@ def extract_joycaption_caption(text):
     return text.strip()
 
 
+def llmsearch_joycaption_system_prompt():
+    return (
+        "You are reranking images for a text-to-image style search. "
+        "Turn each image into a compact searchable prompt line that helps CLIP-style text-image scoring decide whether the image matches the user's request. "
+        "Describe only concrete visible content. "
+        "Prioritize subject identity, clothing, pose, composition, setting, lighting, mood, colors, camera framing, and standout objects when clearly visible. "
+        "Emphasize details that directly support or contradict the search request. "
+        "Return exactly one compact comma-separated prompt line. "
+        "Do not explain reasoning, do not mention confidence, do not use bullets, and do not use meta lead-ins like 'This image shows'."
+    )
+
+
+def build_llmsearch_joycaption_user_prompt(query_text):
+    normalized_query = normalize_prompt_text(query_text or "")
+    return (
+        "User search prompt: "
+        f"{normalized_query}. "
+        "Write a single compact comma-separated prompt line for this image that would be useful for matching against that search prompt. "
+        "Keep only visible details. "
+        "If an important requested attribute is absent, do not invent it."
+    )
+
+
+def normalize_llmsearch_candidate_text(text):
+    text = extract_joycaption_caption(text)
+    text = re.sub(r"^(search prompt|user search prompt|match summary|caption)\s*:\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*[-*]\s*", ", ", text)
+    return normalize_generated_prompt(text)
+
+
 def image_to_data_url(image, image_format="PNG"):
     buffer = io.BytesIO()
     image.save(buffer, format=image_format)
@@ -2321,6 +2395,8 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
             score_text = "FAILED" if item.get("failed", False) else f"{item['pos']:.3f}"
             query_suffix = " | QUERY" if item.get("query") else ""
             caption = f"{'✋ ' if fname in overrides else ''}{score_text}{query_suffix} | {fname}"
+            if item.get("base_pos") is not None:
+                caption += f"  (shortlist {item['base_pos']:.3f})"
             entry = (item["path"], caption)
             if side == left_name:
                 left.append(entry)
@@ -2368,6 +2444,9 @@ def create_app():
     state = {
         "method": METHOD_PROMPTMATCH,
         "source_dir": source_dir,
+        "view_mode": "scored",
+        "browse_items": [],
+        "browse_status": "",
         "scores": {},
         "overrides": {},
         "last_scored_method": None,
@@ -2401,6 +2480,15 @@ def create_app():
         "ir_cached_negative_prompt": None,
         "ir_cached_base_scores": None,
         "ir_cached_penalty_scores": None,
+        "llmsearch_backend": DEFAULT_LLMSEARCH_BACKEND,
+        "llmsearch_shortlist_size": LLMSEARCH_SHORTLIST_DEFAULT,
+        "llmsearch_cached_signature": None,
+        "llmsearch_cached_prompt": None,
+        "llmsearch_cached_backend": None,
+        "llmsearch_cached_shortlist_size": None,
+        "llmsearch_cached_model_label": None,
+        "llmsearch_cached_scores": None,
+        "llmsearch_cached_captions": {},
         "prompt_generator": DEFAULT_PROMPT_GENERATOR,
         "prompt_backend_cache": {},
         "generated_prompt": "",
@@ -2416,11 +2504,23 @@ def create_app():
         "mode_thresholds": {
             METHOD_PROMPTMATCH: {"main": None, "aux": None},
             METHOD_IMAGEREWARD: {"main": None, "aux": None},
+            METHOD_LLMSEARCH: {"main": None, "aux": None},
             METHOD_SIMILARITY: {"main": None, "aux": None},
             METHOD_SAMEPERSON: {"main": None, "aux": None},
         },
         "zoom_columns": 5,
     }
+
+    def is_browse_mode():
+        return state.get("view_mode") == "browse"
+
+    def set_scored_mode():
+        state["view_mode"] = "scored"
+
+    def set_browse_mode(items=None, status_text=""):
+        state["view_mode"] = "browse"
+        state["browse_items"] = list(items or [])
+        state["browse_status"] = status_text
 
     def sync_promptmatch_proxy_cache(folder):
         folder_key = normalize_folder_identity(folder)
@@ -2444,6 +2544,13 @@ def create_app():
             state["ir_cached_negative_prompt"] = None
             state["ir_cached_base_scores"] = None
             state["ir_cached_penalty_scores"] = None
+            state["llmsearch_cached_signature"] = None
+            state["llmsearch_cached_prompt"] = None
+            state["llmsearch_cached_backend"] = None
+            state["llmsearch_cached_shortlist_size"] = None
+            state["llmsearch_cached_model_label"] = None
+            state["llmsearch_cached_scores"] = None
+            state["llmsearch_cached_captions"] = {}
         return state["proxy_cache_dir"]
 
     def can_reuse_proxy_map(image_paths, image_signature):
@@ -3650,12 +3757,18 @@ def create_app():
     tooltips = {
         "hy-method": "Choose whether to sort by PromptMatch or ImageReward.",
         "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
+        "hy-load-folder": "Load the current folder into unscored browse mode and prepare proxies for faster gallery display.",
         "hy-model": "Choose the PromptMatch model. Cached models are shown in green text, and models that still need a first download are shown in amber.",
+        "hy-llm-model": "Choose the PromptMatch model used for the fast shortlist stage before the vision-LLM rerank pass.",
+        "hy-llm-backend": "Choose the local vision-language backend used to rerank shortlisted images at a deeper semantic level.",
+        "hy-llm-prompt": "Natural-language search request for the hybrid PromptMatch plus vision-LLM rerank mode.",
+        "hy-llm-shortlist": "How many top PromptMatch candidates should be sent into the slower vision-LLM rerank stage.",
         "hy-pos": "Describe what you want to find in the images. PromptMatch also supports fragment weights like beautiful (blonde:1.2) woman. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
         "hy-neg": "Optional PromptMatch negative prompt that counts against a match. Weighted fragments like (text:1.3) also work here. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
         "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor. Press Ctrl+Enter to run scoring.",
         "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score. Press Ctrl+Enter to run scoring.",
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
+        "hy-run-llm": "Run hybrid image search: PromptMatch first shortlists likely matches, then the local vision-language backend reranks the top candidates.",
         "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
         "hy-generate-prompt": "Use the currently previewed image to draft an editable prompt with the selected caption backend.",
         "hy-find-similar": "Use the currently previewed image as the query and rank the current folder by visual similarity with the active PromptMatch model.",
@@ -3686,6 +3799,7 @@ def create_app():
         "hy-export-right-name": "Editable export folder name for the right bucket. Export writes directly into source_folder/<name>.",
         "hy-move-right": "Move all marked SELECTED images into REJECTED as manual overrides.",
         "hy-move-left": "Move all marked REJECTED images into SELECTED as manual overrides.",
+        "hy-pin-selected": "Pin the currently marked or previewed images to their current bucket as manual overrides without moving them.",
         "hy-fit-threshold": "Adjust the score threshold just enough so the marked images flip to the other bucket. Uses the previewed image if nothing is marked.",
         "hy-clear-status": "Remove manual override status from all marked images so they snap back to their scored bucket.",
         "hy-clear-all-status": "Remove manual override status from every pinned image in the current folder so everything snaps back to the scored buckets.",
@@ -3899,6 +4013,18 @@ def create_app():
             displayed.append((display_path, caption))
         return displayed
 
+    def ui_visibility_updates():
+        browse_mode = is_browse_mode()
+        return (
+            gr.update(visible=not browse_mode),
+            gr.update(visible=not browse_mode),
+            gr.update(visible=not browse_mode),
+            gr.update(visible=not browse_mode),
+            gr.update(visible=not browse_mode),
+            gr.update(visible=not browse_mode),
+            gr.update(visible=not browse_mode),
+        )
+
     def selection_info():
         left_count = len(state.get("left_marked", []))
         right_count = len(state.get("right_marked", []))
@@ -3912,6 +4038,16 @@ def create_app():
         left_order = []
         right_order = []
         visible_names = set(visible_fnames or [])
+        for original_path, _ in state.get("browse_items", []):
+            original_base = os.path.basename(original_path)
+            if visible_names and original_base not in visible_names:
+                continue
+            media_lookup[original_base] = original_base
+            media_lookup[original_path] = original_base
+            display_path = state.get("proxy_map", {}).get(original_path, original_path)
+            display_base = os.path.basename(display_path)
+            media_lookup[display_base] = original_base
+            media_lookup[display_path] = original_base
         for fname, item in state.get("scores", {}).items():
             if visible_names and fname not in visible_names:
                 continue
@@ -4155,8 +4291,31 @@ def create_app():
 
     def current_view(main_threshold, aux_threshold):
         # Single place that rebuilds gallery contents, status text, histogram, and marked-state JSON.
-        remember_mode_thresholds(state["method"], main_threshold, aux_threshold)
         zoom_columns = int(state.get("zoom_columns", 5))
+        if is_browse_mode():
+            browse_items = list(state.get("browse_items", []))
+            left_names = {os.path.basename(path) for path, _ in browse_items}
+            left_order = [os.path.basename(path) for path, _ in browse_items]
+            state["left_marked"] = []
+            state["right_marked"] = []
+            state["hist_geom"] = None
+            status = state.get("browse_status") or "Unscored browse mode. Preview an image to search or generate a prompt."
+            return (
+                f"**UNSCORED**  •  **{len(browse_items)} images**",
+                gallery_update(gallery_display_items(browse_items), columns=zoom_columns),
+                "",
+                gallery_update([], columns=zoom_columns),
+                status,
+                None,
+                "Unscored browse mode. Preview an image to search or generate a prompt.",
+                json.dumps({
+                    **json.loads(marked_state_json(left_names)),
+                    "left_order": left_order,
+                    "right_order": [],
+                }),
+            )
+
+        remember_mode_thresholds(state["method"], main_threshold, aux_threshold)
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
         )
@@ -4168,6 +4327,9 @@ def create_app():
         state["right_marked"] = [name for name in state.get("right_marked", []) if name in right_names]
         visible_names = left_names | right_names
         status = status_line(state["method"], left_items, right_items, state["scores"], state["overrides"])
+        if state["method"] == METHOD_LLMSEARCH and state.get("llmsearch_backend"):
+            backend_label = state.get("llmsearch_backend") or DEFAULT_LLMSEARCH_BACKEND
+            status = f"LLM rerank via {backend_label}  •  {status}"
         if state["method"] == METHOD_SIMILARITY and state.get("similarity_query_fname"):
             model_label = state.get("similarity_model_label") or "PromptMatch model"
             status = f"Similarity from {state['similarity_query_fname']} via {model_label}  •  {status}"
@@ -4193,6 +4355,11 @@ def create_app():
         preview_fname = state.get("preview_fname")
         if not preview_fname:
             return None, None
+        if is_browse_mode():
+            for path, _ in state.get("browse_items", []):
+                if os.path.basename(path) == preview_fname:
+                    return path, preview_fname
+            return None, preview_fname
         item = state.get("scores", {}).get(preview_fname)
         if not item:
             return None, preview_fname
@@ -4277,13 +4444,18 @@ def create_app():
             extract_florence_caption(parsed, raw_text, task_prompt)
         )
 
-    def run_joycaption_prompt_variant(generator_name, image, user_prompt, detail_level):
-        system_prompt = (
+    def run_joycaption_prompt_variant(generator_name, image, user_prompt, detail_level, system_prompt=None, normalizer=None):
+        system_prompt = system_prompt or (
             "You are a helpful image captioner. "
             "Describe only concrete visible content and write output that is useful as a text-to-image prompt. "
             "Follow the requested output style exactly, whether it asks for short tags, a compact prompt line, or natural prose. "
             "Do not begin with meta phrases like 'This image shows', 'In this image we can see', or 'You are looking at'."
         )
+        if normalizer is None:
+            normalizer = lambda text: normalize_generated_prompt(
+                extract_joycaption_caption(text),
+                keep_prose=(detail_level == 3),
+            )
         max_new_tokens = joycaption_max_new_tokens(detail_level)
 
         if generator_name == PROMPT_GENERATOR_JOYCAPTION:
@@ -4316,10 +4488,7 @@ def create_app():
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False,
             )
-            return normalize_generated_prompt(
-                extract_joycaption_caption(text),
-                keep_prose=(detail_level == 3),
-            )
+            return normalizer(text)
 
         llm = ensure_joycaption_gguf_model()
         data_url = image_to_data_url(image)
@@ -4364,16 +4533,109 @@ def create_app():
             text = response["choices"][0]["message"]["content"]
         except Exception as exc:
             raise RuntimeError(f"Unexpected JoyCaption GGUF response shape: {exc}") from exc
-        return normalize_generated_prompt(
-            extract_joycaption_caption(text),
-            keep_prose=(detail_level == 3),
-        )
+        return normalizer(text)
 
     def generate_prompt_variant(generator_name, image, detail_level):
         _, _, detail_prompt = prompt_generator_detail_config(generator_name, detail_level)
         if generator_name == PROMPT_GENERATOR_FLORENCE:
             return run_florence_prompt_variant(image, detail_prompt)
         return run_joycaption_prompt_variant(generator_name, image, detail_prompt, detail_level)
+
+    class VisionLLMRerankBackend:
+        def __init__(self, backend_id):
+            self.backend_id = backend_id
+
+        def describe_source(self):
+            return describe_llmsearch_backend_source(self.backend_id)
+
+        def is_available(self):
+            return True
+
+        def load(self, progress):
+            if self.backend_id == PROMPT_GENERATOR_FLORENCE:
+                progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
+                ensure_florence_model()
+            elif self.backend_id == PROMPT_GENERATOR_JOYCAPTION:
+                progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
+                ensure_joycaption_model()
+            elif self.backend_id == PROMPT_GENERATOR_JOYCAPTION_GGUF:
+                progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
+                ensure_joycaption_gguf_model()
+            else:
+                raise RuntimeError(f"Unknown LLM rerank backend: {self.backend_id}")
+
+        def release(self):
+            return None
+
+        def candidate_text(self, image, query_text):
+            if self.backend_id == PROMPT_GENERATOR_FLORENCE:
+                return run_florence_prompt_variant(image, "<MORE_DETAILED_CAPTION>")
+
+            user_prompt = build_llmsearch_joycaption_user_prompt(query_text)
+            return run_joycaption_prompt_variant(
+                self.backend_id,
+                image,
+                user_prompt,
+                2,
+                system_prompt=llmsearch_joycaption_system_prompt(),
+                normalizer=normalize_llmsearch_candidate_text,
+            )
+
+    def get_llmsearch_backend(backend_id):
+        return VisionLLMRerankBackend(backend_id)
+
+    def llmsearch_caption_cache_key(backend_id, image_signature, query_text):
+        return (str(backend_id), str(image_signature), normalize_prompt_text(query_text or ""))
+
+    def llmsearch_similarity(query_embedding, text):
+        text = normalize_prompt_text(text)
+        if not text:
+            return -1.0
+        text_embedding = state["backend"].encode_text(text)
+        score = float((query_embedding @ text_embedding.T).squeeze().item())
+        return round(score, 6)
+
+    def score_llmsearch_candidates(candidate_paths, query_text, backend_id, image_signature, progress):
+        backend = get_llmsearch_backend(backend_id)
+        backend.load(progress)
+        cache_key = llmsearch_caption_cache_key(backend_id, image_signature, query_text)
+        caption_cache = state["llmsearch_cached_captions"].setdefault(cache_key, {})
+        query_embedding = state["backend"].encode_text((query_text or "").strip())
+        total = len(candidate_paths)
+        results = {}
+        for index, original_path in enumerate(candidate_paths, start=1):
+            caption_text = caption_cache.get(original_path)
+            failed_reason = None
+            if not caption_text:
+                display_path = state.get("proxy_map", {}).get(original_path, original_path)
+                try:
+                    with Image.open(display_path) as src_img:
+                        image = src_img.convert("RGB")
+                    caption_text = backend.candidate_text(image, query_text)
+                    caption_cache[original_path] = caption_text
+                except Exception as exc:
+                    failed_reason = str(exc) or "LLM rerank backend failed."
+                    caption_text = ""
+            if failed_reason:
+                score_value = -1.0
+            else:
+                try:
+                    score_value = llmsearch_similarity(query_embedding, caption_text)
+                except Exception as exc:
+                    failed_reason = str(exc) or "LLM rerank text scoring failed."
+                    score_value = -1.0
+
+            results[os.path.basename(original_path)] = {
+                "pos": float(score_value),
+                "neg": None,
+                "path": original_path,
+                "failed": bool(failed_reason),
+                "caption": caption_text,
+                "reason": failed_reason,
+            }
+            progress(index / max(total, 1), desc=f"LLM reranking {index}/{total} via {backend_id}")
+
+        return results
 
     def score_imagereward(folder_paths, positive_prompt, negative_prompt, penalty_weight, progress):
         # Optional penalty prompt is implemented as a second pass whose score is subtracted.
@@ -4523,6 +4785,7 @@ def create_app():
             return (
                 gr.update(visible=True),
                 gr.update(visible=False),
+                gr.update(visible=False),
                 gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(label=aux_label, visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=True),
@@ -4532,9 +4795,24 @@ def create_app():
                 percentile_reset_button_update(method),
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
             )
+        if method == METHOD_LLMSEARCH:
+            return (
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                percentile_slider_update(method),
+                percentile_reset_button_update(method),
+                gr.update(value="LLM Search uses PromptMatch to shortlist likely matches, then reranks the top candidates with a local vision-language model."),
+            )
         if method == METHOD_SIMILARITY:
             return (
                 gr.update(visible=True),
+                gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
@@ -4549,6 +4827,7 @@ def create_app():
             return (
                 gr.update(visible=True),
                 gr.update(visible=False),
+                gr.update(visible=False),
                 gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False),
@@ -4561,6 +4840,7 @@ def create_app():
         return (
             gr.update(visible=False),
             gr.update(visible=True),
+            gr.update(visible=False),
             gr.update(label=main_label, value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
             gr.update(visible=False, value=NEGATIVE_THRESHOLD),
             gr.update(visible=False),
@@ -4573,6 +4853,9 @@ def create_app():
 
     def empty_result(message, method):
         _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
+        set_scored_mode()
+        state["browse_items"] = []
+        state["browse_status"] = ""
         return (
             "### LEFT",
             gallery_update([]),
@@ -4587,7 +4870,73 @@ def create_app():
             percentile_upd,
             percentile_mid_upd,
             promptmatch_model_status_json(),
+            *ui_visibility_updates(),
         )
+
+    def render_view_with_controls(main_threshold, aux_threshold):
+        return (*current_view(main_threshold, aux_threshold), *ui_visibility_updates())
+
+    def load_folder_for_browse(folder, main_threshold, aux_threshold, progress=gr.Progress()):
+        folder = (folder or "").strip()
+        if not folder or not os.path.isdir(folder):
+            state["source_dir"] = folder
+            state["scores"] = {}
+            state["overrides"] = {}
+            state["preview_fname"] = None
+            state["left_marked"] = []
+            state["right_marked"] = []
+            clear_preview_search_context()
+            set_browse_mode([], f"Invalid folder: {folder!r}")
+            return (*render_view_with_controls(main_threshold, aux_threshold),)
+
+        image_paths = scan_image_paths(folder)
+        if not image_paths:
+            state["source_dir"] = folder
+            state["scores"] = {}
+            state["overrides"] = {}
+            state["preview_fname"] = None
+            state["left_marked"] = []
+            state["right_marked"] = []
+            clear_preview_search_context()
+            set_browse_mode([], f"No images found in {folder}")
+            return (*render_view_with_controls(main_threshold, aux_threshold),)
+
+        sync_promptmatch_proxy_cache(folder)
+        image_signature = get_image_paths_signature(image_paths)
+        proxy_map = {}
+        cache_dir = state.get("proxy_cache_dir")
+        if cache_dir and can_reuse_proxy_map(image_paths, image_signature):
+            proxy_map = dict(state.get("proxy_map") or {})
+            progress(1.0, desc=f"Reusing cached proxies for {len(image_paths)} images")
+        elif cache_dir:
+            def _proxy_prep_cb(done, total, generated, reused):
+                desc = f"Preparing browse proxies {done}/{total}"
+                if generated or reused:
+                    desc += f" ({generated} new, {reused} reused)"
+                progress(done / max(total, 1), desc=desc)
+
+            progress(0, desc=f"Preparing browse proxies 0/{len(image_paths)}")
+            proxy_map, _, _ = prepare_promptmatch_proxies(
+                image_paths,
+                cache_dir,
+                progress_cb=_proxy_prep_cb,
+            )
+            state["proxy_map"] = dict(proxy_map)
+            state["proxy_signature"] = image_signature
+
+        state["source_dir"] = folder
+        state["scores"] = {}
+        state["overrides"] = {}
+        state["preview_fname"] = None
+        state["left_marked"] = []
+        state["right_marked"] = []
+        clear_preview_search_context()
+        browse_items = [(path, os.path.basename(path)) for path in image_paths]
+        set_browse_mode(
+            browse_items,
+            f"Browse mode for {folder}. {len(image_paths)} images loaded. Preview an image to search or generate a prompt.",
+        )
+        return (*render_view_with_controls(main_threshold, aux_threshold),)
 
     def refresh_promptmatch_model_dropdown(current_model_label):
         selected = current_model_label if current_model_label in MODEL_LABELS else MODEL_LABELS[0]
@@ -4945,7 +5294,7 @@ def create_app():
             }
         return results
 
-    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         # Main entrypoint for "Run scoring"; both methods converge back into current_view().
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
@@ -4991,6 +5340,7 @@ def create_app():
         )
 
         state["method"] = method
+        set_scored_mode()
         sync_promptmatch_proxy_cache(folder)
         state["source_dir"] = folder
         state["overrides"] = preserved_overrides
@@ -4998,6 +5348,132 @@ def create_app():
         state["right_marked"] = []
         state["preview_fname"] = None
         clear_preview_search_context()
+
+        if method == METHOD_LLMSEARCH:
+            llm_model_label = llm_model_label if llm_model_label in MODEL_LABELS else label_for_backend(prompt_backend)
+            llm_backend_id = llm_backend_id if llm_backend_id in llmsearch_backend_choices() else DEFAULT_LLMSEARCH_BACKEND
+            llm_prompt = (llm_prompt or "").strip() or LLMSEARCH_DEFAULT_PROMPT
+            try:
+                shortlist_size = int(float(llm_shortlist_size))
+            except Exception:
+                shortlist_size = LLMSEARCH_SHORTLIST_DEFAULT
+            shortlist_size = max(LLMSEARCH_SHORTLIST_MIN, min(LLMSEARCH_SHORTLIST_MAX, shortlist_size))
+            state["llmsearch_backend"] = llm_backend_id
+            state["llmsearch_shortlist_size"] = shortlist_size
+
+            can_reuse_llm_cache = (
+                state.get("llmsearch_cached_signature") == image_signature
+                and state.get("llmsearch_cached_prompt") == llm_prompt
+                and state.get("llmsearch_cached_backend") == llm_backend_id
+                and state.get("llmsearch_cached_shortlist_size") == shortlist_size
+                and state.get("llmsearch_cached_model_label") == llm_model_label
+                and state.get("llmsearch_cached_scores") is not None
+            )
+            if can_reuse_llm_cache:
+                state["scores"] = dict(state["llmsearch_cached_scores"])
+            else:
+                try:
+                    ensure_promptmatch_backend_loaded(llm_model_label, progress)
+                    _, feature_paths, image_features, failed_paths = ensure_promptmatch_feature_cache(
+                        image_paths,
+                        llm_model_label,
+                        progress,
+                        reuse_desc="Reusing cached LLM-search shortlist embeddings for {count} images",
+                        encode_desc="Encoding LLM-search shortlist embeddings for {count} images...",
+                        progress_label="LLM shortlist",
+                    )
+                except Exception as exc:
+                    return empty_result(str(exc), method)
+
+                shortlist_query_emb = state["backend"].encode_text(llm_prompt)
+                shortlist_scores = score_promptmatch_cached_features(
+                    feature_paths,
+                    image_features,
+                    failed_paths,
+                    shortlist_query_emb,
+                    None,
+                )
+                ranked_candidates = [
+                    item for item in shortlist_scores.values()
+                    if not item.get("failed", False) and item.get("pos") is not None
+                ]
+                ranked_candidates.sort(key=lambda item: -float(item["pos"]))
+                candidate_paths = [item["path"] for item in ranked_candidates[:shortlist_size]]
+                if not candidate_paths:
+                    return empty_result("LLM search could not shortlist any usable images.", method)
+
+                try:
+                    llm_candidate_scores = score_llmsearch_candidates(
+                        candidate_paths,
+                        llm_prompt,
+                        llm_backend_id,
+                        image_signature,
+                        progress,
+                    )
+                except Exception as exc:
+                    return empty_result(f"LLM rerank failed: {exc}", method)
+
+                shortlist_floor_candidates = [
+                    item["pos"] for item in llm_candidate_scores.values()
+                    if not item.get("failed", False)
+                ]
+                shortlist_floor = min(shortlist_floor_candidates) if shortlist_floor_candidates else -0.2
+                reject_floor = max(-1.0, float(shortlist_floor) - 0.05)
+                wrapped_scores = {}
+                shortlisted_names = set(llm_candidate_scores.keys())
+                for path in image_paths:
+                    fname = os.path.basename(path)
+                    base_item = shortlist_scores.get(fname)
+                    llm_item = llm_candidate_scores.get(fname)
+                    if llm_item is not None:
+                        wrapped_scores[fname] = {
+                            **llm_item,
+                            "base_pos": float(base_item["pos"]) if base_item and base_item.get("pos") is not None else None,
+                        }
+                        continue
+                    wrapped_scores[fname] = {
+                        "pos": float(reject_floor),
+                        "neg": None,
+                        "path": path,
+                        "failed": False,
+                        "base_pos": float(base_item["pos"]) if base_item and base_item.get("pos") is not None else None,
+                        "shortlisted": False,
+                    }
+
+                state["scores"] = wrapped_scores
+                state["llmsearch_cached_signature"] = image_signature
+                state["llmsearch_cached_prompt"] = llm_prompt
+                state["llmsearch_cached_backend"] = llm_backend_id
+                state["llmsearch_cached_shortlist_size"] = shortlist_size
+                state["llmsearch_cached_model_label"] = llm_model_label
+                state["llmsearch_cached_scores"] = dict(wrapped_scores)
+
+            pos_vals = [
+                item["pos"] for item in state["scores"].values()
+                if item.get("base_pos") is not None and not item.get("failed", False)
+            ]
+            pos_min, pos_max, pos_mid, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
+            default_main = round(min(pos_vals), 3) if pos_vals else pos_mid
+            next_main = clamp_threshold(requested_main, pos_min, pos_max) if (previous_method != METHOD_LLMSEARCH and has_recalled) else default_main
+            safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
+            safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
+            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
+            return (
+                left_head,
+                left_gallery,
+                right_head,
+                right_gallery,
+                status,
+                hist,
+                sel_info,
+                mark_state,
+                gr.update(minimum=safe_pos_min, maximum=safe_pos_max, value=next_main, label=main_label),
+                gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=NEGATIVE_THRESHOLD, visible=False, interactive=False, label=aux_label),
+                percentile_slider_update(METHOD_LLMSEARCH, state["scores"]),
+                percentile_reset_button_update(METHOD_LLMSEARCH, state["scores"]),
+                promptmatch_model_status_json(),
+                *ui_visibility_updates(),
+            )
 
         if method == METHOD_PROMPTMATCH:
             try:
@@ -5051,6 +5527,7 @@ def create_app():
                 percentile_slider_update(METHOD_PROMPTMATCH, state["scores"]),
                 percentile_reset_button_update(METHOD_PROMPTMATCH, state["scores"]),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         if state["ir_model"] is None:
@@ -5088,6 +5565,7 @@ def create_app():
             percentile_slider_update(METHOD_IMAGEREWARD, state["scores"]),
             percentile_reset_button_update(METHOD_IMAGEREWARD, state["scores"]),
             promptmatch_model_status_json(),
+            *ui_visibility_updates(),
         )
 
     def find_similar_images(folder, model_label, main_threshold, aux_threshold, progress=gr.Progress()):
@@ -5102,6 +5580,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         image_paths = scan_image_paths(folder)
@@ -5114,6 +5593,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         _, preview_fname = get_preview_image_path()
@@ -5126,6 +5606,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         folder_name_map = {os.path.basename(path): path for path in image_paths}
@@ -5139,6 +5620,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         previous_folder = state.get("source_dir")
@@ -5179,9 +5661,11 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         state["method"] = METHOD_SIMILARITY
+        set_scored_mode()
         state["source_dir"] = folder
         state["scores"] = similarity_scores
         state["overrides"] = preserved_overrides
@@ -5219,6 +5703,7 @@ def create_app():
             percentile_slider_update(METHOD_SIMILARITY, state["scores"]),
             percentile_reset_button_update(METHOD_SIMILARITY, state["scores"]),
             promptmatch_model_status_json(),
+            *ui_visibility_updates(),
         )
 
     def find_same_person_images(folder, main_threshold, aux_threshold, progress=gr.Progress()):
@@ -5233,6 +5718,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         image_paths = scan_image_paths(folder)
@@ -5245,6 +5731,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         _, preview_fname = get_preview_image_path()
@@ -5257,6 +5744,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         folder_name_map = {os.path.basename(path): path for path in image_paths}
@@ -5270,6 +5758,7 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         previous_folder = state.get("source_dir")
@@ -5302,9 +5791,11 @@ def create_app():
                 gr.update(),
                 gr.update(),
                 promptmatch_model_status_json(),
+                *ui_visibility_updates(),
             )
 
         state["method"] = METHOD_SAMEPERSON
+        set_scored_mode()
         state["source_dir"] = folder
         state["scores"] = sameperson_scores
         state["overrides"] = preserved_overrides
@@ -5342,9 +5833,10 @@ def create_app():
             percentile_slider_update(METHOD_SAMEPERSON, state["scores"]),
             percentile_reset_button_update(METHOD_SAMEPERSON, state["scores"]),
             promptmatch_model_status_json(),
+            *ui_visibility_updates(),
         )
 
-    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         action = (action or "").strip()
         if not action.startswith("run:"):
             return empty_result("Shortcut action ignored.", method)
@@ -5364,6 +5856,10 @@ def create_app():
             ir_prompt,
             ir_negative_prompt,
             ir_penalty_weight,
+            llm_model_label,
+            llm_prompt,
+            llm_backend_id,
+            llm_shortlist_size,
             main_threshold,
             aux_threshold,
             keep_pm_thresholds,
@@ -5372,7 +5868,7 @@ def create_app():
         )
 
     def update_split(main_threshold, aux_threshold):
-        return current_view(main_threshold, aux_threshold)
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def update_histogram_only(main_threshold, aux_threshold):
         return render_histogram(state["method"], state["scores"], main_threshold, aux_threshold)
@@ -5466,24 +5962,31 @@ def create_app():
         prompt_text = (prompt_text or "").strip()
         if not prompt_text:
             state["generated_prompt_status"] = "Generated prompt is empty. Edit or generate a prompt first."
-            return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update()
+            return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(), gr.update()
 
         state["generated_prompt"] = prompt_text
-        target_label = "PromptMatch positive prompt" if method == METHOD_PROMPTMATCH else "ImageReward positive prompt"
+        if method == METHOD_PROMPTMATCH:
+            target_label = "PromptMatch positive prompt"
+        elif method == METHOD_LLMSEARCH:
+            target_label = "LLM search prompt"
+        else:
+            target_label = "ImageReward positive prompt"
         state["generated_prompt_status"] = f"Inserted generated prompt into {target_label}."
         if method == METHOD_PROMPTMATCH:
-            return gr.update(value=state["generated_prompt_status"]), gr.update(value=prompt_text), gr.update()
-        return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(value=prompt_text)
+            return gr.update(value=state["generated_prompt_status"]), gr.update(value=prompt_text), gr.update(), gr.update()
+        if method == METHOD_LLMSEARCH:
+            return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(), gr.update(value=prompt_text)
+        return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(value=prompt_text), gr.update()
 
     def update_proxy_display(use_proxy_display, main_threshold, aux_threshold):
         state["use_proxy_display"] = bool(use_proxy_display)
-        return current_view(main_threshold, aux_threshold)
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def update_imagereward_penalty_weight(penalty_weight, main_threshold, aux_threshold):
         recomputed = recompute_imagereward_scores(penalty_weight)
         if not recomputed:
             return (
-                *current_view(main_threshold, aux_threshold),
+                *render_view_with_controls(main_threshold, aux_threshold),
                 gr.update(),
                 gr.update(),
             )
@@ -5493,7 +5996,7 @@ def create_app():
         safe_lo, safe_hi = expand_slider_bounds(lo, hi, main_threshold, clamped)
         main_label, _, _, _ = threshold_labels(METHOD_IMAGEREWARD)
         return (
-            *current_view(clamped, aux_threshold),
+            *render_view_with_controls(clamped, aux_threshold),
             gr.update(
                 minimum=safe_lo,
                 maximum=safe_hi,
@@ -5505,7 +6008,10 @@ def create_app():
 
     def handle_thumb_action(action, main_threshold, aux_threshold):
         # Custom JS reports preview clicks, shift-click bulk marking, and drag-drop moves.
-        noop = (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        noop = (
+            gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+            gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+        )
         with_slider_skips = lambda view: (*view, gr.skip(), gr.skip())
         if not action:
             return noop
@@ -5514,7 +6020,8 @@ def create_app():
                 _, fname, _ = str(action).split(":", 2)
             except Exception:
                 return noop
-            if fname and fname in state.get("scores", {}):
+            visible_names = {os.path.basename(path) for path, _ in state.get("browse_items", [])}
+            if fname and (fname in state.get("scores", {}) or fname in visible_names):
                 state["preview_fname"] = fname
             return noop
         if str(action).startswith("dialogactionjson:"):
@@ -5524,7 +6031,8 @@ def create_app():
                 fname = str(payload.get("fname", "") or "")
             except Exception:
                 return noop
-            if fname and fname in state.get("scores", {}):
+            visible_names = {os.path.basename(path) for path, _ in state.get("browse_items", [])}
+            if fname and (fname in state.get("scores", {}) or fname in visible_names):
                 state["preview_fname"] = fname
             if action_id == "hy-move-right":
                 return with_slider_skips(move_right(main_threshold, aux_threshold, preview_override=fname))
@@ -5558,10 +6066,14 @@ def create_app():
                 state["left_marked"] = [name for name in state["left_marked"] if name not in move_fnames]
                 state["right_marked"] = [name for name in state["right_marked"] if name not in move_fnames]
                 state["preview_fname"] = move_fnames[0]
-            return with_slider_skips(current_view(main_threshold, aux_threshold))
+            return with_slider_skips(render_view_with_controls(main_threshold, aux_threshold))
         parts = str(action).split(":")
         verb = parts[0] if parts else ""
-        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
+        if is_browse_mode():
+            left_items = list(state.get("browse_items", []))
+            right_items = []
+        else:
+            left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
 
         try:
             _, side, raw_index, _ = parts
@@ -5574,13 +6086,16 @@ def create_app():
             if verb == "preview":
                 state["preview_fname"] = fname
                 return noop
+            if is_browse_mode():
+                state["preview_fname"] = fname
+                return noop
             else:
                 marked_key = "left_marked" if side == "left" else "right_marked"
                 if fname in state[marked_key]:
                     state[marked_key] = [name for name in state[marked_key] if name != fname]
                 else:
                     state[marked_key].append(fname)
-        return with_slider_skips(current_view(main_threshold, aux_threshold))
+        return with_slider_skips(render_view_with_controls(main_threshold, aux_threshold))
 
     def handle_hist_width(width_value, main_threshold, aux_threshold):
         try:
@@ -5593,6 +6108,8 @@ def create_app():
         return render_histogram(state["method"], state["scores"], main_threshold, aux_threshold)
 
     def move_right(main_threshold, aux_threshold, preview_override=None):
+        if is_browse_mode():
+            return render_view_with_controls(main_threshold, aux_threshold)
         left_name, right_name, _, _ = method_labels(state["method"])
         left_targets, _ = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = left_targets or list(state.get("left_marked", []))
@@ -5600,9 +6117,11 @@ def create_app():
             state["overrides"][fname] = right_name
         state["left_marked"] = []
         state["right_marked"] = []
-        return current_view(main_threshold, aux_threshold)
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def move_left(main_threshold, aux_threshold, preview_override=None):
+        if is_browse_mode():
+            return render_view_with_controls(main_threshold, aux_threshold)
         left_name, right_name, _, _ = method_labels(state["method"])
         _, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = right_targets or list(state.get("right_marked", []))
@@ -5610,26 +6129,45 @@ def create_app():
             state["overrides"][fname] = left_name
         state["left_marked"] = []
         state["right_marked"] = []
-        return current_view(main_threshold, aux_threshold)
+        return render_view_with_controls(main_threshold, aux_threshold)
+
+    def pin_selected(main_threshold, aux_threshold, preview_override=None):
+        if is_browse_mode():
+            return render_view_with_controls(main_threshold, aux_threshold)
+        left_name, right_name, _, _ = method_labels(state["method"])
+        left_targets, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
+        for fname in left_targets:
+            state["overrides"][fname] = left_name
+        for fname in right_targets:
+            state["overrides"][fname] = right_name
+        state["left_marked"] = []
+        state["right_marked"] = []
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def clear_status(main_threshold, aux_threshold):
+        if is_browse_mode():
+            return render_view_with_controls(main_threshold, aux_threshold)
         for fname in set(state["left_marked"] + state["right_marked"]):
             state["overrides"].pop(fname, None)
         state["left_marked"] = []
         state["right_marked"] = []
-        return current_view(main_threshold, aux_threshold)
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def clear_all_status(main_threshold, aux_threshold):
+        if is_browse_mode():
+            return render_view_with_controls(main_threshold, aux_threshold)
         state["overrides"].clear()
         state["left_marked"] = []
         state["right_marked"] = []
-        return current_view(main_threshold, aux_threshold)
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=None):
+        if is_browse_mode():
+            return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(), gr.update())
         left_targets, right_targets = active_targets(main_threshold, aux_threshold, preview_override=preview_override)
         targets = left_targets or right_targets
         if not targets or (left_targets and right_targets) or not state["scores"]:
-            return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
+            return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(), gr.update())
 
         for fname in targets:
             state["overrides"].pop(fname, None)
@@ -5686,14 +6224,14 @@ def create_app():
         state["left_marked"] = []
         state["right_marked"] = []
         return (
-            *current_view(new_main, new_aux),
+            *render_view_with_controls(new_main, new_aux),
             gr.update(value=new_main),
             gr.update(value=new_aux),
         )
 
     def set_from_percentile(percentile, main_threshold, aux_threshold):
         new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
-        return (*current_view(new_threshold, aux_threshold), gr.update(value=new_threshold))
+        return (*render_view_with_controls(new_threshold, aux_threshold), gr.update(value=new_threshold))
 
     def update_histogram_from_percentile(percentile, aux_threshold):
         new_threshold = threshold_for_percentile(state["method"], state["scores"], percentile)
@@ -5702,7 +6240,7 @@ def create_app():
     def reset_main_threshold_to_middle(main_threshold, aux_threshold):
         new_main, _, _ = middle_threshold_values(state["method"])
         return (
-            *current_view(new_main, aux_threshold),
+            *render_view_with_controls(new_main, aux_threshold),
             gr.update(value=new_main),
             gr.update(),
         )
@@ -5710,13 +6248,13 @@ def create_app():
     def reset_aux_threshold_to_middle(main_threshold, aux_threshold):
         if state["method"] != METHOD_PROMPTMATCH:
             return (
-                *current_view(main_threshold, aux_threshold),
+                *render_view_with_controls(main_threshold, aux_threshold),
                 gr.update(),
                 gr.update(),
             )
         _, new_aux, _ = middle_threshold_values(METHOD_PROMPTMATCH)
         return (
-            *current_view(main_threshold, new_aux),
+            *render_view_with_controls(main_threshold, new_aux),
             gr.update(),
             gr.update(value=new_aux),
         )
@@ -5731,7 +6269,7 @@ def create_app():
         else:
             new_threshold = float(main_threshold)
         return (
-            *current_view(new_threshold, aux_threshold),
+            *render_view_with_controls(new_threshold, aux_threshold),
             gr.update(value=new_threshold),
             gr.update(value=percentile),
         )
@@ -5743,13 +6281,12 @@ def create_app():
             state["zoom_columns"] = 12 - slider_value
         except Exception:
             state["zoom_columns"] = 5
-        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(main_threshold, aux_threshold)
-        return left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     def on_hist_click(sel: gr.SelectData, main_threshold, aux_threshold):
         geom = state.get("hist_geom")
         if not geom:
-            return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
+            return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(), gr.update())
         try:
             cx, cy = sel.index
             if uses_pos_similarity_scores(geom["method"]):
@@ -5771,7 +6308,7 @@ def create_app():
                     val = lo + ((cx - PAD_L) / cW) * (hi - lo)
                     aux_threshold = round(max(lo, min(hi, val)), 3)
                 else:
-                    return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
+                    return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(), gr.update())
             else:
                 PAD_L = geom["PAD_L"]
                 PAD_TOP = geom["PAD_TOP"]
@@ -5783,14 +6320,16 @@ def create_app():
                     val = lo + ((cx - PAD_L) / cW) * (hi - lo)
                     main_threshold = round(max(lo, min(hi, val)), 3)
                 else:
-                    return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
+                    return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(), gr.update())
         except Exception:
-            return (*current_view(main_threshold, aux_threshold), gr.update(), gr.update())
+            return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(), gr.update())
 
-        return (*current_view(main_threshold, aux_threshold), gr.update(value=main_threshold), gr.update(value=aux_threshold))
+        return (*render_view_with_controls(main_threshold, aux_threshold), gr.update(value=main_threshold), gr.update(value=aux_threshold))
 
     def export_files(main_threshold, aux_threshold, export_left_enabled, export_right_enabled, export_move_enabled, export_left_name, export_right_name):
         # Export is a lossless copy, not a rewrite or recompression of the originals.
+        if is_browse_mode():
+            return (*render_view_with_controls(main_threshold, aux_threshold), "Export is unavailable in browse mode. Run scoring or a search first.")
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         left_name, right_name, left_dirname, right_dirname = method_labels(state["method"])
         base = state["source_dir"]
@@ -5800,10 +6339,10 @@ def create_app():
         if export_right_enabled:
             targets.append((right_name, sanitize_export_name(export_right_name) or right_dirname, right_items))
         if not targets:
-            return (*current_view(main_threshold, aux_threshold), "Enable at least one bucket for export.")
+            return (*render_view_with_controls(main_threshold, aux_threshold), "Enable at least one bucket for export.")
         target_names = [folder_name for _, folder_name, _ in targets]
         if len(set(target_names)) != len(target_names):
-            return (*current_view(main_threshold, aux_threshold), "Export folder names must be different when both buckets are enabled.")
+            return (*render_view_with_controls(main_threshold, aux_threshold), "Export folder names must be different when both buckets are enabled.")
 
         lines = []
         moved_names = []
@@ -5842,7 +6381,7 @@ def create_app():
                 or state.get("sameperson_query_fname") in moved_set
             ):
                 clear_preview_search_context()
-        return (*current_view(main_threshold, aux_threshold), "\n".join(lines))
+        return (*render_view_with_controls(main_threshold, aux_threshold), "\n".join(lines))
 
     css = """
     html, body { height:100% !important; overflow:hidden !important; }
@@ -6467,7 +7006,7 @@ def create_app():
                 with gr.Group(elem_classes=["sidebar-scroll"]):
                     with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
                         method_dd = gr.Dropdown(
-                            choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD],
+                            choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_LLMSEARCH],
                             value=METHOD_PROMPTMATCH,
                             label="Method",
                             elem_id="hy-method",
@@ -6479,10 +7018,11 @@ def create_app():
                         folder_input = gr.Textbox(
                             value=source_dir,
                             label="Image folder - paste a path here",
-                            lines=2,
+                            lines=1,
                             placeholder=folder_placeholder(),
                             elem_id="hy-folder",
                         )
+                        load_folder_btn = gr.Button("Load folder", elem_id="hy-load-folder")
 
                     with gr.Accordion("2. SCORING & Method/Settings", open=True, elem_id="hy-acc-scoring"):
                         with gr.Group(visible=True) as promptmatch_group:
@@ -6514,6 +7054,35 @@ def create_app():
                                 elem_id="hy-ir-weight",
                             )
                             imagereward_run_btn = gr.Button("Run scoring", elem_id="hy-run-ir", variant="primary")
+
+                        with gr.Group(visible=False) as llmsearch_group:
+                            llm_model_dd = gr.Dropdown(
+                                choices=promptmatch_model_dropdown_choices(),
+                                value=label_for_backend(prompt_backend),
+                                label="PromptMatch shortlist model",
+                                elem_id="hy-llm-model",
+                            )
+                            llm_backend_dd = gr.Dropdown(
+                                choices=llmsearch_backend_choices(),
+                                value=DEFAULT_LLMSEARCH_BACKEND,
+                                label="Vision LLM backend",
+                                elem_id="hy-llm-backend",
+                            )
+                            llm_prompt_tb = gr.Textbox(
+                                value=LLMSEARCH_DEFAULT_PROMPT,
+                                label="LLM search prompt",
+                                lines=2,
+                                elem_id="hy-llm-prompt",
+                            )
+                            llm_shortlist_slider = gr.Slider(
+                                minimum=LLMSEARCH_SHORTLIST_MIN,
+                                maximum=LLMSEARCH_SHORTLIST_MAX,
+                                value=LLMSEARCH_SHORTLIST_DEFAULT,
+                                step=1,
+                                label="Shortlist size",
+                                elem_id="hy-llm-shortlist",
+                            )
+                            llmsearch_run_btn = gr.Button("Run scoring", elem_id="hy-run-llm", variant="primary")
 
                     with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
                         with gr.Column(elem_classes=["preview-action-stack"]):
@@ -6601,7 +7170,7 @@ def create_app():
                         proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
                         status_md = gr.Markdown("", elem_classes=["status-md"])
 
-                    with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export"):
+                    with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export") as export_acc:
                         with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
                             move_export_cb = gr.Checkbox(
                                 value=False,
@@ -6631,9 +7200,9 @@ def create_app():
                             gr.HTML("", elem_classes=["gallery-head-fill"])
                             left_export_name_tb = gr.Textbox(value="selected", show_label=False, container=False, lines=1, elem_id="hy-export-left-name", elem_classes=["gallery-export-name"])
                             left_head = gr.Markdown("**0 images**", elem_classes=["gallery-count"])
-                    with gr.Column(scale=0, min_width=100, elem_classes=["gallery-header-spacer"]):
+                    with gr.Column(scale=0, min_width=100, elem_classes=["gallery-header-spacer"]) as gallery_header_spacer_col:
                         gr.HTML("")
-                    with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]):
+                    with gr.Column(scale=1, elem_classes=["gallery-side", "gallery-header-slot"]) as right_header_col:
                         with gr.Row(equal_height=False, elem_classes=["gallery-head-row"]):
                             right_export_cb = gr.Checkbox(
                                 value=True,
@@ -6654,31 +7223,47 @@ def create_app():
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         left_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
-                    with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]):
+                    with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]) as move_controls_col:
                         sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
                         move_right_btn = gr.Button("Move >>", elem_id="hy-move-right")
                         fit_threshold_btn = gr.Button("Fit thresh to filter image", elem_id="hy-fit-threshold")
+                        pin_selected_btn = gr.Button("Pin selected", elem_id="hy-pin-selected")
                         move_left_btn = gr.Button("<< Move", elem_id="hy-move-left")
                         clear_status_btn = gr.Button("Clear marked", elem_id="hy-clear-status")
                         clear_all_status_btn = gr.Button("Clear all", elem_id="hy-clear-all-status")
-                    with gr.Column(scale=1, elem_classes=["gallery-side"]):
+                    with gr.Column(scale=1, elem_classes=["gallery-side"]) as right_gallery_col:
                         right_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-right-gallery")
 
         method_dd.change(
             fn=configure_controls,
             inputs=[method_dd],
-            outputs=[promptmatch_group, imagereward_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
+            outputs=[promptmatch_group, imagereward_group, llmsearch_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
         )
 
         promptmatch_run_btn.click(
             fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
+            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         imagereward_run_btn.click(
             fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
+            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+        )
+        llmsearch_run_btn.click(
+            fn=score_folder,
+            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+        )
+        folder_input.submit(
+            fn=load_folder_for_browse,
+            inputs=[folder_input, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+        )
+        load_folder_btn.click(
+            fn=load_folder_for_browse,
+            inputs=[folder_input, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         prompt_generator_dd.change(
             fn=update_prompt_generator,
@@ -6693,12 +7278,12 @@ def create_app():
         find_similar_btn.click(
             fn=find_similar_images,
             inputs=[folder_input, model_dd, main_slider, aux_slider],
-            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
+            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         find_same_person_btn.click(
             fn=find_same_person_images,
             inputs=[folder_input, main_slider, aux_slider],
-            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
+            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         generated_prompt_detail_slider.change(
             fn=update_generated_prompt_detail,
@@ -6708,13 +7293,13 @@ def create_app():
         insert_prompt_btn.click(
             fn=insert_generated_prompt,
             inputs=[method_dd, generated_prompt_tb],
-            outputs=[promptgen_status_md, pos_prompt_tb, ir_prompt_tb],
+            outputs=[promptgen_status_md, pos_prompt_tb, ir_prompt_tb, llm_prompt_tb],
         )
 
         main_slider.input(fn=update_histogram_only, inputs=[main_slider, aux_slider], outputs=[hist_plot], queue=False)
         aux_slider.input(fn=update_histogram_only, inputs=[main_slider, aux_slider], outputs=[hist_plot], queue=False)
-        main_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state], queue=False)
-        aux_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state], queue=False)
+        main_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col], queue=False)
+        aux_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col], queue=False)
         percentile_slider.input(
             fn=update_histogram_from_percentile,
             inputs=[percentile_slider, aux_slider],
@@ -6724,65 +7309,71 @@ def create_app():
         percentile_slider.release(
             fn=set_from_percentile,
             inputs=[percentile_slider, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider],
             queue=False,
         )
         main_mid_btn.click(
             fn=reset_main_threshold_to_middle,
             inputs=[main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         aux_mid_btn.click(
             fn=reset_aux_threshold_to_middle,
             inputs=[main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         percentile_mid_btn.click(
             fn=reset_percentile_to_middle,
             inputs=[main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, percentile_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, percentile_slider],
         )
         zoom_slider.change(
             fn=update_zoom,
             inputs=[zoom_slider, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         proxy_display_cb.change(
             fn=update_proxy_display,
             inputs=[proxy_display_cb, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         ir_penalty_weight_tb.change(
             fn=update_imagereward_penalty_weight,
             inputs=[ir_penalty_weight_tb, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         shortcut_action.change(
             fn=handle_shortcut_action,
-            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state],
+            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         model_status_state.change(
             fn=refresh_promptmatch_model_dropdown,
             inputs=[model_dd],
             outputs=[model_dd],
         )
+        model_status_state.change(
+            fn=refresh_promptmatch_model_dropdown,
+            inputs=[llm_model_dd],
+            outputs=[llm_model_dd],
+        )
         hist_width_tb.change(fn=handle_hist_width, inputs=[hist_width_tb, main_slider, aux_slider], outputs=[hist_plot])
         thumb_action.change(
             fn=handle_thumb_action,
             inputs=[thumb_action, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
-        move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
-        fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
-        move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
-        clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
-        clear_all_status_btn.click(fn=clear_all_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state])
-        hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider])
+        move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
+        pin_selected_btn.click(fn=pin_selected, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        clear_all_status_btn.click(fn=clear_all_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
         export_btn.click(
             fn=export_files,
             inputs=[main_slider, aux_slider, left_export_cb, right_export_cb, move_export_cb, left_export_name_tb, right_export_name_tb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, export_tb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, export_tb],
         )
 
     return demo, css, tooltip_head(tooltips)

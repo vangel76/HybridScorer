@@ -3,6 +3,13 @@ __pycache__/
 old/
 obsolete/
 images/
+
+# AI / Codex / dev-only files
+.codex/
+AGENTS.md
+docs/
+.codex/
+
 *.pyc
 *.pyo
 *.pyd
@@ -11,6 +18,5 @@ images/
 Thumbs.db
 screenshots/HybridScorer2.jpg
 screenshots/HybridScorer2.jpg.kra
-blueprint.txt
 models/
 cache/
