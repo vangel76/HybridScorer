@@ -2,7 +2,7 @@
 
 `HybridScorer` is a local, GPU-first image triage app for sorting large folders of images with AI scoring plus manual review.
 
-Current version: `2.0.0`
+Current version: `2.1.0`
 
 ## What The App Does
 

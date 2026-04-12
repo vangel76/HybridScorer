@@ -4,9 +4,10 @@ images/
 
 # AI / Codex / dev-only files
 .codex/
-AGENTS.md
+.claude/
 docs/
 .vscode/
+AGENTS.md
 
 *.pyc
 *.pyo
@@ -14,7 +15,5 @@ docs/
 .Python
 .DS_Store
 Thumbs.db
-screenshots/HybridScorer2.jpg
-screenshots/HybridScorer2.jpg.kra
 models/
 cache/

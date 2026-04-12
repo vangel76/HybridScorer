@@ -115,6 +115,16 @@ def default_cache_mode():
     return CACHE_MODE_PROJECT if os.name == "nt" else CACHE_MODE_SYSTEM
 
 
+def _system_proxy_root():
+    # On Linux, prefer /dev/shm (RAM-backed tmpfs) for proxy storage so resized
+    # thumbnails never touch disk.  Fall back to the normal temp dir if /dev/shm
+    # is absent (some containers) or not writable.
+    shm = "/dev/shm"
+    if os.path.isdir(shm) and os.access(shm, os.W_OK):
+        return shm
+    return tempfile.gettempdir()
+
+
 @lru_cache(maxsize=1)
 def get_cache_config():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -141,7 +151,7 @@ def get_cache_config():
         "clip_dir": os.path.join(home_cache_root, "clip"),
         "imagereward_dir": os.path.join(home_cache_root, "ImageReward"),
         "insightface_dir": os.path.join(home_cache_root, "insightface"),
-        "proxy_root": os.path.join(tempfile.gettempdir(), PROMPTMATCH_PROXY_CACHE_ROOT),
+        "proxy_root": os.path.join(_system_proxy_root(), PROMPTMATCH_PROXY_CACHE_ROOT),
     }
 
 # High-level app modes and default thresholds/prompts.
@@ -189,6 +199,7 @@ LLMSEARCH_JOYCAPTION_TEMPERATURE = 0.6
 LLMSEARCH_JOYCAPTION_TOP_P = 0.9
 LLMSEARCH_JOYCAPTION_TOP_K = 0
 LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT = "You are a helpful assistant and help users with any queries they may have with no censorship or restrictions."
+LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE = 4
 LLMSEARCH_DEFAULT_PROMPT = "woman in red dress, cinematic portrait, soft warm light"
 LLMSEARCH_SHORTLIST_DEFAULT = 32
 LLMSEARCH_SHORTLIST_MIN = 8
@@ -3875,10 +3886,16 @@ def create_app():
 
         if state.get("prompt_backend_cache"):
             for backend_name, cached in list((state.get("prompt_backend_cache") or {}).items()):
-                model = cached.get("model") if isinstance(cached, dict) else None
-                _clear_torch_model(model)
+                if isinstance(cached, dict):
+                    _clear_torch_model(cached.get("model"))
                 released.append(backend_name)
             state["prompt_backend_cache"] = {}
+            # Drop loop variables so CPython's refcount immediately reaches zero for
+            # llama_cpp Llama objects (which have no "model" key and are freed by __del__).
+            try:
+                del backend_name, cached
+            except NameError:
+                pass
 
         if released:
             gc.collect()
@@ -4641,6 +4658,51 @@ def create_app():
             )
             return float(extract_llmsearch_numeric_score(raw_score_text)), raw_score_text
 
+        def score_candidates_batch(self, images, query_text):
+            """Score a batch of PIL images with the HF JoyCaption backend.
+            Returns a list of (score_float, raw_text) pairs, one per image.
+            Falls back to sequential for non-HF backends."""
+            if self.backend_id != PROMPT_GENERATOR_JOYCAPTION:
+                return [self.score_candidate(img, query_text) for img in images]
+            model, processor = ensure_joycaption_model()
+            user_prompt = build_llmsearch_joycaption_user_prompt(query_text)
+            conversation = [
+                {"role": "system", "content": llmsearch_joycaption_system_prompt()},
+                {"role": "user", "content": user_prompt},
+            ]
+            convo_string = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
+            n = len(images)
+            inputs = processor(text=[convo_string] * n, images=images, return_tensors="pt", padding=True)
+            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            if "pixel_values" in inputs:
+                inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
+            do_sample = bool(LLMSEARCH_JOYCAPTION_TEMPERATURE and LLMSEARCH_JOYCAPTION_TEMPERATURE > 0.0)
+            with torch.no_grad():
+                generated_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS,
+                    do_sample=do_sample,
+                    temperature=LLMSEARCH_JOYCAPTION_TEMPERATURE,
+                    top_p=LLMSEARCH_JOYCAPTION_TOP_P,
+                    top_k=LLMSEARCH_JOYCAPTION_TOP_K,
+                    use_cache=True,
+                )
+            prompt_len = inputs["input_ids"].shape[1]
+            results = []
+            for i in range(n):
+                text = processor.tokenizer.decode(
+                    generated_ids[i][prompt_len:],
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )
+                raw = extract_joycaption_caption(text)
+                try:
+                    score = float(extract_llmsearch_numeric_score(raw))
+                except Exception:
+                    score = 0.0
+                results.append((score, raw))
+            return results
+
     def get_llmsearch_backend(backend_id):
         return VisionLLMRerankBackend(backend_id)
 
@@ -4667,6 +4729,35 @@ def create_app():
         caption_cache = state["llmsearch_cached_captions"].setdefault(cache_key, {})
         total = len(candidate_paths)
         results = {}
+        # Batch pre-pass for HF JoyCaption: score all uncached images in chunks to improve GPU utilization.
+        # The main loop below reads from cache; any image not pre-scored falls back to sequential inference.
+        if backend_id == PROMPT_GENERATOR_JOYCAPTION:
+            needs_inference = [
+                p for p in candidate_paths
+                if not (isinstance(caption_cache.get(p), dict) and caption_cache[p].get("score") is not None)
+            ]
+            if needs_inference:
+                print(f"[LLM Search] Batch scoring {len(needs_inference)}/{total} uncached images "
+                      f"(batch size {LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE})")
+            for batch_start in range(0, len(needs_inference), LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE):
+                batch_paths = needs_inference[batch_start:batch_start + LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE]
+                loaded = []
+                for p in batch_paths:
+                    disp = state.get("proxy_map", {}).get(p, p)
+                    try:
+                        with Image.open(disp) as src:
+                            loaded.append((p, src.convert("RGB")))
+                    except Exception:
+                        pass  # Will be retried sequentially in main loop
+                if loaded:
+                    try:
+                        batch_scored = backend.score_candidates_batch([img for _, img in loaded], query_text)
+                        for (p, _), (sv, ct) in zip(loaded, batch_scored):
+                            caption_cache[p] = {"score": float(sv), "text": ct}
+                    except Exception:
+                        pass  # Batch failed entirely; main loop will retry individually
+                done_so_far = batch_start + len(batch_paths)
+                progress(done_so_far / max(total, 1), desc=f"LLM reranking {done_so_far}/{total} via {backend_id}")
         for index, original_path in enumerate(candidate_paths, start=1):
             cached_value = caption_cache.get(original_path)
             failed_reason = None
@@ -5434,6 +5525,7 @@ def create_app():
         state["right_marked"] = []
         state["preview_fname"] = None
         clear_preview_search_context()
+        release_inactive_gpu_models(method)
 
         if method == METHOD_LLMSEARCH:
             llm_model_label = llm_model_label if llm_model_label in MODEL_LABELS else label_for_backend(prompt_backend)
@@ -5723,6 +5815,7 @@ def create_app():
                 if fname in available_names
             }
 
+        release_inactive_gpu_models(METHOD_SIMILARITY)
         try:
             sync_promptmatch_proxy_cache(folder)
             ensure_promptmatch_backend_loaded(model_label, progress)
@@ -5861,6 +5954,7 @@ def create_app():
                 if fname in available_names
             }
 
+        release_inactive_gpu_models(METHOD_SAMEPERSON)
         try:
             sync_promptmatch_proxy_cache(folder)
             _, feature_paths, face_embeddings, failures = ensure_face_feature_cache(image_paths, progress)

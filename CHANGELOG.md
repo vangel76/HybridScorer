@@ -1,5 +1,21 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.1.0 - Better Memory & GPU Use
+
+**Smarter GPU Memory Management**
+- Switching between scoring modes (e.g. LLM Search → ImageReward) now automatically frees the previous mode's models from VRAM before loading the new ones
+- Fixes a VRAM leak where JoyCaption and other large models would stay resident after switching modes, causing out-of-memory errors on cards with less than 32 GB VRAM
+
+**Faster LLM Search on HF JoyCaption**
+- When using the `JoyCaption Beta One` (HF) backend for LLM Search reranking, images are now scored in batches instead of one at a time
+- Improves GPU utilisation and throughput on the rerank pass
+- The GGUF backend is unaffected (sequential as before)
+
+**Proxy Cache in RAM on Linux**
+- On Linux, resized proxy thumbnails are now written to `/dev/shm` (a RAM-backed filesystem) instead of the system temp directory, eliminating disk I/O for proxy files
+- Falls back silently to the previous temp-directory behaviour if `/dev/shm` is not available or not writable (e.g. some containers)
+- Windows and project-mode behaviour are unchanged
+
 ## Version 2.0.0 - Faster & Smarter
 
 **Faster Image Scoring**

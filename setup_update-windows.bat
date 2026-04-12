@@ -170,7 +170,7 @@ echo.
 echo Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python
 set "CMAKE_ARGS=-DGGML_CUDA=on"
 set "FORCE_CMAKE=1"
-python -m pip install --upgrade --force-reinstall --no-cache-dir -r "%CD%\requirements-gguf.txt"
+python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
 if errorlevel 1 exit /b 1
 set "CMAKE_ARGS="
 set "FORCE_CMAKE="
