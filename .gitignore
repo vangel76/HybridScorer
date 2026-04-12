@@ -8,7 +8,6 @@ images/
 .codex/
 AGENTS.md
 docs/
-.codex/
 
 *.pyc
 *.pyo
