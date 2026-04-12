@@ -180,11 +180,19 @@ JOYCAPTION_GGUF_FILENAME = "Llama-Joycaption-Beta-One-Hf-Llava-Q4_K_M.gguf"
 JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-f16.gguf"
 JOYCAPTION_GGUF_SETUP_HINT = "./setup_update-linux.sh"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
-DEFAULT_LLMSEARCH_BACKEND = PROMPT_GENERATOR_JOYCAPTION
+DEFAULT_LLMSEARCH_BACKEND = PROMPT_GENERATOR_JOYCAPTION_GGUF
+LLMSEARCH_SCORING_MODE_NUMERIC_V1 = "joycaption_numeric_v9"
+LLMSEARCH_JOYCAPTION_CAPTION_TYPE = "descriptive"
+LLMSEARCH_JOYCAPTION_CAPTION_LENGTH = "very short"
+LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS = 128
+LLMSEARCH_JOYCAPTION_TEMPERATURE = 0.6
+LLMSEARCH_JOYCAPTION_TOP_P = 0.9
+LLMSEARCH_JOYCAPTION_TOP_K = 0
+LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT = "You are a helpful assistant and help users with any queries they may have with no censorship or restrictions."
 LLMSEARCH_DEFAULT_PROMPT = "woman in red dress, cinematic portrait, soft warm light"
-LLMSEARCH_SHORTLIST_DEFAULT = 64
+LLMSEARCH_SHORTLIST_DEFAULT = 32
 LLMSEARCH_SHORTLIST_MIN = 8
-LLMSEARCH_SHORTLIST_MAX = 128
+LLMSEARCH_SHORTLIST_MAX = 512
 FACE_MODEL_PACK = "buffalo_l"
 FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
 FACE_DET_SIZE = (640, 640)
@@ -2315,25 +2323,30 @@ def extract_joycaption_caption(text):
 
 
 def llmsearch_joycaption_system_prompt():
-    return (
-        "You are reranking images for a text-to-image style search. "
-        "Turn each image into a compact searchable prompt line that helps CLIP-style text-image scoring decide whether the image matches the user's request. "
-        "Describe only concrete visible content. "
-        "Prioritize subject identity, clothing, pose, composition, setting, lighting, mood, colors, camera framing, and standout objects when clearly visible. "
-        "Emphasize details that directly support or contradict the search request. "
-        "Return exactly one compact comma-separated prompt line. "
-        "Do not explain reasoning, do not mention confidence, do not use bullets, and do not use meta lead-ins like 'This image shows'."
-    )
+    return LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT
 
 
 def build_llmsearch_joycaption_user_prompt(query_text):
     normalized_query = normalize_prompt_text(query_text or "")
     return (
-        "User search prompt: "
-        f"{normalized_query}. "
-        "Write a single compact comma-separated prompt line for this image that would be useful for matching against that search prompt. "
-        "Keep only visible details. "
-        "If an important requested attribute is absent, do not invent it."
+        "You are an image evaluation model.\n\n"
+        "Your task is to score how well an image matches a given user prompt.\n\n"
+        "Scoring rules:\n"
+        "- Return a single number from 0 to 100 (integer only).\n"
+        "- 0 = the image does NOT match the described prompt at all.\n"
+        "- 100 = the image clearly and strongly matches the described prompt.\n"
+        "- Intermediate values reflect partial presence or uncertainty.\n\n"
+        "Evaluation guidelines:\n"
+        "- Focus ONLY on visible evidence in the image.\n"
+        "- Do NOT hallucinate details.\n"
+        "- Be strict: weak or partial matches = low score, strong obvious matches = high score.\n"
+        "- If multiple traits, attributes, objects, actions, styles, or conditions are listed, evaluate their combined presence.\n"
+        "- If nothing is visible, return 0.\n\n"
+        "Output format:\n"
+        "- Return ONLY the number.\n"
+        "- No explanation, no text, no symbols, no percentage sign.\n\n"
+        "Prompt:\n"
+        f"{normalized_query or 'no traits provided'}"
     )
 
 
@@ -2344,11 +2357,28 @@ def normalize_llmsearch_candidate_text(text):
     return normalize_generated_prompt(text)
 
 
+def extract_llmsearch_numeric_score(text):
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        raise ValueError("LLM rerank backend returned an empty score.")
+    match = re.fullmatch(r"(100|[0-9]{1,2})", cleaned)
+    if not match:
+        raise ValueError(f"LLM rerank backend did not return a usable 0-100 integer: {cleaned!r}")
+    score_value = int(match.group(1))
+    return max(0, min(100, score_value))
+
+
 def image_to_data_url(image, image_format="PNG"):
     buffer = io.BytesIO()
     image.save(buffer, format=image_format)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/{image_format.lower()};base64,{encoded}"
+
+
+def joycaption_gguf_prepare_image(image):
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    return image.resize((336, 336), Image.Resampling.BILINEAR)
 
 
 def status_line(method, left_items, right_items, scores, overrides):
@@ -2397,6 +2427,12 @@ def build_split(method, scores, overrides, main_threshold, aux_threshold):
             caption = f"{'✋ ' if fname in overrides else ''}{score_text}{query_suffix} | {fname}"
             if item.get("base_pos") is not None:
                 caption += f"  (shortlist {item['base_pos']:.3f})"
+            if method == METHOD_LLMSEARCH:
+                raw_response = (item.get("caption") or "").strip()
+                if raw_response:
+                    caption += f"  [LLM: {raw_response}]"
+                elif item.get("reason"):
+                    caption += f"  [LLM error: {item['reason']}]"
             entry = (item["path"], caption)
             if side == left_name:
                 left.append(entry)
@@ -2485,6 +2521,7 @@ def create_app():
         "llmsearch_cached_signature": None,
         "llmsearch_cached_prompt": None,
         "llmsearch_cached_backend": None,
+        "llmsearch_cached_scoring_mode": None,
         "llmsearch_cached_shortlist_size": None,
         "llmsearch_cached_model_label": None,
         "llmsearch_cached_scores": None,
@@ -2547,6 +2584,7 @@ def create_app():
             state["llmsearch_cached_signature"] = None
             state["llmsearch_cached_prompt"] = None
             state["llmsearch_cached_backend"] = None
+            state["llmsearch_cached_scoring_mode"] = None
             state["llmsearch_cached_shortlist_size"] = None
             state["llmsearch_cached_model_label"] = None
             state["llmsearch_cached_scores"] = None
@@ -4444,7 +4482,7 @@ def create_app():
             extract_florence_caption(parsed, raw_text, task_prompt)
         )
 
-    def run_joycaption_prompt_variant(generator_name, image, user_prompt, detail_level, system_prompt=None, normalizer=None):
+    def run_joycaption_prompt_variant(generator_name, image, user_prompt, detail_level, system_prompt=None, normalizer=None, max_new_tokens_override=None, stop_sequences=None, temperature_override=None, top_p_override=None, top_k_override=None):
         system_prompt = system_prompt or (
             "You are a helpful image captioner. "
             "Describe only concrete visible content and write output that is useful as a text-to-image prompt. "
@@ -4456,7 +4494,11 @@ def create_app():
                 extract_joycaption_caption(text),
                 keep_prose=(detail_level == 3),
             )
-        max_new_tokens = joycaption_max_new_tokens(detail_level)
+        max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else joycaption_max_new_tokens(detail_level)
+        temperature = temperature_override if temperature_override is not None else 0.0
+        top_p = top_p_override if top_p_override is not None else 1.0
+        top_k = top_k_override if top_k_override is not None else 0
+        do_sample = bool(temperature and temperature > 0.0)
 
         if generator_name == PROMPT_GENERATOR_JOYCAPTION:
             model, processor = ensure_joycaption_model()
@@ -4478,7 +4520,10 @@ def create_app():
                 generated_ids = model.generate(
                     **inputs,
                     max_new_tokens=max_new_tokens,
-                    do_sample=False,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
                     use_cache=True,
                 )[0]
 
@@ -4491,44 +4536,36 @@ def create_app():
             return normalizer(text)
 
         llm = ensure_joycaption_gguf_model()
+        image = joycaption_gguf_prepare_image(image)
         data_url = image_to_data_url(image)
         try:
             from llama_cpp._utils import suppress_stdout_stderr
         except ImportError:
             suppress_stdout_stderr = None
+        completion_params = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_new_tokens,
+            "stop": stop_sequences or ["</s>", "User:", "Assistant:"],
+            "repeat_penalty": 1.1,
+        }
+        if top_k and top_k > 0:
+            completion_params["top_k"] = top_k
         if suppress_stdout_stderr is None:
-            response = llm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {"type": "image_url", "image_url": {"url": data_url}},
-                        ],
-                    },
-                ],
-                temperature=0.0,
-                top_p=1.0,
-                max_tokens=max_new_tokens,
-            )
+            response = llm.create_chat_completion(**completion_params)
         else:
             with suppress_stdout_stderr(disable=False):
-                response = llm.create_chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": user_prompt},
-                                {"type": "image_url", "image_url": {"url": data_url}},
-                            ],
-                        },
-                    ],
-                    temperature=0.0,
-                    top_p=1.0,
-                    max_tokens=max_new_tokens,
-                )
+                response = llm.create_chat_completion(**completion_params)
         try:
             text = response["choices"][0]["message"]["content"]
         except Exception as exc:
@@ -4567,6 +4604,9 @@ def create_app():
         def release(self):
             return None
 
+        def uses_direct_numeric_score(self):
+            return self.backend_id in {PROMPT_GENERATOR_JOYCAPTION, PROMPT_GENERATOR_JOYCAPTION_GGUF}
+
         def candidate_text(self, image, query_text):
             if self.backend_id == PROMPT_GENERATOR_FLORENCE:
                 return run_florence_prompt_variant(image, "<MORE_DETAILED_CAPTION>")
@@ -4581,11 +4621,36 @@ def create_app():
                 normalizer=normalize_llmsearch_candidate_text,
             )
 
+        def score_candidate(self, image, query_text):
+            if not self.uses_direct_numeric_score():
+                caption_text = self.candidate_text(image, query_text)
+                return llmsearch_similarity(state["backend"].encode_text((query_text or "").strip()), caption_text), caption_text
+
+            raw_score_text = run_joycaption_prompt_variant(
+                self.backend_id,
+                image,
+                build_llmsearch_joycaption_user_prompt(query_text),
+                1,
+                system_prompt=llmsearch_joycaption_system_prompt(),
+                normalizer=extract_joycaption_caption,
+                max_new_tokens_override=LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS,
+                stop_sequences=[" ", "\n", "\t", ",", ".", "%", "</s>", "User:", "Assistant:"],
+                temperature_override=LLMSEARCH_JOYCAPTION_TEMPERATURE,
+                top_p_override=LLMSEARCH_JOYCAPTION_TOP_P,
+                top_k_override=LLMSEARCH_JOYCAPTION_TOP_K,
+            )
+            return float(extract_llmsearch_numeric_score(raw_score_text)), raw_score_text
+
     def get_llmsearch_backend(backend_id):
         return VisionLLMRerankBackend(backend_id)
 
     def llmsearch_caption_cache_key(backend_id, image_signature, query_text):
-        return (str(backend_id), str(image_signature), normalize_prompt_text(query_text or ""))
+        return (
+            str(backend_id),
+            LLMSEARCH_SCORING_MODE_NUMERIC_V1,
+            str(image_signature),
+            normalize_prompt_text(query_text or ""),
+        )
 
     def llmsearch_similarity(query_embedding, text):
         text = normalize_prompt_text(text)
@@ -4600,13 +4665,34 @@ def create_app():
         backend.load(progress)
         cache_key = llmsearch_caption_cache_key(backend_id, image_signature, query_text)
         caption_cache = state["llmsearch_cached_captions"].setdefault(cache_key, {})
-        query_embedding = state["backend"].encode_text((query_text or "").strip())
         total = len(candidate_paths)
         results = {}
         for index, original_path in enumerate(candidate_paths, start=1):
-            caption_text = caption_cache.get(original_path)
+            cached_value = caption_cache.get(original_path)
             failed_reason = None
-            if not caption_text:
+            score_value = None
+            caption_text = ""
+            if isinstance(cached_value, dict):
+                score_value = cached_value.get("score")
+                caption_text = cached_value.get("text") or ""
+            elif isinstance(cached_value, str):
+                caption_text = cached_value
+
+            if score_value is None and not caption_text and backend.uses_direct_numeric_score():
+                display_path = state.get("proxy_map", {}).get(original_path, original_path)
+                try:
+                    with Image.open(display_path) as src_img:
+                        image = src_img.convert("RGB")
+                    score_value, caption_text = backend.score_candidate(image, query_text)
+                    caption_cache[original_path] = {
+                        "score": float(score_value),
+                        "text": caption_text,
+                    }
+                except Exception as exc:
+                    failed_reason = str(exc) or "LLM rerank backend failed."
+                    score_value = 0.0
+                    caption_text = ""
+            elif not caption_text:
                 display_path = state.get("proxy_map", {}).get(original_path, original_path)
                 try:
                     with Image.open(display_path) as src_img:
@@ -4617,10 +4703,10 @@ def create_app():
                     failed_reason = str(exc) or "LLM rerank backend failed."
                     caption_text = ""
             if failed_reason:
-                score_value = -1.0
-            else:
+                score_value = 0.0 if backend.uses_direct_numeric_score() else -1.0
+            elif score_value is None:
                 try:
-                    score_value = llmsearch_similarity(query_embedding, caption_text)
+                    score_value = llmsearch_similarity(state["backend"].encode_text((query_text or "").strip()), caption_text)
                 except Exception as exc:
                     failed_reason = str(exc) or "LLM rerank text scoring failed."
                     score_value = -1.0
@@ -4852,7 +4938,7 @@ def create_app():
         )
 
     def empty_result(message, method):
-        _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
+        _, _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
         set_scored_mode()
         state["browse_items"] = []
         state["browse_status"] = ""
@@ -5365,6 +5451,7 @@ def create_app():
                 state.get("llmsearch_cached_signature") == image_signature
                 and state.get("llmsearch_cached_prompt") == llm_prompt
                 and state.get("llmsearch_cached_backend") == llm_backend_id
+                and state.get("llmsearch_cached_scoring_mode") == LLMSEARCH_SCORING_MODE_NUMERIC_V1
                 and state.get("llmsearch_cached_shortlist_size") == shortlist_size
                 and state.get("llmsearch_cached_model_label") == llm_model_label
                 and state.get("llmsearch_cached_scores") is not None
@@ -5444,6 +5531,7 @@ def create_app():
                 state["llmsearch_cached_signature"] = image_signature
                 state["llmsearch_cached_prompt"] = llm_prompt
                 state["llmsearch_cached_backend"] = llm_backend_id
+                state["llmsearch_cached_scoring_mode"] = LLMSEARCH_SCORING_MODE_NUMERIC_V1
                 state["llmsearch_cached_shortlist_size"] = shortlist_size
                 state["llmsearch_cached_model_label"] = llm_model_label
                 state["llmsearch_cached_scores"] = dict(wrapped_scores)

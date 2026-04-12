@@ -5,14 +5,31 @@
 **Faster Image Scoring**
 - Large folders now process much faster
 - Better performance monitoring to see if your computer is slow
+- Repeat runs are faster because PromptMatch, ImageReward, face search, and LLM Search reuse more cached work when possible
 
 **Smarter Face Recognition**
 - Find same person searches work better and faster
 - Handles images without faces more gracefully
 
+**Better Search Tools**
+- `LLM Search` is now part of the main scored workflow
+- It first shortlists images with PromptMatch, then reranks the shortlist with a local vision-language model
+- JoyCaption GGUF is available as the default local LLM Search backend
+
+**Better Prompt Generation**
+- Prompt generation now supports `Florence-2`, `JoyCaption Beta One`, and `JoyCaption Beta One GGUF (Q4_K_M)`
+- Generated prompts stay in their own editable field until you insert them into the active scoring method
+
+**Better Setup & Caching**
+- Setup scripts now standardize on `venv312`
+- Linux and Windows setup now install the JoyCaption GGUF runtime automatically
+- Setup scripts try a safe git update automatically before refreshing the environment
+- Cache defaults are smarter by operating system: Windows keeps model/proxy caches in the project, while Linux keeps the normal system-cache behavior
+
 **Better Interface**
 - Left sidebar scrolls independently for easier access
 - More intuitive layout
+- Thresholds are remembered per mode, so switching methods no longer steals the last slider value from another mode
 
 ## Version 1.9.0 - New Features
 

@@ -1,7 +1,5 @@
 venv312/
 __pycache__/
-old/
-obsolete/
 images/
 
 # AI / Codex / dev-only files
