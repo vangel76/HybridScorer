@@ -3,11 +3,11 @@
 ## Version 2.1.0 - Better Memory & GPU Use
 
 **Smarter GPU Memory Management**
-- Switching between scoring modes (e.g. LLM Search → ImageReward) now automatically frees the previous mode's models from VRAM before loading the new ones
+- Switching between scoring modes (e.g. LM Search → ImageReward) now automatically frees the previous mode's models from VRAM before loading the new ones
 - Fixes a VRAM leak where JoyCaption and other large models would stay resident after switching modes, causing out-of-memory errors on cards with less than 32 GB VRAM
 
-**Faster LLM Search on HF JoyCaption**
-- When using the `JoyCaption Beta One` (HF) backend for LLM Search reranking, images are now scored in batches instead of one at a time
+**Faster LM Search on HF JoyCaption**
+- When using the `JoyCaption Beta One` (HF) backend for LM Search reranking, images are now scored in batches instead of one at a time
 - Improves GPU utilisation and throughput on the rerank pass
 - The GGUF backend is unaffected (sequential as before)
 
@@ -21,16 +21,16 @@
 **Faster Image Scoring**
 - Large folders now process much faster
 - Better performance monitoring to see if your computer is slow
-- Repeat runs are faster because PromptMatch, ImageReward, face search, and LLM Search reuse more cached work when possible
+- Repeat runs are faster because PromptMatch, ImageReward, face search, and LM Search reuse more cached work when possible
 
 **Smarter Face Recognition**
 - Find same person searches work better and faster
 - Handles images without faces more gracefully
 
 **Better Search Tools**
-- `LLM Search` is now part of the main scored workflow
+- `LM Search` , Language Model Search is now part of the main scored workflow
 - It first shortlists images with PromptMatch, then reranks the shortlist with a local vision-language model
-- JoyCaption GGUF is available as the default local LLM Search backend
+- JoyCaption GGUF is available as the default local LM Search backend
 
 **Better Prompt Generation**
 - Prompt generation now supports `Florence-2`, `JoyCaption Beta One`, and `JoyCaption Beta One GGUF (Q4_K_M)`

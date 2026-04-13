@@ -8,7 +8,7 @@ Modes:
 - ImageReward → aesthetic/preference scoring
 - Similarity → image-image search from preview
 - SamePerson → face search from preview
-- LLM Search → PromptMatch shortlist + local vision-language rerank
+- LM Search → PromptMatch shortlist + local vision-language rerank
 
 Core:
 - manual bucket overrides
@@ -157,7 +157,7 @@ def get_cache_config():
 # High-level app modes and default thresholds/prompts.
 METHOD_PROMPTMATCH = "PromptMatch"
 METHOD_IMAGEREWARD = "ImageReward"
-METHOD_LLMSEARCH = "LLM Search"
+METHOD_LLMSEARCH = "LM Search"
 METHOD_SIMILARITY = "Similarity"
 METHOD_SAMEPERSON = "SamePerson"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
@@ -4984,7 +4984,7 @@ def create_app():
                 gr.update(visible=False),
                 percentile_slider_update(method),
                 percentile_reset_button_update(method),
-                gr.update(value="LLM Search uses PromptMatch to shortlist likely matches, then reranks the top candidates with a local vision-language model."),
+                gr.update(value="LM Search uses PromptMatch to shortlist likely matches, then reranks the top candidates with a local vision-language model."),
             )
         if method == METHOD_SIMILARITY:
             return (
@@ -5579,7 +5579,7 @@ def create_app():
                 ranked_candidates.sort(key=lambda item: -float(item["pos"]))
                 candidate_paths = [item["path"] for item in ranked_candidates[:shortlist_size]]
                 if not candidate_paths:
-                    return empty_result("LLM search could not shortlist any usable images.", method)
+                    return empty_result("LM search could not shortlist any usable images.", method)
 
                 try:
                     llm_candidate_scores = score_llmsearch_candidates(
@@ -6150,7 +6150,7 @@ def create_app():
         if method == METHOD_PROMPTMATCH:
             target_label = "PromptMatch positive prompt"
         elif method == METHOD_LLMSEARCH:
-            target_label = "LLM search prompt"
+            target_label = "LM search prompt"
         else:
             target_label = "ImageReward positive prompt"
         state["generated_prompt_status"] = f"Inserted generated prompt into {target_label}."
@@ -7247,12 +7247,12 @@ def create_app():
                             llm_backend_dd = gr.Dropdown(
                                 choices=llmsearch_backend_choices(),
                                 value=DEFAULT_LLMSEARCH_BACKEND,
-                                label="Vision LLM backend",
+                                label="Vision LM backend",
                                 elem_id="hy-llm-backend",
                             )
                             llm_prompt_tb = gr.Textbox(
                                 value=LLMSEARCH_DEFAULT_PROMPT,
-                                label="LLM search prompt",
+                                label="LM search prompt",
                                 lines=2,
                                 elem_id="hy-llm-prompt",
                             )

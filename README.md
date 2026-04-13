@@ -12,7 +12,7 @@ Working modes in the current app:
 
 - `PromptMatch` → CLIP-family text-image similarity
 - `ImageReward` → prompt-conditioned aesthetic/preference scoring
-- `LLM Search` → PromptMatch shortlist plus local vision-language rerank
+- `LM Search` → PromptMatch shortlist plus local vision-language rerank
 - `Similarity` → preview-driven image-image search
 - `SamePerson` → preview-driven face-identity search
 
@@ -108,13 +108,13 @@ Current prompt generators:
 Behavior:
 
 - generated text is stored separately until you insert it
-- you can insert it into `PromptMatch`, `ImageReward`, or `LLM Search`
+- you can insert it into `PromptMatch`, `ImageReward`, or `LM Search`
 - prompt detail has 3 levels
 - backend instances are cached in memory once loaded
 
-## LLM Search
+## LM Search
 
-`LLM Search` is a scored mode in the current app, not just a helper action.
+`LM Search` is a scored mode in the current app, not just a helper action.
 
 Current behavior:
 
