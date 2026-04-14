@@ -1,6 +1,6 @@
 # HybridScorer
 
-`HybridScorer` is a local, GPU-first image triage app for sorting large folders of images with AI scoring plus manual review.
+`HybridScorer` is a 100% local app for sorting large folders of images with AI scoring.
 
 Current version: `2.1.0`
 
@@ -27,7 +27,10 @@ Everything in the app is built around the same fast loop:
 ## Screenshots
 
 ![HybridScorer UI](screenshots/HybridScorer.jpg)
-![HybridScorer UI](screenshots/New_Graphs.jpg)
+
+![Live threshold histogram](screenshots/New_Graphs.jpg)
+
+The histogram updates live as you move the threshold. The red/green split shows exactly which images cross the cut — hover over any thumbnail and its score appears as a marker on the graph. You can drag the slider *or click anywhere directly on the histogram* to set the cut point instantly. Or hit **Fit thresh** to let the app position it automatically based on your current manual picks.
 
 ## Install
 
