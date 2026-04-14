@@ -6,27 +6,28 @@ Current version: `2.1.0`
 
 ## What The App Does
 
-Point the app at a folder of images, run one of the built-in scoring/search modes, review the `SELECTED` and `REJECTED` buckets, fix edge cases manually, then export the result.
+HybridScorer cuts large image sets down to size fast. Point it at a folder, let the AI score everything, then review a clean `SELECTED` / `REJECTED` split and export what you want to keep. No cloud, no uploads — all processing runs on your local GPU.
 
 Working modes in the current app:
 
-- `PromptMatch` → CLIP-family text-image similarity
-- `ImageReward` → prompt-conditioned aesthetic/preference scoring
-- `LM Search` → PromptMatch shortlist plus local vision-language rerank
-- `Similarity` → preview-driven image-image search
-- `SamePerson` → preview-driven face-identity search
+- `PromptMatch` — describe what you want in plain text and score the whole folder against it
+- `ImageReward` — rank images by how well they match a prompt, weighted against unwanted content
+- `LM Search` — use a local vision-language model to deeply understand each image, not just match keywords
+- `Similarity` — pick one image you like and find everything in the folder that looks like it
+- `SamePerson` — pick a face and pull every image of that person from the folder automatically
 
-Shared workflow features:
+Everything in the app is built around the same fast loop:
 
-- manual bucket overrides that persist across rescoring in the same folder
-- prompt generation from the current preview image
-- export by copy or optional move
-- histogram-based threshold review
-- cached proxies and cached model results where appropriate
+- generate a prompt from any preview image and feed it straight into scoring
+- export your kept images by copy or by move
+- the histogram shows you exactly where the threshold cuts, so you keep control
+- re-scoring reuses cached results — switching prompts or tweaking the threshold is near-instant
+- manually move any image between buckets — overrides AI re-scoring allways when needed
 
-## Screenshot
+## Screenshots
 
 ![HybridScorer UI](screenshots/HybridScorer.jpg)
+![HybridScorer UI](screenshots/New_Graphs.jpg)
 
 ## Install
 
