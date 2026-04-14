@@ -37,13 +37,7 @@ git clone https://github.com/vangel76/HybridScorer.git
 cd HybridScorer
 ```
 
-The supported setup path is a local Python `3.12` virtual environment named `venv312`.
-
-### Linux
-
-```bash
-./setup_update-linux.sh
-```
+then run:
 
 ### Windows
 
@@ -51,9 +45,16 @@ The supported setup path is a local Python `3.12` virtual environment named `ven
 setup_update-windows.bat
 ```
 
+### Linux
+
+```bash
+./setup_update-linux.sh
+```
+
+
 What the setup scripts do now:
 
-- create or refresh `venv312`
+- create or refresh the folder `venv312` containing all packages needed:
 - install CUDA-enabled PyTorch
 - install the main app requirements
 - install `onnxruntime-gpu` for face search
@@ -64,23 +65,22 @@ The setup scripts also try a safe `git pull --ff-only` first when the checkout i
 
 ## Run
 
-### Linux
-
-```bash
-./run-Hybrid-Scorer.sh
-```
-
 ### Windows
 
 ```bat
 run-Hybrid-Scorer-windows.bat
 ```
 
-Default local URL:
+### Linux
+
+```bash
+./run-Hybrid-Scorer.sh
+```
+
+The Gradio UI appears at local URL:
 
 - `http://localhost:7862`
 
-The app also honors `HYBRIDSELECTOR_PORT` if you need a different port.
 
 ## Current Runtime Model
 
