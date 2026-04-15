@@ -1,5 +1,18 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.2.0 - TagMatch & Per-Phrase PromptMatch
+
+**TagMatch — Find AI Human Errors**
+- New scoring mode that catches typical AI anatomy mistakes: wrong hands, extra limbs, deformed faces, bad proportions, and more
+- Enter comma-separated artifact tags; every image is scored by how strongly the local WD tagger sees them — ships with a ready-to-use default set
+- Hover a thumbnail to see each tag's confidence as a color-coded pill (yellow → green) right on the tag textbox
+- Re-running with different tags is near-instant — image inference is cached, only the tag lookup changes
+
+**PromptMatch Per-Segment Mode**
+- New checkbox splits your prompt at commas and scores each phrase independently
+- Hover a thumbnail to see per-phrase match strength as pills on both the positive (yellow → green) and negative (yellow → red) prompt textboxes
+- Near-instant — image features are already cached
+
 ## Version 2.1.0 - Better Memory & GPU Use
 
 **Smarter GPU Memory Management**

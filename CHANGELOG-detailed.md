@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0] - 2026-04-15
+
+- Updated `TAGMATCH_DEFAULT_TAGS` to only include tags confirmed present in the WD eva02-large-tagger-v3 ONNX model output layer. Removed `missing_hand`, `extra_legs`, and `missing_foot` (not in vocabulary); replaced with `bad_hands`, `bad_feet`, `bad_proportions`, `extra_arms`, `extra_faces`, `extra_mouth`, `missing_limb`, `multiple_legs`, `multiple_heads`, `oversized_limbs`, `wrong_foot`, `artistic_error`.
+- Fixed TagMatch histogram hover marker: `usesPositiveSimilarityChart` in injected JS was missing `"TagMatch"` and `"LM Search"`, so no hover line was drawn for those modes. Added both to the array so hovering a thumbnail shows that image's score on the TagMatch histogram.
+- Added per-tag probability pill overlay for TagMatch. When hovering a thumbnail in TagMatch mode, an absolutely-positioned overlay appears on top of the `#hy-tagmatch-tags` textarea showing each queried tag as a colored pill (yellow → green by probability, label shows `tag  XX%`). The textarea fades to near-invisible (opacity 0.05) and the Gradio label is hidden via CSS `:has()` while the overlay is active.
+- Added per-segment scoring mode to PromptMatch. A new checkbox "Per-segment scoring (hover shows per-phrase match)" inside the PromptMatch group splits the positive prompt by commas at score time, encodes each phrase independently via the cached CLIP backend, and aggregates the final score as the **sum** of per-segment similarities. Image features are already cached — only cheap text encodings are recomputed. State keys added: `pm_segment_mode` (bool), `pm_segment_sims` (dict).
+- Extended per-segment scoring to the negative prompt as well. Each comma-separated negative phrase is encoded separately; the aggregate neg score is the sum of per-segment neg similarities.
+- Added `segment_score_lookup` and `neg_segment_score_lookup` to `marked_state_json()`, serialized into the `hy-mark-state` JSON bridge so JS can read per-segment similarities per filename without a round-trip.
+- Added per-segment pill overlays on the positive (`#hy-pos`) and negative (`#hy-neg`) prompt textboxes. On thumbnail hover in PromptMatch per-segment mode, pills appear over both textboxes. Positive pills use relative yellow→green coloring (hue 55→120); negative pills use relative yellow→red coloring (hue 55→0). Color is normalized within the image's own segment range so relative matching is always visible.
+- Refactored injected JS overlay helpers into `ensureOverlay(elemId)` and `hideOverlay(elemId)` shared utilities. Extended `syncTagMatchPills()` to drive all three overlays (TagMatch tags, PromptMatch pos, PromptMatch neg) from one function.
+- CSS: added `#hy-pos` and `#hy-neg` to the overlay positioning rules (`position: relative`, textarea fade, label hide-on-active).
+- Added `pm_segment_cb` to `_score_folder_inputs`, `score_folder()` signature, `handle_shortcut_action()` signature, and the `shortcut_action.change()` inputs list.
+
 ## [2.1.0] - 2026-04-12
 
 - `release_inactive_gpu_models(target_method)` was fully implemented but never called, leaving all loaded models (JoyCaption GGUF, Florence-2, ImageReward, InsightFace) permanently resident in VRAM across mode switches. Added the call at the entry of `score_folder`, `find_similar_images`, and `find_same_person_images`, before any model loads, so each scoring entry point evicts models that are not needed for the incoming method.

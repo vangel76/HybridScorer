@@ -2604,6 +2604,8 @@ def create_app():
         "pm_cached_feature_paths": None,
         "pm_cached_image_features": None,
         "pm_cached_failed_paths": None,
+        "pm_segment_mode": False,
+        "pm_segment_sims": {},
         "face_cached_signature": None,
         "face_cached_feature_paths": None,
         "face_cached_embeddings": None,
@@ -3538,8 +3540,8 @@ def create_app():
       negLine.style.opacity = "1";
     }}
   }};
-  const ensureTagMatchOverlay = () => {{
-    const root = document.getElementById("hy-tagmatch-tags");
+  const ensureOverlay = (elemId) => {{
+    const root = document.getElementById(elemId);
     if (!root) return null;
     let ov = root.querySelector(".hy-tag-overlay");
     if (!ov) {{
@@ -3549,46 +3551,134 @@ def create_app():
     }}
     return ov;
   }};
+  const hideOverlay = (elemId) => {{
+    const root = document.getElementById(elemId);
+    if (!root) return;
+    const ov = root.querySelector(".hy-tag-overlay");
+    if (ov) ov.classList.remove("active");
+    const ta = root.querySelector("textarea");
+    if (ta) ta.classList.remove("hy-tag-overlay-active");
+  }};
+  const hslStyle = (t) => {{
+    const hue  = Math.round(55 + t * 65);
+    const sat  = Math.round(60 + t * 30);
+    const lght = Math.round(38 - t * 5);
+    const alph = (0.35 + t * 0.55).toFixed(2);
+    const col  = t > 0.35 ? "#fff" : "#aaa";
+    return `background:hsla(${{hue}},${{sat}}%,${{lght}}%,${{alph}});color:${{col}};border:none`;
+  }};
   const syncTagMatchPills = () => {{
-    const overlay = ensureTagMatchOverlay();
-    if (!overlay) return;
-    const root = document.getElementById("hy-tagmatch-tags");
-    const ta = root ? root.querySelector("textarea") : null;
     const markedState = readMarkedState();
     const method = (markedState.hist_geom || {{}}).method || "";
-    if (method !== "TagMatch" || !activeHoverInfo || !activeHoverInfo.fname) {{
-      overlay.classList.remove("active");
-      if (ta) ta.classList.remove("hy-tag-overlay-active");
-      return;
+
+    // --- TagMatch: tag probability pills over #hy-tagmatch-tags ---
+    if (method === "TagMatch" && activeHoverInfo && activeHoverInfo.fname) {{
+      const tmRoot = document.getElementById("hy-tagmatch-tags");
+      const tmTa = tmRoot ? tmRoot.querySelector("textarea") : null;
+      const tmOv = ensureOverlay("hy-tagmatch-tags");
+      const imgProbs = (markedState.tag_score_lookup || {{}})[activeHoverInfo.fname] || null;
+      const rawText = tmTa ? tmTa.value : "";
+      const tags = rawText.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+      if (tmOv && tags.length) {{
+        const probToStyle = (prob) => {{
+          if (!prob || prob < 0.01)
+            return `background:rgba(35,35,42,0.9);color:#555;border:1px solid rgba(60,60,80,0.3)`;
+          return hslStyle(Math.min(1, prob));
+        }};
+        let html = "";
+        for (const tag of tags) {{
+          const prob = imgProbs ? (imgProbs[tag] || 0) : 0;
+          const pct  = prob > 0 ? `<span class="tag-prob">${{Math.round(prob * 100)}}%</span>` : "";
+          html += `<span class="hy-tag-pill" style="${{probToStyle(prob)}}">${{tag}}${{pct}}</span>`;
+        }}
+        tmOv.innerHTML = html;
+        tmOv.classList.add("active");
+        if (tmTa) tmTa.classList.add("hy-tag-overlay-active");
+      }} else {{
+        hideOverlay("hy-tagmatch-tags");
+      }}
+    }} else {{
+      hideOverlay("hy-tagmatch-tags");
     }}
-    const imgProbs = (markedState.tag_score_lookup || {{}})[activeHoverInfo.fname] || null;
-    const rawText = ta ? ta.value : "";
-    const tags = rawText.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
-    if (!tags.length) {{
-      overlay.classList.remove("active");
-      if (ta) ta.classList.remove("hy-tag-overlay-active");
-      return;
+
+    // --- PromptMatch per-segment: positive similarity pills over #hy-pos ---
+    const segLookup = markedState.segment_score_lookup || {{}};
+    const hasSegData = Object.keys(segLookup).length > 0;
+    if (method === "PromptMatch" && hasSegData && activeHoverInfo && activeHoverInfo.fname) {{
+      const pmRoot = document.getElementById("hy-pos");
+      const pmTa = pmRoot ? pmRoot.querySelector("textarea") : null;
+      const pmOv = ensureOverlay("hy-pos");
+      const imgSegs = segLookup[activeHoverInfo.fname] || null;
+      const rawText = pmTa ? pmTa.value : "";
+      const segs = rawText.split(",").map(s => s.trim()).filter(Boolean);
+      if (pmOv && segs.length && imgSegs) {{
+        const vals = segs.map(s => imgSegs[s] !== undefined ? imgSegs[s] : null);
+        const defined = vals.filter(v => v !== null);
+        const minV = defined.length ? Math.min(...defined) : 0;
+        const maxV = defined.length ? Math.max(...defined) : 1;
+        const range = Math.max(maxV - minV, 0.001);
+        let html = "";
+        for (let i = 0; i < segs.length; i++) {{
+          const v = vals[i];
+          const style = v !== null
+            ? hslStyle((v - minV) / range)
+            : `background:rgba(35,35,42,0.9);color:#555;border:1px solid rgba(60,60,80,0.3)`;
+          const label = v !== null ? `<span class="tag-prob">${{v.toFixed(2)}}</span>` : "";
+          html += `<span class="hy-tag-pill" style="${{style}}">${{segs[i]}}${{label}}</span>`;
+        }}
+        pmOv.innerHTML = html;
+        pmOv.classList.add("active");
+        if (pmTa) pmTa.classList.add("hy-tag-overlay-active");
+      }} else {{
+        hideOverlay("hy-pos");
+      }}
+    }} else {{
+      hideOverlay("hy-pos");
     }}
-    const probToStyle = (prob) => {{
-      if (!prob || prob < 0.01)
-        return `background:rgba(35,35,42,0.9);color:#555;border:1px solid rgba(60,60,80,0.3)`;
-      const t = Math.min(1, prob);
-      const hue  = Math.round(55 + t * 65);
-      const sat  = Math.round(60 + t * 30);
-      const lght = Math.round(38 - t * 5);
-      const alph = (0.35 + t * 0.55).toFixed(2);
-      const col  = t > 0.35 ? "#fff" : "#aaa";
-      return `background:hsla(${{hue}},${{sat}}%,${{lght}}%,${{alph}});color:${{col}};border:none`;
-    }};
-    let html = "";
-    for (const tag of tags) {{
-      const prob = imgProbs ? (imgProbs[tag] || 0) : 0;
-      const pct  = prob > 0 ? `<span class="tag-prob">${{Math.round(prob * 100)}}%</span>` : "";
-      html += `<span class="hy-tag-pill" style="${{probToStyle(prob)}}">${{tag}}${{pct}}</span>`;
+
+    // --- PromptMatch per-segment: negative similarity pills over #hy-neg (yellow→red) ---
+    const negSegLookup = markedState.neg_segment_score_lookup || {{}};
+    const hasNegSegData = Object.keys(negSegLookup).length > 0;
+    if (method === "PromptMatch" && hasNegSegData && activeHoverInfo && activeHoverInfo.fname) {{
+      const ngRoot = document.getElementById("hy-neg");
+      const ngTa = ngRoot ? ngRoot.querySelector("textarea") : null;
+      const ngOv = ensureOverlay("hy-neg");
+      const imgNegSegs = negSegLookup[activeHoverInfo.fname] || null;
+      const negRawText = ngTa ? ngTa.value : "";
+      const negSegs = negRawText.split(",").map(s => s.trim()).filter(Boolean);
+      if (ngOv && negSegs.length && imgNegSegs) {{
+        const negVals = negSegs.map(s => imgNegSegs[s] !== undefined ? imgNegSegs[s] : null);
+        const negDefined = negVals.filter(v => v !== null);
+        const negMinV = negDefined.length ? Math.min(...negDefined) : 0;
+        const negMaxV = negDefined.length ? Math.max(...negDefined) : 1;
+        const negRange = Math.max(negMaxV - negMinV, 0.001);
+        let html = "";
+        for (let i = 0; i < negSegs.length; i++) {{
+          const v = negVals[i];
+          let style;
+          if (v !== null) {{
+            const t = (v - negMinV) / negRange;
+            const hue  = Math.round(55 - t * 55);          // yellow(55) → red(0)
+            const sat  = Math.round(60 + t * 30);           // 60% → 90%
+            const lght = Math.round(38 - t * 5);            // 38% → 33%
+            const alph = (0.35 + t * 0.55).toFixed(2);     // 0.35 → 0.90
+            const col  = t > 0.35 ? "#fff" : "#aaa";
+            style = `background:hsla(${{hue}},${{sat}}%,${{lght}}%,${{alph}});color:${{col}};border:none`;
+          }} else {{
+            style = `background:rgba(35,35,42,0.9);color:#555;border:1px solid rgba(60,60,80,0.3)`;
+          }}
+          const label = v !== null ? `<span class="tag-prob">${{v.toFixed(2)}}</span>` : "";
+          html += `<span class="hy-tag-pill" style="${{style}}">${{negSegs[i]}}${{label}}</span>`;
+        }}
+        ngOv.innerHTML = html;
+        ngOv.classList.add("active");
+        if (ngTa) ngTa.classList.add("hy-tag-overlay-active");
+      }} else {{
+        hideOverlay("hy-neg");
+      }}
+    }} else {{
+      hideOverlay("hy-neg");
     }}
-    overlay.innerHTML = html;
-    overlay.classList.add("active");
-    if (ta) ta.classList.add("hy-tag-overlay-active");
   }};
   const scheduleRepaint = () => {{
     // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
@@ -4436,6 +4526,16 @@ def create_app():
                     tv = tag_vectors.get(original_path, {})
                     if tv:
                         tag_score_lookup[fname] = {t: round(tv.get(t, 0.0), 4) for t in q_tags}
+        segment_score_lookup = {}
+        neg_segment_score_lookup = {}
+        if state.get("method") == METHOD_PROMPTMATCH and state.get("pm_segment_mode"):
+            for fname, item in state.get("scores", {}).items():
+                seg = item.get("segment_scores")
+                if seg:
+                    segment_score_lookup[fname] = {k: round(v, 4) for k, v in seg.items()}
+                neg_seg = item.get("neg_segment_scores")
+                if neg_seg:
+                    neg_segment_score_lookup[fname] = {k: round(v, 4) for k, v in neg_seg.items()}
         return json.dumps({
             "left": state.get("left_marked", []),
             "right": state.get("right_marked", []),
@@ -4444,6 +4544,8 @@ def create_app():
             "hist_geom": state.get("hist_geom"),
             "score_lookup": score_lookup,
             "tag_score_lookup": tag_score_lookup,
+            "segment_score_lookup": segment_score_lookup,
+            "neg_segment_score_lookup": neg_segment_score_lookup,
             "media_lookup": media_lookup,
             "left_order": left_order,
             "right_order": right_order,
@@ -5819,7 +5921,7 @@ def create_app():
             }
         return results
 
-    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         # Main entrypoint for "Run scoring"; both methods converge back into current_view().
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
@@ -6019,15 +6121,50 @@ def create_app():
 
             pos_prompt = (pos_prompt or "").strip() or SEARCH_PROMPT
             neg_prompt = (neg_prompt or "").strip()
-            pos_emb = state["backend"].encode_text(pos_prompt)
-            neg_emb = state["backend"].encode_text(neg_prompt) if neg_prompt else None
-            state["scores"] = score_promptmatch_cached_features(
-                feature_paths,
-                image_features,
-                failed_paths,
-                pos_emb,
-                neg_emb,
-            )
+            if pm_segment_mode:
+                segments = [s.strip() for s in pos_prompt.split(",") if s.strip()]
+                if not segments:
+                    segments = [pos_prompt]
+                neg_segments = [s.strip() for s in neg_prompt.split(",") if s.strip()] if neg_prompt else []
+                seg_embs = [state["backend"].encode_text(seg) for seg in segments]
+                neg_seg_embs = [state["backend"].encode_text(seg) for seg in neg_segments] if neg_segments else []
+                seg_results = {}
+                seg_embs_cpu = [e.detach().float().cpu() for e in seg_embs]
+                neg_seg_embs_cpu = [e.detach().float().cpu() for e in neg_seg_embs]
+                if feature_paths and image_features is not None and image_features.numel():
+                    img_feat_cpu = image_features.detach().float().cpu()
+                    per_seg_sims = [(img_feat_cpu @ e.T).squeeze(1).tolist() for e in seg_embs_cpu]
+                    per_neg_seg_sims = [(img_feat_cpu @ e.T).squeeze(1).tolist() for e in neg_seg_embs_cpu]
+                    for i, orig_path in enumerate(feature_paths):
+                        fname = os.path.basename(orig_path)
+                        seg_scores = {seg: float(per_seg_sims[j][i]) for j, seg in enumerate(segments)}
+                        neg_seg_scores = {seg: float(per_neg_seg_sims[j][i]) for j, seg in enumerate(neg_segments)} if neg_segments else {}
+                        pos_agg = sum(per_seg_sims[j][i] for j in range(len(segments)))
+                        neg_agg = sum(per_neg_seg_sims[j][i] for j in range(len(neg_segments))) if neg_segments else None
+                        seg_results[fname] = {
+                            "pos": float(pos_agg),
+                            "neg": float(neg_agg) if neg_agg is not None else None,
+                            "path": orig_path,
+                            "failed": False,
+                            "segment_scores": seg_scores,
+                            "neg_segment_scores": neg_seg_scores,
+                        }
+                for orig_path in failed_paths:
+                    seg_results[os.path.basename(orig_path)] = {"pos": 0.0, "neg": None, "path": orig_path, "failed": True}
+                state["scores"] = seg_results
+                state["pm_segment_mode"] = True
+            else:
+                pos_emb = state["backend"].encode_text(pos_prompt)
+                neg_emb = state["backend"].encode_text(neg_prompt) if neg_prompt else None
+                state["scores"] = score_promptmatch_cached_features(
+                    feature_paths,
+                    image_features,
+                    failed_paths,
+                    pos_emb,
+                    neg_emb,
+                )
+                state["pm_segment_mode"] = False
+                state["pm_segment_sims"] = {}
             pos_min, pos_max, pos_mid, neg_min, neg_max, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
             if preserve_promptmatch_thresholds or (previous_method != METHOD_PROMPTMATCH and has_recalled):
                 next_main = clamp_threshold(requested_main, pos_min, pos_max)
@@ -6404,7 +6541,7 @@ def create_app():
             *ui_visibility_updates(),
         )
 
-    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         action = (action or "").strip()
         if not action.startswith("run:"):
             return empty_result("Shortcut action ignored.", method)
@@ -6421,6 +6558,7 @@ def create_app():
             model_label,
             pos_prompt,
             neg_prompt,
+            pm_segment_mode,
             ir_prompt,
             ir_negative_prompt,
             ir_penalty_weight,
@@ -7133,9 +7271,13 @@ def create_app():
     .hy-hover-line-neg {
         border-left-color: rgba(220, 165, 145, 0.78);
     }
-    #hy-tagmatch-tags { position: relative !important; }
-    #hy-tagmatch-tags textarea.hy-tag-overlay-active { opacity: 0.05 !important; }
-    #hy-tagmatch-tags:has(.hy-tag-overlay.active) label { visibility: hidden; }
+    #hy-tagmatch-tags, #hy-pos, #hy-neg { position: relative !important; }
+    #hy-tagmatch-tags textarea.hy-tag-overlay-active,
+    #hy-pos textarea.hy-tag-overlay-active,
+    #hy-neg textarea.hy-tag-overlay-active { opacity: 0.05 !important; }
+    #hy-tagmatch-tags:has(.hy-tag-overlay.active) label,
+    #hy-pos:has(.hy-tag-overlay.active) label,
+    #hy-neg:has(.hy-tag-overlay.active) label { visibility: hidden; }
     .hy-tag-overlay {
         position: absolute;
         inset: 0;
@@ -7637,6 +7779,7 @@ def create_app():
                             )
                             pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
                             neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
+                            pm_segment_cb = gr.Checkbox(label="Per-segment scoring (hover shows per-phrase match)", value=False, elem_id="hy-pm-segment")
                             promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
 
                         with gr.Group(visible=False) as imagereward_group:
@@ -7852,7 +7995,7 @@ def create_app():
             outputs=[promptmatch_group, imagereward_group, llmsearch_group, tagmatch_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
         )
 
-        _score_folder_inputs = [method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb]
+        _score_folder_inputs = [method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, pm_segment_cb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb]
         _score_folder_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
 
         promptmatch_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
@@ -7948,7 +8091,7 @@ def create_app():
         )
         shortcut_action.change(
             fn=handle_shortcut_action,
-            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
+            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, pm_segment_cb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         model_status_state.change(

@@ -2,7 +2,7 @@
 
 `HybridScorer` is a 100% local app for sorting large folders of images with AI scoring.
 
-Current version: `2.1.0`
+Current version: `2.2.0`
 
 ## What The App Does
 
@@ -10,7 +10,8 @@ HybridScorer cuts large image sets down to size fast. Point it at a folder, let 
 
 Working modes in the current app:
 
-- `PromptMatch` — describe what you want in plain text and score the whole folder against it
+- `PromptMatch` — describe what you want in plain text and score the whole folder against it; a per-segment mode scores each comma-separated phrase independently and shows match strength per phrase on hover
+- `TagMatch` — hunt down AI anatomy errors: wrong hands, extra limbs, duplicate faces, bad proportions; ships with a ready-to-use artifact tag set and shows per-tag confidence as color-coded pills when you hover a thumbnail
 - `ImageReward` — rank images by how well they match a prompt, weighted against unwanted content
 - `LM Search` — use a local vision-language model to deeply understand each image, not just match keywords
 - `Similarity` — pick one image you like and find everything in the folder that looks like it
