@@ -2626,6 +2626,7 @@ def create_app():
         "tagmatch_cached_signature": None,
         "tagmatch_cached_feature_paths": None,
         "tagmatch_cached_tag_vectors": None,
+        "tagmatch_last_query_tags_str": "",
         "prompt_generator": DEFAULT_PROMPT_GENERATOR,
         "prompt_backend_cache": {},
         "generated_prompt": "",
@@ -3537,6 +3538,58 @@ def create_app():
       negLine.style.opacity = "1";
     }}
   }};
+  const ensureTagMatchOverlay = () => {{
+    const root = document.getElementById("hy-tagmatch-tags");
+    if (!root) return null;
+    let ov = root.querySelector(".hy-tag-overlay");
+    if (!ov) {{
+      ov = document.createElement("div");
+      ov.className = "hy-tag-overlay";
+      root.appendChild(ov);
+    }}
+    return ov;
+  }};
+  const syncTagMatchPills = () => {{
+    const overlay = ensureTagMatchOverlay();
+    if (!overlay) return;
+    const root = document.getElementById("hy-tagmatch-tags");
+    const ta = root ? root.querySelector("textarea") : null;
+    const markedState = readMarkedState();
+    const method = (markedState.hist_geom || {{}}).method || "";
+    if (method !== "TagMatch" || !activeHoverInfo || !activeHoverInfo.fname) {{
+      overlay.classList.remove("active");
+      if (ta) ta.classList.remove("hy-tag-overlay-active");
+      return;
+    }}
+    const imgProbs = (markedState.tag_score_lookup || {{}})[activeHoverInfo.fname] || null;
+    const rawText = ta ? ta.value : "";
+    const tags = rawText.split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+    if (!tags.length) {{
+      overlay.classList.remove("active");
+      if (ta) ta.classList.remove("hy-tag-overlay-active");
+      return;
+    }}
+    const probToStyle = (prob) => {{
+      if (!prob || prob < 0.01)
+        return `background:rgba(35,35,42,0.9);color:#555;border:1px solid rgba(60,60,80,0.3)`;
+      const t = Math.min(1, prob);
+      const hue  = Math.round(55 + t * 65);
+      const sat  = Math.round(60 + t * 30);
+      const lght = Math.round(38 - t * 5);
+      const alph = (0.35 + t * 0.55).toFixed(2);
+      const col  = t > 0.35 ? "#fff" : "#aaa";
+      return `background:hsla(${{hue}},${{sat}}%,${{lght}}%,${{alph}});color:${{col}};border:none`;
+    }};
+    let html = "";
+    for (const tag of tags) {{
+      const prob = imgProbs ? (imgProbs[tag] || 0) : 0;
+      const pct  = prob > 0 ? `<span class="tag-prob">${{Math.round(prob * 100)}}%</span>` : "";
+      html += `<span class="hy-tag-pill" style="${{probToStyle(prob)}}">${{tag}}${{pct}}</span>`;
+    }}
+    overlay.innerHTML = html;
+    overlay.classList.add("active");
+    if (ta) ta.classList.add("hy-tag-overlay-active");
+  }};
   const scheduleRepaint = () => {{
     // Gallery DOM mutates a moment after clicks; repaint a few times to catch the final layout.
     ensureThumbBehavior();
@@ -3687,10 +3740,12 @@ def create_app():
               neg: Number.isFinite(neg) ? neg : null,
             }};
             syncHistogramHoverLine();
+            syncTagMatchPills();
           }});
           card.addEventListener("mouseleave", () => {{
             activeHoverInfo = null;
             syncHistogramHoverLine();
+            syncTagMatchPills();
           }});
           card.dataset.hyHoverHooked = "1";
         }}
@@ -4269,6 +4324,7 @@ def create_app():
             tag_vectors = state["tagmatch_cached_tag_vectors"]
 
         # Score from cache using the current query tags (fast re-score on tag change)
+        state["tagmatch_last_query_tags_str"] = query_tags_str or ""
         query_tags = [t.strip().lower() for t in (query_tags_str or "").split(",") if t.strip()]
         tag_set = set(tags)
         missing = [t for t in query_tags if t not in tag_set]
@@ -4369,6 +4425,17 @@ def create_app():
                     "main": round(float(item["score"]), 6),
                     "neg": None,
                 }
+        tag_score_lookup = {}
+        if state.get("method") == METHOD_TAGMATCH:
+            tag_vectors = state.get("tagmatch_cached_tag_vectors") or {}
+            raw_str = state.get("tagmatch_last_query_tags_str") or ""
+            q_tags = [t.strip().lower() for t in raw_str.split(",") if t.strip()]
+            if q_tags and tag_vectors:
+                for original_path, _ in state.get("browse_items", []):
+                    fname = os.path.basename(original_path)
+                    tv = tag_vectors.get(original_path, {})
+                    if tv:
+                        tag_score_lookup[fname] = {t: round(tv.get(t, 0.0), 4) for t in q_tags}
         return json.dumps({
             "left": state.get("left_marked", []),
             "right": state.get("right_marked", []),
@@ -4376,6 +4443,7 @@ def create_app():
             "preview": state.get("preview_fname"),
             "hist_geom": state.get("hist_geom"),
             "score_lookup": score_lookup,
+            "tag_score_lookup": tag_score_lookup,
             "media_lookup": media_lookup,
             "left_order": left_order,
             "right_order": right_order,
@@ -7064,6 +7132,38 @@ def create_app():
     }
     .hy-hover-line-neg {
         border-left-color: rgba(220, 165, 145, 0.78);
+    }
+    #hy-tagmatch-tags { position: relative !important; }
+    #hy-tagmatch-tags textarea.hy-tag-overlay-active { opacity: 0.05 !important; }
+    #hy-tagmatch-tags:has(.hy-tag-overlay.active) label { visibility: hidden; }
+    .hy-tag-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        pointer-events: none;
+        display: none;
+        flex-wrap: wrap;
+        align-content: flex-start;
+        gap: 4px;
+        padding: 8px 10px;
+        overflow: hidden;
+        background: var(--input-background-fill, #1a1a22);
+        border-radius: var(--input-radius, 6px);
+    }
+    .hy-tag-overlay.active { display: flex; }
+    .hy-tag-pill {
+        font-size: 11px;
+        line-height: 1.5;
+        padding: 1px 8px;
+        border-radius: 3px;
+        font-family: monospace;
+        white-space: nowrap;
+        transition: background 0.12s, color 0.12s;
+    }
+    .hy-tag-pill .tag-prob {
+        opacity: 0.75;
+        font-size: 10px;
+        margin-left: 5px;
     }
     #hy-left-gallery, #hy-left-gallery > div {
         background:linear-gradient(180deg, rgba(18, 36, 24, 0.96), rgba(13, 18, 15, 0.98)) !important;
