@@ -255,6 +255,10 @@ PROMPTMATCH_BASE_BATCH_SIZE = 64
 PROMPTMATCH_MAX_BATCH_SIZE = 384
 PROMPTMATCH_BATCH_AGGRESSION = 1.75
 PROMPTMATCH_MIN_FREE_VRAM_GB = 3.0
+TAGMATCH_BASE_BATCH_SIZE = 16
+TAGMATCH_MAX_BATCH_SIZE = 64
+TAGMATCH_BATCH_AGGRESSION = 1.2
+TAGMATCH_MIN_FREE_VRAM_GB = 2.5
 PROMPTMATCH_PROXY_MAX_EDGE = 1024
 PROMPTMATCH_PROXY_CACHE_ROOT = "HybridScorerPromptMatchProxyCache"
 PROMPTMATCH_PROXY_PROGRESS_SHARE = 0.25
@@ -1032,6 +1036,12 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32, mode=None):
         aggression = IMAGEREWARD_BATCH_AGGRESSION
         reference_vram_gb = 16
         reserve_gb = IMAGEREWARD_MIN_FREE_VRAM_GB
+    elif mode == "tagmatch":
+        base_batch_size = TAGMATCH_BASE_BATCH_SIZE
+        max_batch_size = TAGMATCH_MAX_BATCH_SIZE
+        aggression = TAGMATCH_BATCH_AGGRESSION
+        reference_vram_gb = 14  # ViT-Large 448px — heavier per image than CLIP
+        reserve_gb = TAGMATCH_MIN_FREE_VRAM_GB
     elif backend is not None:
         base_batch_size = PROMPTMATCH_BASE_BATCH_SIZE
         max_batch_size = PROMPTMATCH_MAX_BATCH_SIZE
@@ -1135,6 +1145,31 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32, mode=None):
             base_batch_size = max(base_batch_size, 96)
         if total_gb >= 32 and free_gb >= 24:
             base_batch_size = max(base_batch_size, 112)
+    elif mode == "tagmatch":
+        # WD ViT-Large 448px: heavier per image than CLIP; conservative VRAM caps
+        if total_gb < 9:
+            base_batch_size = min(base_batch_size, 8)
+            max_batch_size = min(max_batch_size, 16)
+            reference_vram_gb = max(reference_vram_gb, 16)
+            aggression *= 0.85
+        elif total_gb < 12:
+            base_batch_size = min(base_batch_size, 12)
+            max_batch_size = min(max_batch_size, 32)
+            reference_vram_gb = max(reference_vram_gb, 14)
+            aggression *= 0.9
+        elif total_gb < 16:
+            base_batch_size = min(base_batch_size, 16)
+            max_batch_size = min(max_batch_size, 48)
+
+        if free_gb >= 20:
+            aggression *= 1.15
+        elif free_gb >= 14:
+            aggression *= 1.08
+
+        if total_gb >= 16 and free_gb >= 10:
+            base_batch_size = max(base_batch_size, 24)
+        if total_gb >= 24 and free_gb >= 16:
+            base_batch_size = max(base_batch_size, 32)
 
     if effective_free_gb <= 0:
         return 1 if mode == "imagereward" else max(1, min(8, max_batch_size))
@@ -4192,12 +4227,13 @@ def create_app():
         )
 
         if not can_reuse:
+            batch_size = get_auto_batch_size(device, mode="tagmatch")
             print(f"[TagMatch] Running inference on {len(image_paths)} images "
-                  f"(batch size {TAGMATCH_WD_BATCH_SIZE})")
+                  f"(batch size {batch_size})")
             tag_vectors = {}
             total = len(image_paths)
-            for batch_start in range(0, total, TAGMATCH_WD_BATCH_SIZE):
-                batch_paths = image_paths[batch_start:batch_start + TAGMATCH_WD_BATCH_SIZE]
+            for batch_start in range(0, total, batch_size):
+                batch_paths = image_paths[batch_start:batch_start + batch_size]
                 batch_tensors = []
                 batch_valid_paths = []
                 for p in batch_paths:
@@ -4222,7 +4258,7 @@ def create_app():
                         print(f"[TagMatch] Batch inference error: {_e}")
                         for p in batch_valid_paths:
                             tag_vectors[p] = {}
-                done = min(batch_start + TAGMATCH_WD_BATCH_SIZE, total)
+                done = min(batch_start + batch_size, total)
                 progress(done / max(total, 1), desc=f"TagMatch inference {done}/{total}")
 
             state["tagmatch_cached_signature"] = image_signature
