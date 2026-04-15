@@ -217,14 +217,14 @@ LLMSEARCH_DEFAULT_PROMPT = "woman in red dress, cinematic portrait, soft warm li
 LLMSEARCH_SHORTLIST_DEFAULT = 32
 LLMSEARCH_SHORTLIST_MIN = 8
 LLMSEARCH_SHORTLIST_MAX = 512
-TAGMATCH_WD_REPO_ID = "SmilingWolf/wd-vit-large-tagger-v3"
+TAGMATCH_WD_REPO_ID = "SmilingWolf/wd-eva02-large-tagger-v3"
 TAGMATCH_WD_MODEL_FILE = "model.onnx"
 TAGMATCH_WD_TAGS_FILE = "selected_tags.csv"
 TAGMATCH_WD_IMAGE_SIZE = 448
 TAGMATCH_WD_MIN_CACHE_PROB = 0.02
 TAGMATCH_WD_BATCH_SIZE = 32
 TAGMATCH_DEFAULT_TAGS = (
-    "bad_anatomy, bad_hands, bad_proportions, deformed, missing_hand, extra_arms, extra_eyes, extra_faces, extra_legs, multiple_legs, missing_foot,missing_limb, oversized_limbs, horror_(theme)"
+    "bad_anatomy, bad_hands, bad_feet, bad_proportions, deformed, extra_arms, extra_faces, extra_mouth, missing_limb, multiple_legs, multiple_heads, oversized_limbs, wrong_foot, artistic_error, glitch, blob, disembodied_limb"
 )
 FACE_MODEL_PACK = "buffalo_l"
 FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
@@ -3508,7 +3508,7 @@ def create_app():
       negLine.style.opacity = "0";
       return;
     }}
-    const usesPositiveSimilarityChart = ["PromptMatch", "Similarity", "SamePerson"].includes(geom.method);
+    const usesPositiveSimilarityChart = ["PromptMatch", "Similarity", "SamePerson", "TagMatch", "LM Search"].includes(geom.method);
     const chartLo = usesPositiveSimilarityChart ? geom.pos_lo : geom.lo;
     const chartHi = usesPositiveSimilarityChart ? geom.pos_hi : geom.hi;
     if (!Number.isFinite(chartLo) || !Number.isFinite(chartHi) || Math.abs(chartHi - chartLo) < 1e-9) {{
