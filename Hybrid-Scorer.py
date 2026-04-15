@@ -160,6 +160,7 @@ METHOD_IMAGEREWARD = "ImageReward"
 METHOD_LLMSEARCH = "LM Search"
 METHOD_SIMILARITY = "Similarity"
 METHOD_SAMEPERSON = "SamePerson"
+METHOD_TAGMATCH = "TagMatch"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
 DEFAULT_IR_PENALTY_WEIGHT = 1.0
 SIMILARITY_TOPN_DEFAULT = 5
@@ -171,14 +172,26 @@ PROMPTMATCH_SLIDER_MIN = -1.0
 PROMPTMATCH_SLIDER_MAX = 1.0
 IMAGEREWARD_SLIDER_MIN = -5.0
 IMAGEREWARD_SLIDER_MAX = 5.0
+TAGMATCH_SLIDER_MIN = 0.0
+TAGMATCH_SLIDER_MAX = 100.0
+TAGMATCH_DEFAULT_THRESHOLD = 20.0
 HIST_HEIGHT_SCALE = 0.7
 PROMPT_GENERATOR_FLORENCE = "Florence-2"
 PROMPT_GENERATOR_JOYCAPTION = "JoyCaption Beta One"
 PROMPT_GENERATOR_JOYCAPTION_GGUF = "JoyCaption Beta One GGUF (Q4_K_M)"
+PROMPT_GENERATOR_WD_TAGS = "WD Tags (ONNX)"
 PROMPT_GENERATOR_CHOICES = (
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_GGUF,
+)
+# Superset including WD Tags — used for the prompt generator dropdown only.
+# LLM Search backend dropdown uses PROMPT_GENERATOR_CHOICES (no WD Tags).
+PROMPT_GENERATOR_ALL_CHOICES = (
+    PROMPT_GENERATOR_FLORENCE,
+    PROMPT_GENERATOR_JOYCAPTION,
+    PROMPT_GENERATOR_JOYCAPTION_GGUF,
+    PROMPT_GENERATOR_WD_TAGS,
 )
 DEFAULT_PROMPT_GENERATOR = PROMPT_GENERATOR_FLORENCE
 FLORENCE_MODEL_ID = "florence-community/Florence-2-base"
@@ -204,6 +217,15 @@ LLMSEARCH_DEFAULT_PROMPT = "woman in red dress, cinematic portrait, soft warm li
 LLMSEARCH_SHORTLIST_DEFAULT = 32
 LLMSEARCH_SHORTLIST_MIN = 8
 LLMSEARCH_SHORTLIST_MAX = 512
+TAGMATCH_WD_REPO_ID = "SmilingWolf/wd-vit-large-tagger-v3"
+TAGMATCH_WD_MODEL_FILE = "model.onnx"
+TAGMATCH_WD_TAGS_FILE = "selected_tags.csv"
+TAGMATCH_WD_IMAGE_SIZE = 448
+TAGMATCH_WD_MIN_CACHE_PROB = 0.02
+TAGMATCH_WD_BATCH_SIZE = 32
+TAGMATCH_DEFAULT_TAGS = (
+    "bad_anatomy, bad_hands, bad_proportions, deformed, missing_hand, extra_arms, extra_eyes, extra_faces, extra_legs, multiple_legs, missing_foot,missing_limb, oversized_limbs, horror_(theme)"
+)
 FACE_MODEL_PACK = "buffalo_l"
 FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
 FACE_DET_SIZE = (640, 640)
@@ -839,6 +861,8 @@ def describe_prompt_generator_source(generator_name):
         return describe_huggingface_transformers_source(JOYCAPTION_MODEL_ID)
     if generator_name == PROMPT_GENERATOR_JOYCAPTION_GGUF:
         return describe_joycaption_gguf_source()
+    if generator_name == PROMPT_GENERATOR_WD_TAGS:
+        return "WD tagger ONNX (onnxruntime)"
     return "network or disk cache"
 
 
@@ -1962,7 +1986,7 @@ def uses_similarity_topn(method):
 
 
 def uses_pos_similarity_scores(method):
-    return method in (METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_SIMILARITY, METHOD_SAMEPERSON)
+    return method in (METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_SIMILARITY, METHOD_SAMEPERSON, METHOD_TAGMATCH)
 
 
 def export_destination(folder, filename):
@@ -1997,6 +2021,13 @@ def threshold_labels(method):
             "Maximum negative similarity allowed (lower = fewer kept)",
             "Min positive similarity",
             "Max negative similarity",
+        )
+    if method == METHOD_TAGMATCH:
+        return (
+            "Minimum artifact score to keep (higher = fewer kept)",
+            "Negative score is unused for TagMatch",
+            "Min artifact score",
+            "Negative score",
         )
     return (
         "Minimum score to keep (higher = fewer kept)",
@@ -2174,7 +2205,9 @@ def expand_slider_bounds(lo, hi, *values):
     if safe_values:
         lo = min(float(lo), *safe_values)
         hi = max(float(hi), *safe_values)
-    return round(lo, 3), round(hi, 3)
+    # Floor lo / ceil hi so actual score values never fall outside the slider bounds.
+    # round() can push lo above the true minimum, causing Gradio out-of-bounds errors.
+    return math.floor(lo * 1000) / 1000, math.ceil(hi * 1000) / 1000
 
 
 def extract_florence_caption(parsed, raw_text, task_prompt):
@@ -2309,6 +2342,21 @@ def joycaption_detail_config(detail_level):
     return detail_level, *mapping[detail_level]
 
 
+def wd_tags_detail_config(detail_level):
+    try:
+        detail_level = int(detail_level)
+    except Exception:
+        detail_level = DEFAULT_GENERATED_PROMPT_DETAIL
+    detail_level = max(1, min(3, detail_level))
+    # detail_prompt field holds the top-N count used by run_wd_tags_prompt_variant
+    mapping = {
+        1: ("Top 12 tags",  12),
+        2: ("Top 36 tags",  36),
+        3: ("Top 96 tags",  96),
+    }
+    return detail_level, *mapping[detail_level]
+
+
 def joycaption_max_new_tokens(detail_level):
     detail_level = max(1, min(3, int(detail_level)))
     mapping = {
@@ -2322,6 +2370,8 @@ def joycaption_max_new_tokens(detail_level):
 def prompt_generator_detail_config(generator_name, detail_level):
     if generator_name == PROMPT_GENERATOR_FLORENCE:
         return florence_detail_config(detail_level)
+    if generator_name == PROMPT_GENERATOR_WD_TAGS:
+        return wd_tags_detail_config(detail_level)
     return joycaption_detail_config(detail_level)
 
 
@@ -2505,6 +2555,7 @@ def create_app():
         "backend": prompt_backend,
         "ir_model": None,
         "face_backend": None,
+        "tagmatch_backend": None,
         "hist_geom": None,
         "hist_width": 300,
         "proxy_folder_key": None,
@@ -2537,6 +2588,9 @@ def create_app():
         "llmsearch_cached_model_label": None,
         "llmsearch_cached_scores": None,
         "llmsearch_cached_captions": {},
+        "tagmatch_cached_signature": None,
+        "tagmatch_cached_feature_paths": None,
+        "tagmatch_cached_tag_vectors": None,
         "prompt_generator": DEFAULT_PROMPT_GENERATOR,
         "prompt_backend_cache": {},
         "generated_prompt": "",
@@ -2555,6 +2609,7 @@ def create_app():
             METHOD_LLMSEARCH: {"main": None, "aux": None},
             METHOD_SIMILARITY: {"main": None, "aux": None},
             METHOD_SAMEPERSON: {"main": None, "aux": None},
+            METHOD_TAGMATCH: {"main": None, "aux": None},
         },
         "zoom_columns": 5,
     }
@@ -2600,6 +2655,9 @@ def create_app():
             state["llmsearch_cached_model_label"] = None
             state["llmsearch_cached_scores"] = None
             state["llmsearch_cached_captions"] = {}
+            state["tagmatch_cached_signature"] = None
+            state["tagmatch_cached_feature_paths"] = None
+            state["tagmatch_cached_tag_vectors"] = None
         return state["proxy_cache_dir"]
 
     def can_reuse_proxy_map(image_paths, image_signature):
@@ -3884,6 +3942,10 @@ def create_app():
             state["face_backend_worker_local"] = None
             released.append("InsightFace")
 
+        if target_method != METHOD_TAGMATCH and state.get("tagmatch_backend") is not None:
+            state["tagmatch_backend"] = None
+            released.append("TagMatch")
+
         if state.get("prompt_backend_cache"):
             for backend_name, cached in list((state.get("prompt_backend_cache") or {}).items()):
                 if isinstance(cached, dict):
@@ -4048,6 +4110,148 @@ def create_app():
         }
         print("[JoyCaption GGUF] Ready.")
         return llm
+
+    def tagmatch_prepare_image(image):
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        # WD tagger standard: pad to square with white background, then resize.
+        w, h = image.size
+        max_dim = max(w, h)
+        canvas = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+        canvas.paste(image, ((max_dim - w) // 2, (max_dim - h) // 2))
+        canvas = canvas.resize((TAGMATCH_WD_IMAGE_SIZE, TAGMATCH_WD_IMAGE_SIZE), Image.Resampling.BICUBIC)
+        # WD tagger (SmilingWolf wdv3): raw float32 [0, 255], BGR channel order.
+        # Not [0,1] and not RGB — wrong range/order produces near-zero logits → all scores ≈ 50.
+        arr = np.array(canvas, dtype=np.float32)
+        arr = arr[:, :, ::-1]  # RGB → BGR
+        return arr  # (448, 448, 3) NHWC, BGR, [0, 255]
+
+    def ensure_tagmatch_model():
+        cached = state.get("tagmatch_backend")
+        if cached is not None:
+            return cached
+
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise RuntimeError(
+                "onnxruntime-gpu is required for TagMatch scoring.\n"
+                "It should already be installed. Run the setup script again if missing."
+            ) from exc
+
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:
+            raise RuntimeError("huggingface_hub is required for TagMatch model download.") from exc
+
+        import csv as _csv
+
+        print(f"[TagMatch] Loading {TAGMATCH_WD_REPO_ID} / {TAGMATCH_WD_MODEL_FILE} …")
+        model_path = hf_hub_download(
+            repo_id=TAGMATCH_WD_REPO_ID,
+            filename=TAGMATCH_WD_MODEL_FILE,
+            cache_dir=get_cache_config()["huggingface_dir"],
+        )
+        tags_path = hf_hub_download(
+            repo_id=TAGMATCH_WD_REPO_ID,
+            filename=TAGMATCH_WD_TAGS_FILE,
+            cache_dir=get_cache_config()["huggingface_dir"],
+        )
+
+        providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if device == "cuda"
+            else ["CPUExecutionProvider"]
+        )
+        session = ort.InferenceSession(model_path, providers=providers)
+        input_name = session.get_inputs()[0].name
+        print(f"[TagMatch] ONNX input tensor name: {input_name!r}")
+
+        tags = []
+        with open(tags_path, newline="", encoding="utf-8") as _f:
+            reader = _csv.DictReader(_f)
+            for row in reader:
+                tags.append(row["name"].lower())
+
+        backend = {"session": session, "tags": tags, "input_name": input_name}
+        state["tagmatch_backend"] = backend
+        print(f"[TagMatch] Ready — {len(tags)} tags loaded.")
+        return backend
+
+    def score_tagmatch_folder(image_paths, query_tags_str, progress):
+        backend = ensure_tagmatch_model()
+        session = backend["session"]
+        tags = backend["tags"]
+        input_name = backend["input_name"]
+
+        image_signature = get_image_paths_signature(image_paths)
+        can_reuse = (
+            state.get("tagmatch_cached_signature") == image_signature
+            and state.get("tagmatch_cached_tag_vectors") is not None
+            and state.get("tagmatch_cached_feature_paths") is not None
+        )
+
+        if not can_reuse:
+            print(f"[TagMatch] Running inference on {len(image_paths)} images "
+                  f"(batch size {TAGMATCH_WD_BATCH_SIZE})")
+            tag_vectors = {}
+            total = len(image_paths)
+            for batch_start in range(0, total, TAGMATCH_WD_BATCH_SIZE):
+                batch_paths = image_paths[batch_start:batch_start + TAGMATCH_WD_BATCH_SIZE]
+                batch_tensors = []
+                batch_valid_paths = []
+                for p in batch_paths:
+                    disp = state.get("proxy_map", {}).get(p, p)
+                    try:
+                        with Image.open(disp) as src:
+                            arr = tagmatch_prepare_image(src)
+                        batch_tensors.append(arr)
+                        batch_valid_paths.append(p)
+                    except Exception:
+                        tag_vectors[p] = {}
+                if batch_tensors:
+                    try:
+                        batch_np = np.stack(batch_tensors, axis=0)
+                        raw_out = session.run(None, {input_name: batch_np})[0]  # (B, num_tags), probabilities [0,1]
+                        for i, p in enumerate(batch_valid_paths):
+                            row = raw_out[i]
+                            # numpy threshold: find indices above cutoff, then build a small dict
+                            keep = np.where(row >= TAGMATCH_WD_MIN_CACHE_PROB)[0]
+                            tag_vectors[p] = {tags[j]: float(row[j]) for j in keep}
+                    except Exception as _e:
+                        print(f"[TagMatch] Batch inference error: {_e}")
+                        for p in batch_valid_paths:
+                            tag_vectors[p] = {}
+                done = min(batch_start + TAGMATCH_WD_BATCH_SIZE, total)
+                progress(done / max(total, 1), desc=f"TagMatch inference {done}/{total}")
+
+            state["tagmatch_cached_signature"] = image_signature
+            state["tagmatch_cached_feature_paths"] = list(image_paths)
+            state["tagmatch_cached_tag_vectors"] = tag_vectors
+        else:
+            print(f"[TagMatch] Reusing cached tag vectors for {len(image_paths)} images")
+            tag_vectors = state["tagmatch_cached_tag_vectors"]
+
+        # Score from cache using the current query tags (fast re-score on tag change)
+        query_tags = [t.strip().lower() for t in (query_tags_str or "").split(",") if t.strip()]
+        tag_set = set(tags)
+        missing = [t for t in query_tags if t not in tag_set]
+        if missing:
+            print(f"[TagMatch] WARNING: these query tags are not in the model vocabulary and will score 0: {missing}")
+        results = {}
+        for p in image_paths:
+            tv = tag_vectors.get(p, {})
+            # Sum matching tag probabilities directly — no division by tag count.
+            # Each matched tag contributes its full probability (0–1) × 100 to the score.
+            # Having more tags in the query doesn't deflate individual matches.
+            score = min(100.0, sum(tv.get(t, 0.0) for t in query_tags) * 100.0)
+            results[os.path.basename(p)] = {
+                "pos": score,
+                "neg": None,
+                "path": p,
+                "failed": False,
+            }
+        return results
 
     def gallery_update(items, columns=None):
         update_kwargs = {"value": items, "selected_index": None}
@@ -4589,10 +4793,30 @@ def create_app():
             raise RuntimeError(f"Unexpected JoyCaption GGUF response shape: {exc}") from exc
         return normalizer(text)
 
+    def run_wd_tags_prompt_variant(image, top_n):
+        """Run WD tagger on a single PIL image and return the top-N tags as a comma-separated string."""
+        backend = ensure_tagmatch_model()
+        session = backend["session"]
+        tags = backend["tags"]
+        input_name = backend["input_name"]
+        arr = tagmatch_prepare_image(image)          # (448, 448, 3) float32
+        batch_np = arr[np.newaxis, ...]              # (1, 448, 448, 3)
+        raw_out = session.run(None, {input_name: batch_np})[0][0]  # (num_tags,)
+        probs = 1.0 / (1.0 + np.exp(-raw_out))
+        tag_prob_pairs = sorted(
+            ((tags[j], float(probs[j])) for j in range(len(tags))),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        top_tags = [t for t, p in tag_prob_pairs[:top_n] if p >= 0.05]
+        return ", ".join(top_tags)
+
     def generate_prompt_variant(generator_name, image, detail_level):
         _, _, detail_prompt = prompt_generator_detail_config(generator_name, detail_level)
         if generator_name == PROMPT_GENERATOR_FLORENCE:
             return run_florence_prompt_variant(image, detail_prompt)
+        if generator_name == PROMPT_GENERATOR_WD_TAGS:
+            return run_wd_tags_prompt_variant(image, detail_prompt)  # detail_prompt is top_n int
         return run_joycaption_prompt_variant(generator_name, image, detail_prompt, detail_level)
 
     class VisionLLMRerankBackend:
@@ -4963,6 +5187,7 @@ def create_app():
                 gr.update(visible=True),
                 gr.update(visible=False),
                 gr.update(visible=False),
+                gr.update(visible=False),
                 gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(label=aux_label, visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=True),
@@ -4977,6 +5202,7 @@ def create_app():
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=True),
+                gr.update(visible=False),
                 gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False),
@@ -4989,6 +5215,7 @@ def create_app():
         if method == METHOD_SIMILARITY:
             return (
                 gr.update(visible=True),
+                gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
@@ -5005,6 +5232,7 @@ def create_app():
                 gr.update(visible=True),
                 gr.update(visible=False),
                 gr.update(visible=False),
+                gr.update(visible=False),
                 gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
                 gr.update(visible=False),
@@ -5014,9 +5242,25 @@ def create_app():
                 percentile_reset_button_update(method),
                 gr.update(value=f"Same-person search ranks the current folder by face identity similarity using {FACE_MODEL_LABEL}."),
             )
+        if method == METHOD_TAGMATCH:
+            return (
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(label=main_label, value=TAGMATCH_DEFAULT_THRESHOLD, minimum=TAGMATCH_SLIDER_MIN, maximum=TAGMATCH_SLIDER_MAX),
+                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=TAGMATCH_SLIDER_MIN, maximum=TAGMATCH_SLIDER_MAX),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                percentile_slider_update(method),
+                percentile_reset_button_update(method),
+                gr.update(value="TagMatch scores images by WD tagger confidence for the specified tags. Use comma-separated booru-style tags like: body_horror, extra_fingers, deformed."),
+            )
         return (
             gr.update(visible=False),
             gr.update(visible=True),
+            gr.update(visible=False),
             gr.update(visible=False),
             gr.update(label=main_label, value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
             gr.update(visible=False, value=NEGATIVE_THRESHOLD),
@@ -5029,7 +5273,7 @@ def create_app():
         )
 
     def empty_result(message, method):
-        _, _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
+        _, _, _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
         set_scored_mode()
         state["browse_items"] = []
         state["browse_status"] = ""
@@ -5471,7 +5715,7 @@ def create_app():
             }
         return results
 
-    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         # Main entrypoint for "Run scoring"; both methods converge back into current_view().
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
@@ -5706,6 +5950,44 @@ def create_app():
                 gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
                 percentile_slider_update(METHOD_PROMPTMATCH, state["scores"]),
                 percentile_reset_button_update(METHOD_PROMPTMATCH, state["scores"]),
+                promptmatch_model_status_json(),
+                *ui_visibility_updates(),
+            )
+
+        if method == METHOD_TAGMATCH:
+            try:
+                state["scores"] = score_tagmatch_folder(image_paths, tagmatch_tags, progress)
+            except Exception as exc:
+                return empty_result(str(exc), method)
+            pos_vals = [
+                v["pos"] for v in state["scores"].values()
+                if not v.get("failed", False)
+            ]
+            if pos_vals:
+                tm_lo = min(pos_vals)
+                tm_hi = max(pos_vals)
+                tm_mid = (tm_lo + tm_hi) / 2.0
+            else:
+                tm_lo, tm_hi, tm_mid = TAGMATCH_SLIDER_MIN, TAGMATCH_SLIDER_MAX, TAGMATCH_DEFAULT_THRESHOLD
+            if previous_method != METHOD_TAGMATCH and has_recalled:
+                next_main = clamp_threshold(requested_main, tm_lo, tm_hi)
+            else:
+                next_main = tm_mid
+            safe_lo, safe_hi = expand_slider_bounds(tm_lo, tm_hi, requested_main, next_main)
+            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
+            return (
+                left_head,
+                left_gallery,
+                right_head,
+                right_gallery,
+                status,
+                hist,
+                sel_info,
+                mark_state,
+                gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
+                gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+                percentile_slider_update(METHOD_TAGMATCH, state["scores"]),
+                percentile_reset_button_update(METHOD_TAGMATCH, state["scores"]),
                 promptmatch_model_status_json(),
                 *ui_visibility_updates(),
             )
@@ -6018,7 +6300,7 @@ def create_app():
             *ui_visibility_updates(),
         )
 
-    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+    def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         action = (action or "").strip()
         if not action.startswith("run:"):
             return empty_result("Shortcut action ignored.", method)
@@ -6042,6 +6324,7 @@ def create_app():
             llm_prompt,
             llm_backend_id,
             llm_shortlist_size,
+            tagmatch_tags,
             main_threshold,
             aux_threshold,
             keep_pm_thresholds,
@@ -6692,7 +6975,9 @@ def create_app():
     }
     .sidebar-box .gr-group, .sidebar-box .block { gap:2px !important; }
     .sidebar-box .gr-form, .sidebar-box .gradio-row { gap:2px !important; }
-    .threshold-row { align-items:end; gap:6px; }
+    .threshold-row { align-items:end; gap:6px; overflow:hidden; }
+    .threshold-row .gr-slider, .threshold-row input[type=range] { min-width:0; }
+    .threshold-row input[type=number] { min-width:0; width:64px !important; max-width:64px !important; }
     .threshold-actions {
         min-width:58px !important;
         gap:4px !important;
@@ -7188,7 +7473,7 @@ def create_app():
                 with gr.Group(elem_classes=["sidebar-scroll"]):
                     with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
                         method_dd = gr.Dropdown(
-                            choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_LLMSEARCH],
+                            choices=[METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_LLMSEARCH, METHOD_TAGMATCH],
                             value=METHOD_PROMPTMATCH,
                             label="Method",
                             elem_id="hy-method",
@@ -7266,6 +7551,15 @@ def create_app():
                             )
                             llmsearch_run_btn = gr.Button("Run scoring", elem_id="hy-run-llm", variant="primary")
 
+                        with gr.Group(visible=False) as tagmatch_group:
+                            tagmatch_tags_tb = gr.Textbox(
+                                value=TAGMATCH_DEFAULT_TAGS,
+                                label="Tags to detect (comma-separated booru-style tags)",
+                                lines=3,
+                                elem_id="hy-tagmatch-tags",
+                            )
+                            tagmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-tagmatch", variant="primary")
+
                     with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
                         with gr.Column(elem_classes=["preview-action-stack"]):
                             find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
@@ -7273,7 +7567,7 @@ def create_app():
                         with gr.Group(elem_classes=["preview-prompt-group"]):
                             gr.Markdown("**Prompt from image**", elem_classes=["method-note"])
                             prompt_generator_dd = gr.Dropdown(
-                                choices=list(PROMPT_GENERATOR_CHOICES),
+                                choices=list(PROMPT_GENERATOR_ALL_CHOICES),
                                 value=state["prompt_generator"],
                                 label="Prompt generator",
                                 elem_id="hy-prompt-generator",
@@ -7419,24 +7713,16 @@ def create_app():
         method_dd.change(
             fn=configure_controls,
             inputs=[method_dd],
-            outputs=[promptmatch_group, imagereward_group, llmsearch_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
+            outputs=[promptmatch_group, imagereward_group, llmsearch_group, tagmatch_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
         )
 
-        promptmatch_run_btn.click(
-            fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
-        )
-        imagereward_run_btn.click(
-            fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
-        )
-        llmsearch_run_btn.click(
-            fn=score_folder,
-            inputs=[method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
-        )
+        _score_folder_inputs = [method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb]
+        _score_folder_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
+
+        promptmatch_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
+        imagereward_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
+        llmsearch_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
+        tagmatch_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
         folder_input.submit(
             fn=load_folder_for_browse,
             inputs=[folder_input, main_slider, aux_slider],
@@ -7526,7 +7812,7 @@ def create_app():
         )
         shortcut_action.change(
             fn=handle_shortcut_action,
-            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
+            inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         model_status_state.change(
