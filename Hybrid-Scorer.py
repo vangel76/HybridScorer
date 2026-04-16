@@ -174,6 +174,7 @@ IMAGEREWARD_SLIDER_MIN = -5.0
 IMAGEREWARD_SLIDER_MAX = 5.0
 TAGMATCH_SLIDER_MIN = 0.0
 TAGMATCH_SLIDER_MAX = 100.0
+TAGMATCH_SLIDER_PREPROCESS_MIN = -0.01
 TAGMATCH_DEFAULT_THRESHOLD = 20.0
 HIST_HEIGHT_SCALE = 0.7
 PROMPT_GENERATOR_FLORENCE = "Florence-2"
@@ -223,6 +224,7 @@ TAGMATCH_WD_TAGS_FILE = "selected_tags.csv"
 TAGMATCH_WD_IMAGE_SIZE = 448
 TAGMATCH_WD_MIN_CACHE_PROB = 0.02
 TAGMATCH_WD_BATCH_SIZE = 32
+TAGMATCH_AUTOCOMPLETE_MAX_SUGGESTIONS = 12
 TAGMATCH_DEFAULT_TAGS = (
     "bad_anatomy, bad_hands, bad_feet, bad_proportions, deformed, extra_arms, extra_faces, extra_mouth, missing_limb, multiple_legs, multiple_heads, oversized_limbs, wrong_foot, artistic_error, glitch, blob, disembodied_limb"
 )
@@ -2291,6 +2293,21 @@ def expand_slider_bounds(lo, hi, *values):
     return math.floor(lo * 1000) / 1000, math.ceil(hi * 1000) / 1000
 
 
+def normalize_threshold_inputs(method, main_threshold, aux_threshold):
+    main_value = float(main_threshold)
+    aux_value = float(aux_threshold)
+    if method == METHOD_TAGMATCH:
+        main_value = clamp_threshold(main_value, TAGMATCH_SLIDER_MIN, TAGMATCH_SLIDER_MAX)
+        aux_value = clamp_threshold(aux_value, TAGMATCH_SLIDER_MIN, TAGMATCH_SLIDER_MAX)
+    elif method == METHOD_IMAGEREWARD:
+        main_value = clamp_threshold(main_value, IMAGEREWARD_SLIDER_MIN, IMAGEREWARD_SLIDER_MAX)
+        aux_value = clamp_threshold(aux_value, PROMPTMATCH_SLIDER_MIN, PROMPTMATCH_SLIDER_MAX)
+    else:
+        main_value = clamp_threshold(main_value, PROMPTMATCH_SLIDER_MIN, PROMPTMATCH_SLIDER_MAX)
+        aux_value = clamp_threshold(aux_value, PROMPTMATCH_SLIDER_MIN, PROMPTMATCH_SLIDER_MAX)
+    return main_value, aux_value
+
+
 def extract_florence_caption(parsed, raw_text, task_prompt):
     def _clean(text):
         text = re.sub(r"<[^>]+>", " ", text or "")
@@ -2677,6 +2694,8 @@ def create_app():
             "tagmatch_cached_feature_paths": None,
             "tagmatch_cached_tag_vectors": None,
             "tagmatch_last_query_tags_str": "",
+            "tagmatch_vocab_tags": None,
+            "tagmatch_vocab_json": "[]",
             "prompt_generator": DEFAULT_PROMPT_GENERATOR,
             "prompt_backend_cache": {},
             "generated_prompt": "",
@@ -2898,6 +2917,18 @@ def create_app():
       return JSON.parse(input.value);
     }} catch {{
       return {{}};
+    }}
+  }};
+  const readTagMatchVocabulary = () => {{
+    const root = document.getElementById("hy-tagmatch-vocab");
+    if (!root) return [];
+    const input = root.querySelector("input, textarea");
+    if (!input || !input.value) return [];
+    try {{
+      const parsed = JSON.parse(input.value);
+      return Array.isArray(parsed) ? parsed : [];
+    }} catch {{
+      return [];
     }}
   }};
   const paintPromptMatchModelNode = (node, entry, colors) => {{
@@ -3670,6 +3701,147 @@ def create_app():
     const ta = root.querySelector("textarea");
     if (ta) ta.classList.remove("hy-tag-overlay-active");
   }};
+  const ensureTagMatchSuggestBox = () => {{
+    let box = document.getElementById("hy-tagmatch-suggest-box");
+    if (!box) {{
+      box = document.createElement("div");
+      box.className = "hy-tagmatch-suggest";
+      box.id = "hy-tagmatch-suggest-box";
+      document.body.appendChild(box);
+    }}
+    return box;
+  }};
+  const positionTagMatchSuggestBox = (box, input) => {{
+    if (!box || !input) return;
+    const rect = input.getBoundingClientRect();
+    const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    const left = Math.max(8, Math.round(rect.left));
+    const width = Math.max(220, Math.round(rect.width));
+    const maxWidth = Math.max(220, viewportWidth - left - 8);
+    box.style.left = `${{left}}px`;
+    box.style.top = `${{Math.round(rect.bottom - 2)}}px`;
+    box.style.width = `${{Math.min(width, maxWidth)}}px`;
+  }};
+  const hideTagMatchAutocomplete = () => {{
+    const box = ensureTagMatchSuggestBox();
+    if (!box) return;
+    box.classList.remove("active");
+    box.innerHTML = "";
+    box.dataset.activeIndex = "-1";
+  }};
+  const escapeHtml = (value) => {{
+    return String(value || "").replace(/[&<>\"']/g, (ch) => {{
+      return {{
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;",
+      }}[ch] || ch;
+    }});
+  }};
+  const getTagMatchTokenInfo = (input) => {{
+    if (!input) return null;
+    const value = input.value || "";
+    const caret = input.selectionStart ?? value.length;
+    const lastComma = value.lastIndexOf(",", Math.max(0, caret - 1));
+    const tokenStart = lastComma >= 0 ? lastComma + 1 : 0;
+    const nextComma = value.indexOf(",", caret);
+    const tokenEnd = nextComma >= 0 ? nextComma : value.length;
+    const tokenRaw = value.slice(tokenStart, tokenEnd);
+    const leadingMatch = tokenRaw.match(/^\\s*/);
+    const trailingMatch = tokenRaw.match(/\\s*$/);
+    const leadingLen = leadingMatch ? leadingMatch[0].length : 0;
+    const trailingLen = trailingMatch ? trailingMatch[0].length : 0;
+    const replaceStart = tokenStart + leadingLen;
+    const replaceEnd = Math.max(replaceStart, tokenEnd - trailingLen);
+    const fragment = value.slice(replaceStart, caret).trim().toLowerCase();
+    return {{
+      value,
+      caret,
+      tokenStart,
+      tokenEnd,
+      replaceStart,
+      replaceEnd,
+      fragment,
+      currentTag: value.slice(replaceStart, replaceEnd).trim().toLowerCase(),
+    }};
+  }};
+  const rankTagMatchSuggestions = (vocab, fragment, currentTag) => {{
+    const needle = String(fragment || "").trim().toLowerCase();
+    if (!needle) return [];
+    const prefix = [];
+    const contains = [];
+    for (const tag of vocab) {{
+      if (!tag || tag === currentTag) continue;
+      if (tag.startsWith(needle)) {{
+        prefix.push(tag);
+      }} else if (tag.includes(needle)) {{
+        contains.push(tag);
+      }}
+      if ((prefix.length + contains.length) >= {TAGMATCH_AUTOCOMPLETE_MAX_SUGGESTIONS * 2}) {{
+        break;
+      }}
+    }}
+    return prefix.concat(contains).slice(0, {TAGMATCH_AUTOCOMPLETE_MAX_SUGGESTIONS});
+  }};
+  const highlightTagSuggestion = (box, nextIndex) => {{
+    if (!box) return;
+    const items = Array.from(box.querySelectorAll(".hy-tagmatch-suggest-item"));
+    if (!items.length) {{
+      box.dataset.activeIndex = "-1";
+      return;
+    }}
+    let index = Number.parseInt(String(nextIndex), 10);
+    if (!Number.isFinite(index)) index = 0;
+    index = ((index % items.length) + items.length) % items.length;
+    items.forEach((item, itemIndex) => {{
+      item.classList.toggle("active", itemIndex === index);
+    }});
+    box.dataset.activeIndex = String(index);
+  }};
+  const applyTagMatchSuggestion = (tag) => {{
+    const root = document.getElementById("hy-tagmatch-tags");
+    const input = root ? root.querySelector("textarea") : null;
+    if (!input || !tag) return false;
+    const info = getTagMatchTokenInfo(input);
+    if (!info) return false;
+    const before = info.value.slice(0, info.replaceStart);
+    const after = info.value.slice(info.tokenEnd);
+    const needsTrailingComma = info.tokenEnd >= info.value.length;
+    const insertion = needsTrailingComma ? `${{tag}}, ` : tag;
+    input.value = before + insertion + after;
+    const caretPos = before.length + insertion.length;
+    input.focus();
+    input.setSelectionRange(caretPos, caretPos);
+    dispatchTextboxEvents(input);
+    hideTagMatchAutocomplete();
+    return true;
+  }};
+  const syncTagMatchAutocomplete = () => {{
+    const root = document.getElementById("hy-tagmatch-tags");
+    const input = root ? root.querySelector("textarea") : null;
+    const box = ensureTagMatchSuggestBox();
+    if (!input || !box) return;
+    const vocab = readTagMatchVocabulary();
+    const info = getTagMatchTokenInfo(input);
+    if (!info || !vocab.length || !info.fragment) {{
+      hideTagMatchAutocomplete();
+      return;
+    }}
+    const matches = rankTagMatchSuggestions(vocab, info.fragment, info.currentTag);
+    if (!matches.length) {{
+      hideTagMatchAutocomplete();
+      return;
+    }}
+    positionTagMatchSuggestBox(box, input);
+    box.innerHTML = matches.map((tag, idx) => {{
+      const activeClass = idx === 0 ? " active" : "";
+      return `<button type="button" class="hy-tagmatch-suggest-item${{activeClass}}" data-tag="${{escapeHtml(tag)}}">${{escapeHtml(tag)}}</button>`;
+    }}).join("");
+    box.classList.add("active");
+    box.dataset.activeIndex = "0";
+  }};
   const hslStyle = (t) => {{
     const hue  = Math.round(55 + t * 65);
     const sat  = Math.round(60 + t * 30);
@@ -4109,10 +4281,70 @@ def create_app():
     document.addEventListener("keyup", docRepaint, true);
     root.dataset.hyAvailabilityHooked = "1";
   }};
+  const hookTagMatchAutocomplete = () => {{
+    const root = document.getElementById("hy-tagmatch-tags");
+    if (!root || root.dataset.hyAutocompleteHooked) return;
+    const input = root.querySelector("textarea");
+    const box = ensureTagMatchSuggestBox();
+    if (!input || !box) return;
+    const refresh = () => syncTagMatchAutocomplete();
+    input.addEventListener("input", refresh);
+    input.addEventListener("click", refresh);
+    input.addEventListener("focus", refresh);
+    input.addEventListener("blur", () => setTimeout(hideTagMatchAutocomplete, 120));
+    window.addEventListener("resize", refresh);
+    window.addEventListener("scroll", refresh, true);
+    input.addEventListener("keydown", (event) => {{
+      if (!box.classList.contains("active")) return;
+      const items = Array.from(box.querySelectorAll(".hy-tagmatch-suggest-item"));
+      if (!items.length) return;
+      let activeIndex = Number.parseInt(box.dataset.activeIndex || "0", 10);
+      if (!Number.isFinite(activeIndex)) activeIndex = 0;
+      if (event.key === "ArrowDown") {{
+        highlightTagSuggestion(box, activeIndex + 1);
+        event.preventDefault();
+        return;
+      }}
+      if (event.key === "ArrowUp") {{
+        highlightTagSuggestion(box, activeIndex - 1);
+        event.preventDefault();
+        return;
+      }}
+      if (event.key === "Enter" || event.key === "Tab") {{
+        const selected = items[activeIndex] || items[0];
+        if (selected && applyTagMatchSuggestion(selected.dataset.tag || "")) {{
+          event.preventDefault();
+        }}
+        return;
+      }}
+      if (event.key === "Escape") {{
+        hideTagMatchAutocomplete();
+      }}
+    }});
+    box.addEventListener("mousedown", (event) => {{
+      const target = event.target instanceof Element ? event.target.closest(".hy-tagmatch-suggest-item") : null;
+      if (!target) return;
+      event.preventDefault();
+      applyTagMatchSuggestion(target.dataset.tag || "");
+    }});
+    root.dataset.hyAutocompleteHooked = "1";
+  }};
+  const hookTagMatchVocabularyState = () => {{
+    const root = document.getElementById("hy-tagmatch-vocab");
+    if (!root || root.dataset.hyStateHooked) return;
+    const input = root.querySelector("input, textarea");
+    if (!input) return;
+    const refresh = () => syncTagMatchAutocomplete();
+    input.addEventListener("input", refresh);
+    input.addEventListener("change", refresh);
+    root.dataset.hyStateHooked = "1";
+  }};
   applyTooltips();
   hookMarkState();
   hookModelStatusState();
   hookPromptMatchModelAvailability();
+  hookTagMatchAutocomplete();
+  hookTagMatchVocabularyState();
   hookHistogramResize();
   hookPreviewDialogTracking();
   hookInlinePreviewNavigationLock();
@@ -4142,6 +4374,8 @@ def create_app():
     hookMarkState();
     hookModelStatusState();
     hookPromptMatchModelAvailability();
+    hookTagMatchAutocomplete();
+    hookTagMatchVocabularyState();
     hookHistogramResize();
     hookPreviewDialogTracking();
     hookInlinePreviewNavigationLock();
@@ -4166,6 +4400,7 @@ def create_app():
         "hy-ir-pos": "Describe the style or aesthetic you want ImageReward to favor. Press Ctrl+Enter to run scoring.",
         "hy-ir-neg": "Optional experimental penalty prompt. Its score is subtracted from the positive style score. Press Ctrl+Enter to run scoring.",
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
+        "hy-tagmatch-tags": "Comma-separated booru-style tags for TagMatch. Start typing to get live vocabulary suggestions, then use arrow keys plus Enter/Tab or click a suggestion.",
         "hy-run-llm": "Run hybrid image search: PromptMatch first shortlists likely matches, then the local vision-language backend reranks the top candidates.",
         "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
         "hy-generate-prompt": "Use the currently previewed image to draft an editable prompt with the selected caption backend.",
@@ -4468,6 +4703,50 @@ def create_app():
         state["tagmatch_backend"] = backend
         print(f"[TagMatch] Ready — {len(tags)} tags loaded.")
         return backend
+
+    def load_tagmatch_vocabulary():
+        cached = state.get("tagmatch_vocab_tags")
+        if cached:
+            return cached
+
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:
+            raise RuntimeError("huggingface_hub is required for TagMatch tag suggestions.") from exc
+
+        import csv as _csv
+
+        tags_path = hf_hub_download(
+            repo_id=TAGMATCH_WD_REPO_ID,
+            filename=TAGMATCH_WD_TAGS_FILE,
+            cache_dir=get_cache_config()["huggingface_dir"],
+        )
+
+        tags = []
+        with open(tags_path, newline="", encoding="utf-8") as _f:
+            reader = _csv.DictReader(_f)
+            for row in reader:
+                name = (row.get("name") or "").strip().lower()
+                if name:
+                    tags.append(name)
+
+        state["tagmatch_vocab_tags"] = tags
+        state["tagmatch_vocab_json"] = json.dumps(tags)
+        print(f"[TagMatch] Autocomplete vocabulary ready — {len(tags)} tags loaded.")
+        return tags
+
+    def refresh_tagmatch_vocab_state(method):
+        cached_json = state.get("tagmatch_vocab_json") or "[]"
+        if method != METHOD_TAGMATCH and cached_json != "[]":
+            return cached_json
+        if method != METHOD_TAGMATCH:
+            return "[]"
+        try:
+            load_tagmatch_vocabulary()
+        except Exception as exc:
+            print(f"[TagMatch] Autocomplete vocabulary unavailable: {exc}")
+            return cached_json
+        return state.get("tagmatch_vocab_json") or "[]"
 
     def score_tagmatch_folder(image_paths, query_tags_str, progress):
         backend = ensure_tagmatch_model()
@@ -4891,6 +5170,7 @@ def create_app():
                 }),
             )
 
+        main_threshold, aux_threshold = normalize_threshold_inputs(state["method"], main_threshold, aux_threshold)
         remember_mode_thresholds(state["method"], main_threshold, aux_threshold)
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
@@ -5565,8 +5845,8 @@ def create_app():
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=True),
-                gr.update(label=main_label, value=TAGMATCH_DEFAULT_THRESHOLD, minimum=TAGMATCH_SLIDER_MIN, maximum=TAGMATCH_SLIDER_MAX),
-                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=TAGMATCH_SLIDER_MIN, maximum=TAGMATCH_SLIDER_MAX),
+                gr.update(label=main_label, value=TAGMATCH_DEFAULT_THRESHOLD, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX),
+                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX),
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=False),
@@ -6072,11 +6352,19 @@ def create_app():
             "requested_main": float(main_threshold),
             "requested_aux": float(aux_threshold),
         }
+        ctx["requested_main"], ctx["requested_aux"] = normalize_threshold_inputs(
+            method,
+            ctx["requested_main"],
+            ctx["requested_aux"],
+        )
         recalled_main, recalled_aux, has_recalled = recalled_mode_thresholds(method, main_threshold, aux_threshold)
         ctx["has_recalled"] = has_recalled
         if ctx["previous_method"] != method and has_recalled:
-            ctx["requested_main"] = recalled_main
-            ctx["requested_aux"] = recalled_aux
+            ctx["requested_main"], ctx["requested_aux"] = normalize_threshold_inputs(
+                method,
+                recalled_main,
+                recalled_aux,
+            )
         ctx["preserved_overrides"] = preserve_overrides_for_folder_key(
             folder_key,
             {os.path.basename(path) for path in image_paths},
@@ -6376,12 +6664,13 @@ def create_app():
             else:
                 next_main = tm_mid
             safe_lo, safe_hi = expand_slider_bounds(tm_lo, tm_hi, requested_main, next_main)
+            safe_lo = max(TAGMATCH_SLIDER_PREPROCESS_MIN, safe_lo)
             return render_scored_mode_result(
                 METHOD_TAGMATCH,
                 next_main,
                 NEGATIVE_THRESHOLD,
                 gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
-                gr.update(value=NEGATIVE_THRESHOLD, visible=False),
+                gr.update(value=NEGATIVE_THRESHOLD, visible=False, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX),
                 percentile_slider_update(METHOD_TAGMATCH, state["scores"]),
                 percentile_reset_button_update(METHOD_TAGMATCH, state["scores"]),
             )
@@ -7301,6 +7590,11 @@ def create_app():
         border-left-color: rgba(220, 165, 145, 0.78);
     }
     #hy-tagmatch-tags, #hy-pos, #hy-neg { position: relative !important; }
+    #hy-tagmatch-tags {
+        overflow: visible !important;
+        z-index: 20 !important;
+        isolation: isolate;
+    }
     #hy-tagmatch-tags textarea.hy-tag-overlay-active,
     #hy-pos textarea.hy-tag-overlay-active,
     #hy-neg textarea.hy-tag-overlay-active { opacity: 0.05 !important; }
@@ -7335,6 +7629,43 @@ def create_app():
         opacity: 0.75;
         font-size: 10px;
         margin-left: 5px;
+    }
+    .hy-tagmatch-suggest {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 320px;
+        z-index: 9999;
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 240px;
+        overflow-y: auto;
+        padding: 8px;
+        background: rgba(12, 14, 20, 0.97);
+        border: 1px solid rgba(88, 187, 115, 0.35);
+        border-radius: 8px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+    }
+    .hy-tagmatch-suggest.active { display: flex; }
+    .hy-tagmatch-suggest-item {
+        width: 100%;
+        text-align: left;
+        font-family: monospace;
+        font-size: 12px;
+        line-height: 1.35;
+        padding: 6px 9px;
+        color: #dbe6d4;
+        background: rgba(31, 36, 44, 0.96);
+        border: 1px solid rgba(90, 110, 126, 0.28);
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    .hy-tagmatch-suggest-item.active,
+    .hy-tagmatch-suggest-item:hover {
+        background: rgba(66, 104, 72, 0.96);
+        border-color: rgba(111, 201, 129, 0.72);
+        color: #f5fff1;
     }
     #hy-left-gallery, #hy-left-gallery > div {
         background:linear-gradient(180deg, rgba(18, 36, 24, 0.96), rgba(13, 18, 15, 0.98)) !important;
@@ -7777,6 +8108,7 @@ def create_app():
                 shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
                 model_status_state = gr.Textbox(value=promptmatch_model_status_json(), visible="hidden", elem_id="hy-model-status")
+                tagmatch_vocab_state = gr.Textbox(value="[]", visible="hidden", elem_id="hy-tagmatch-vocab")
                 with gr.Group(elem_classes=["sidebar-scroll"]):
                     with gr.Accordion("1. Setup", open=True, elem_id="hy-acc-setup"):
                         method_dd = gr.Dropdown(
@@ -8022,6 +8354,13 @@ def create_app():
             fn=configure_controls,
             inputs=[method_dd],
             outputs=[promptmatch_group, imagereward_group, llmsearch_group, tagmatch_group, main_slider, aux_slider, aux_mid_btn, keep_pm_thresholds_cb, keep_ir_thresholds_cb, percentile_slider, percentile_mid_btn, method_note],
+            queue=False,
+        )
+        method_dd.change(
+            fn=refresh_tagmatch_vocab_state,
+            inputs=[method_dd],
+            outputs=[tagmatch_vocab_state],
+            queue=False,
         )
 
         _score_folder_inputs = [method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, pm_segment_cb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb]

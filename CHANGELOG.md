@@ -1,5 +1,13 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.2.5 - TagMatch Polish & Stability
+
+**TagMatch Typing Help**
+- The TagMatch tag box now suggests matching booru-style tags in real time while you type
+- Suggestions come from the WD tagger vocabulary itself, so it is much easier to discover valid tags without guessing exact spellings
+- You can click a suggestion or use arrow keys plus `Enter` / `Tab` to insert it quickly
+
+
 ## Version 2.2.0 - TagMatch & Per-Phrase PromptMatch
 
 **TagMatch — Find AI Human Errors**

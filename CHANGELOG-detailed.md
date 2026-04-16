@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.2.5] - 2026-04-16
+
+- Added live TagMatch tag suggestions backed by the WD tagger vocabulary file (`selected_tags.csv`). New state keys: `tagmatch_vocab_tags` caches the parsed tag list in Python, and `tagmatch_vocab_json` mirrors that list into the hidden Gradio bridge textbox `#hy-tagmatch-vocab` so frontend JS can filter suggestions locally without round-tripping through Python on every keystroke.
+- Added `load_tagmatch_vocabulary()` to fetch and parse `selected_tags.csv` independently of ONNX session creation, and `refresh_tagmatch_vocab_state(method)` to lazily populate the hidden vocab bridge when the user switches into `METHOD_TAGMATCH`.
+- Added a new frontend TagMatch autocomplete system inside the injected JS:
+  - `readTagMatchVocabulary()` reads the hidden JSON payload
+  - `getTagMatchTokenInfo()` isolates the current comma-delimited tag fragment at the textarea caret
+  - `rankTagMatchSuggestions()` prefers prefix matches, then substring matches, and limits output to `TAGMATCH_AUTOCOMPLETE_MAX_SUGGESTIONS`
+  - `applyTagMatchSuggestion()` replaces only the active tag fragment and preserves the rest of the comma-separated query
+  - keyboard controls support `ArrowUp`, `ArrowDown`, `Enter`, `Tab`, and `Escape`
+- The first implementation rendered the suggestions panel inside `#hy-tagmatch-tags`, which still allowed it to be visually buried behind neighboring Gradio controls when parent containers clipped overflow. Reworked it to a body-mounted floating panel:
+  - `ensureTagMatchSuggestBox()` now creates a single `#hy-tagmatch-suggest-box` under `document.body`
+  - `positionTagMatchSuggestBox()` positions it from the textarea's `getBoundingClientRect()`
+  - the popup now uses `position: fixed` and a high `z-index`, avoiding local stacking/overflow traps in the sidebar layout
+  - resize and scroll listeners resync popup placement while it is active
+- Added TagMatch-specific tooltip help text describing the new typing workflow: live suggestions plus click or arrow-key insertion.
+- Hardened TagMatch slider handoff when switching methods. Rare Gradio crashes were triggered by a stale PromptMatch negative slider value such as `-0.002` arriving after the UI had already switched TagMatch to a `0..100` range. Changes:
+  - introduced `TAGMATCH_SLIDER_PREPROCESS_MIN = -0.01` as a tiny tolerance floor for Gradio preprocessing only
+  - added `normalize_threshold_inputs(method, main_threshold, aux_threshold)` and applied it in both `prepare_scored_run_context()` and `current_view()` so TagMatch logic always clamps thresholds back into valid `0..100` bounds before using them
+  - `configure_controls(METHOD_TAGMATCH)` now updates both sliders with the preprocess-safe minimum instead of a strict `0.0`
+  - the TagMatch branch in `score_folder()` now clamps the expanded lower slider bound with `safe_lo = max(TAGMATCH_SLIDER_PREPROCESS_MIN, safe_lo)` so stale negative values cannot widen the real UI range below the tolerated floor
+- Made the `method_dd.change(fn=configure_controls, ...)` callback `queue=False` so mode-switch slider-range updates happen immediately instead of lagging behind queued events, reducing the chance of stale slider payloads racing the new mode configuration.
+
 ## [2.2.0] - 2026-04-15
 
 - Updated `TAGMATCH_DEFAULT_TAGS` to only include tags confirmed present in the WD eva02-large-tagger-v3 ONNX model output layer. Removed `missing_hand`, `extra_legs`, and `missing_foot` (not in vocabulary); replaced with `bad_hands`, `bad_feet`, `bad_proportions`, `extra_arms`, `extra_faces`, `extra_mouth`, `missing_limb`, `multiple_legs`, `multiple_heads`, `oversized_limbs`, `wrong_foot`, `artistic_error`.
