@@ -234,6 +234,52 @@ FACE_EMBEDDING_MIN_FREE_VRAM_GB = 2.5
 FACE_EMBEDDING_PER_WORKER_VRAM_GB = 0.6
 PROMPTMATCH_HOST_MAX_WORKERS = 16
 
+# Callback output contracts are fragile in this app because Python callbacks,
+# hidden JS bridges, and Gradio component wiring must stay in lockstep.
+VIEW_WITH_CONTROLS_OUTPUT_KEYS = (
+    "left_head",
+    "left_gallery",
+    "right_head",
+    "right_gallery",
+    "status_md",
+    "hist_plot",
+    "sel_info",
+    "mark_state",
+    "left_export_cb",
+    "left_export_name_tb",
+    "export_acc",
+    "move_controls_col",
+    "gallery_header_spacer_col",
+    "right_header_col",
+    "right_gallery_col",
+)
+SCORE_FOLDER_OUTPUT_KEYS = (
+    "left_head",
+    "left_gallery",
+    "right_head",
+    "right_gallery",
+    "status_md",
+    "hist_plot",
+    "sel_info",
+    "mark_state",
+    "main_slider",
+    "aux_slider",
+    "percentile_slider",
+    "percentile_mid_btn",
+    "model_status_state",
+    "left_export_cb",
+    "left_export_name_tb",
+    "export_acc",
+    "move_controls_col",
+    "gallery_header_spacer_col",
+    "right_header_col",
+    "right_gallery_col",
+)
+PREVIEW_SEARCH_OUTPUT_KEYS = (
+    "promptgen_status_md",
+    *SCORE_FOLDER_OUTPUT_KEYS,
+)
+
 SEARCH_PROMPT = "ginger woman"
 NEGATIVE_PROMPT = ""
 NEGATIVE_THRESHOLD = 0.14
@@ -2572,85 +2618,93 @@ def create_app():
         huggingface_cache_dir=get_cache_config()["huggingface_dir"],
     )
 
+    def get_state_defaults():
+        # Keep state dict storage to preserve existing callback expectations, but
+        # centralize defaults so reset paths cannot silently drift apart.
+        return {
+            "method": METHOD_PROMPTMATCH,
+            "source_dir": source_dir,
+            "view_mode": "scored",
+            "browse_items": [],
+            "browse_status": "",
+            "scores": {},
+            "overrides": {},
+            "last_scored_method": None,
+            "last_scored_folder_key": None,
+            "last_promptmatch_model_label": None,
+            "left_marked": [],
+            "right_marked": [],
+            "preview_fname": None,
+            "backend": prompt_backend,
+            "ir_model": None,
+            "face_backend": None,
+            "tagmatch_backend": None,
+            "hist_geom": None,
+            "hist_width": 300,
+            "proxy_folder_key": None,
+            "proxy_cache_dir": None,
+            "proxy_signature": None,
+            "proxy_map": {},
+            "use_proxy_display": True,
+            "ir_penalty_weight": DEFAULT_IR_PENALTY_WEIGHT,
+            "pm_cached_signature": None,
+            "pm_cached_model_label": None,
+            "pm_cached_feature_paths": None,
+            "pm_cached_image_features": None,
+            "pm_cached_failed_paths": None,
+            "pm_segment_mode": False,
+            "pm_segment_sims": {},
+            "face_cached_signature": None,
+            "face_cached_feature_paths": None,
+            "face_cached_embeddings": None,
+            "face_cached_failures": None,
+            "ir_cached_signature": None,
+            "ir_cached_positive_prompt": None,
+            "ir_cached_negative_prompt": None,
+            "ir_cached_base_scores": None,
+            "ir_cached_penalty_scores": None,
+            "llmsearch_backend": DEFAULT_LLMSEARCH_BACKEND,
+            "llmsearch_shortlist_size": LLMSEARCH_SHORTLIST_DEFAULT,
+            "llmsearch_cached_signature": None,
+            "llmsearch_cached_prompt": None,
+            "llmsearch_cached_backend": None,
+            "llmsearch_cached_scoring_mode": None,
+            "llmsearch_cached_shortlist_size": None,
+            "llmsearch_cached_model_label": None,
+            "llmsearch_cached_scores": None,
+            "llmsearch_cached_captions": {},
+            "tagmatch_cached_signature": None,
+            "tagmatch_cached_feature_paths": None,
+            "tagmatch_cached_tag_vectors": None,
+            "tagmatch_last_query_tags_str": "",
+            "prompt_generator": DEFAULT_PROMPT_GENERATOR,
+            "prompt_backend_cache": {},
+            "generated_prompt": "",
+            "generated_prompt_source": None,
+            "generated_prompt_backend": DEFAULT_PROMPT_GENERATOR,
+            "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
+            "generated_prompt_variants": {},
+            "generated_prompt_status": "Preview an image, then generate a prompt from it.",
+            "similarity_query_fname": None,
+            "similarity_model_label": None,
+            "sameperson_query_fname": None,
+            "sameperson_model_label": None,
+            "mode_thresholds": {
+                METHOD_PROMPTMATCH: {"main": None, "aux": None},
+                METHOD_IMAGEREWARD: {"main": None, "aux": None},
+                METHOD_LLMSEARCH: {"main": None, "aux": None},
+                METHOD_SIMILARITY: {"main": None, "aux": None},
+                METHOD_SAMEPERSON: {"main": None, "aux": None},
+                METHOD_TAGMATCH: {"main": None, "aux": None},
+            },
+            "zoom_columns": 5,
+        }
+
+    def init_state():
+        return dict(get_state_defaults())
+
     # Shared mutable state for the one-page app. Gradio callbacks update this in place.
-    state = {
-        "method": METHOD_PROMPTMATCH,
-        "source_dir": source_dir,
-        "view_mode": "scored",
-        "browse_items": [],
-        "browse_status": "",
-        "scores": {},
-        "overrides": {},
-        "last_scored_method": None,
-        "last_scored_folder_key": None,
-        "last_promptmatch_model_label": None,
-        "left_marked": [],
-        "right_marked": [],
-        "preview_fname": None,
-        "backend": prompt_backend,
-        "ir_model": None,
-        "face_backend": None,
-        "tagmatch_backend": None,
-        "hist_geom": None,
-        "hist_width": 300,
-        "proxy_folder_key": None,
-        "proxy_cache_dir": None,
-        "proxy_signature": None,
-        "proxy_map": {},
-        "use_proxy_display": True,
-        "ir_penalty_weight": DEFAULT_IR_PENALTY_WEIGHT,
-        "pm_cached_signature": None,
-        "pm_cached_model_label": None,
-        "pm_cached_feature_paths": None,
-        "pm_cached_image_features": None,
-        "pm_cached_failed_paths": None,
-        "pm_segment_mode": False,
-        "pm_segment_sims": {},
-        "face_cached_signature": None,
-        "face_cached_feature_paths": None,
-        "face_cached_embeddings": None,
-        "face_cached_failures": None,
-        "ir_cached_signature": None,
-        "ir_cached_positive_prompt": None,
-        "ir_cached_negative_prompt": None,
-        "ir_cached_base_scores": None,
-        "ir_cached_penalty_scores": None,
-        "llmsearch_backend": DEFAULT_LLMSEARCH_BACKEND,
-        "llmsearch_shortlist_size": LLMSEARCH_SHORTLIST_DEFAULT,
-        "llmsearch_cached_signature": None,
-        "llmsearch_cached_prompt": None,
-        "llmsearch_cached_backend": None,
-        "llmsearch_cached_scoring_mode": None,
-        "llmsearch_cached_shortlist_size": None,
-        "llmsearch_cached_model_label": None,
-        "llmsearch_cached_scores": None,
-        "llmsearch_cached_captions": {},
-        "tagmatch_cached_signature": None,
-        "tagmatch_cached_feature_paths": None,
-        "tagmatch_cached_tag_vectors": None,
-        "tagmatch_last_query_tags_str": "",
-        "prompt_generator": DEFAULT_PROMPT_GENERATOR,
-        "prompt_backend_cache": {},
-        "generated_prompt": "",
-        "generated_prompt_source": None,
-        "generated_prompt_backend": DEFAULT_PROMPT_GENERATOR,
-        "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
-        "generated_prompt_variants": {},
-        "generated_prompt_status": "Preview an image, then generate a prompt from it.",
-        "similarity_query_fname": None,
-        "similarity_model_label": None,
-        "sameperson_query_fname": None,
-        "sameperson_model_label": None,
-        "mode_thresholds": {
-            METHOD_PROMPTMATCH: {"main": None, "aux": None},
-            METHOD_IMAGEREWARD: {"main": None, "aux": None},
-            METHOD_LLMSEARCH: {"main": None, "aux": None},
-            METHOD_SIMILARITY: {"main": None, "aux": None},
-            METHOD_SAMEPERSON: {"main": None, "aux": None},
-            METHOD_TAGMATCH: {"main": None, "aux": None},
-        },
-        "zoom_columns": 5,
-    }
+    state = init_state()
 
     def is_browse_mode():
         return state.get("view_mode") == "browse"
@@ -2663,39 +2717,102 @@ def create_app():
         state["browse_items"] = list(items or [])
         state["browse_status"] = status_text
 
+    def reset_selection_state():
+        state["left_marked"] = []
+        state["right_marked"] = []
+
+    def clear_preview_search_context():
+        # Preview-linked search context must be cleared together so Similarity
+        # and SamePerson do not leak query labels across mode/folder changes.
+        state["similarity_query_fname"] = None
+        state["similarity_model_label"] = None
+        state["sameperson_query_fname"] = None
+        state["sameperson_model_label"] = None
+
+    def clear_active_scores():
+        state["scores"] = {}
+        state["overrides"] = {}
+        state["preview_fname"] = None
+        reset_selection_state()
+
+    def reset_for_folder_change(folder, clear_overrides=True):
+        state["source_dir"] = folder
+        state["scores"] = {}
+        if clear_overrides:
+            state["overrides"] = {}
+        state["preview_fname"] = None
+        reset_selection_state()
+        clear_preview_search_context()
+
+    def invalidate_folder_level_caches():
+        state["proxy_signature"] = None
+        state["proxy_map"] = {}
+        state["pm_cached_signature"] = None
+        state["pm_cached_model_label"] = None
+        state["pm_cached_feature_paths"] = None
+        state["pm_cached_image_features"] = None
+        state["pm_cached_failed_paths"] = None
+        state["face_cached_signature"] = None
+        state["face_cached_feature_paths"] = None
+        state["face_cached_embeddings"] = None
+        state["face_cached_failures"] = None
+        state["ir_cached_signature"] = None
+        state["ir_cached_positive_prompt"] = None
+        state["ir_cached_negative_prompt"] = None
+        state["ir_cached_base_scores"] = None
+        state["ir_cached_penalty_scores"] = None
+        state["llmsearch_cached_signature"] = None
+        state["llmsearch_cached_prompt"] = None
+        state["llmsearch_cached_backend"] = None
+        state["llmsearch_cached_scoring_mode"] = None
+        state["llmsearch_cached_shortlist_size"] = None
+        state["llmsearch_cached_model_label"] = None
+        state["llmsearch_cached_scores"] = None
+        state["llmsearch_cached_captions"] = {}
+        state["tagmatch_cached_signature"] = None
+        state["tagmatch_cached_feature_paths"] = None
+        state["tagmatch_cached_tag_vectors"] = None
+
+    def preserve_overrides_for_image_paths(image_paths):
+        folder = state.get("source_dir")
+        previous_folder_key = normalize_folder_identity(folder) if folder else None
+        available_names = {os.path.basename(path) for path in image_paths}
+        return preserve_overrides_for_folder_key(previous_folder_key, available_names)
+
+    def preserve_overrides_for_folder_key(folder_key, available_names):
+        previous_folder = state.get("source_dir")
+        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
+        if previous_folder_key != folder_key:
+            return {}
+        # Manual override identity is filename-based and must survive rescoring
+        # within the same folder, but must be dropped once the file disappears.
+        return {
+            fname: side
+            for fname, side in state.get("overrides", {}).items()
+            if fname in available_names
+        }
+
+    def begin_scored_run(method, folder, preserved_overrides):
+        state["method"] = method
+        set_scored_mode()
+        sync_promptmatch_proxy_cache(folder)
+        state["source_dir"] = folder
+        state["overrides"] = dict(preserved_overrides)
+        state["preview_fname"] = None
+        reset_selection_state()
+        clear_preview_search_context()
+
+    def set_browse_folder_state(folder, browse_items, status_text):
+        reset_for_folder_change(folder, clear_overrides=True)
+        set_browse_mode(browse_items, status_text)
+
     def sync_promptmatch_proxy_cache(folder):
         folder_key = normalize_folder_identity(folder)
         if state["proxy_folder_key"] != folder_key:
             clear_promptmatch_proxy_cache(state.get("proxy_cache_dir"))
             state["proxy_folder_key"] = folder_key
             state["proxy_cache_dir"] = get_promptmatch_proxy_cache_dir(folder)
-            state["proxy_signature"] = None
-            state["proxy_map"] = {}
-            state["pm_cached_signature"] = None
-            state["pm_cached_model_label"] = None
-            state["pm_cached_feature_paths"] = None
-            state["pm_cached_image_features"] = None
-            state["pm_cached_failed_paths"] = None
-            state["face_cached_signature"] = None
-            state["face_cached_feature_paths"] = None
-            state["face_cached_embeddings"] = None
-            state["face_cached_failures"] = None
-            state["ir_cached_signature"] = None
-            state["ir_cached_positive_prompt"] = None
-            state["ir_cached_negative_prompt"] = None
-            state["ir_cached_base_scores"] = None
-            state["ir_cached_penalty_scores"] = None
-            state["llmsearch_cached_signature"] = None
-            state["llmsearch_cached_prompt"] = None
-            state["llmsearch_cached_backend"] = None
-            state["llmsearch_cached_scoring_mode"] = None
-            state["llmsearch_cached_shortlist_size"] = None
-            state["llmsearch_cached_model_label"] = None
-            state["llmsearch_cached_scores"] = None
-            state["llmsearch_cached_captions"] = {}
-            state["tagmatch_cached_signature"] = None
-            state["tagmatch_cached_feature_paths"] = None
-            state["tagmatch_cached_tag_vectors"] = None
+            invalidate_folder_level_caches()
         return state["proxy_cache_dir"]
 
     def can_reuse_proxy_map(image_paths, image_signature):
@@ -2703,12 +2820,6 @@ def create_app():
         if state.get("proxy_signature") != image_signature or not proxy_map:
             return False
         return all(path in proxy_map for path in image_paths)
-
-    def clear_preview_search_context():
-        state["similarity_query_fname"] = None
-        state["similarity_model_label"] = None
-        state["sameperson_query_fname"] = None
-        state["sameperson_model_label"] = None
 
     def remember_mode_thresholds(method, main_threshold, aux_threshold):
         if method not in state["mode_thresholds"]:
@@ -5478,12 +5589,50 @@ def create_app():
             gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score."),
         )
 
+    def build_scored_callback_result(view_outputs, main_upd, aux_upd, percentile_upd, percentile_mid_upd):
+        result = (
+            *view_outputs,
+            main_upd,
+            aux_upd,
+            percentile_upd,
+            percentile_mid_upd,
+            promptmatch_model_status_json(),
+            *ui_visibility_updates(),
+        )
+        assert len(result) == len(SCORE_FOLDER_OUTPUT_KEYS), "score-folder callback output arity changed"
+        return result
+
+    def build_preview_search_result(prompt_status, score_outputs):
+        result = (gr.update(value=prompt_status), *score_outputs)
+        assert len(result) == len(PREVIEW_SEARCH_OUTPUT_KEYS), "preview-search callback output arity changed"
+        return result
+
+    def status_with_current_view(message, main_threshold, aux_threshold):
+        view = current_view(main_threshold, aux_threshold)
+        return build_scored_callback_result(
+            (
+                view[0],
+                view[1],
+                view[2],
+                view[3],
+                gr.update(value=message),
+                view[5],
+                view[6],
+                view[7],
+            ),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+
     def empty_result(message, method):
         _, _, _, _, main_upd, aux_upd, _, _, _, percentile_upd, percentile_mid_upd, _ = configure_controls(method)
         set_scored_mode()
         state["browse_items"] = []
         state["browse_status"] = ""
-        return (
+        return build_scored_callback_result(
+            (
             "### LEFT",
             gallery_update([]),
             "### RIGHT",
@@ -5492,40 +5641,27 @@ def create_app():
             None,
             selection_info(),
             marked_state_json(),
+            ),
             main_upd,
             aux_upd,
             percentile_upd,
             percentile_mid_upd,
-            promptmatch_model_status_json(),
-            *ui_visibility_updates(),
         )
 
     def render_view_with_controls(main_threshold, aux_threshold):
-        return (*current_view(main_threshold, aux_threshold), *ui_visibility_updates())
+        result = (*current_view(main_threshold, aux_threshold), *ui_visibility_updates())
+        assert len(result) == len(VIEW_WITH_CONTROLS_OUTPUT_KEYS), "view-with-controls callback output arity changed"
+        return result
 
     def load_folder_for_browse(folder, main_threshold, aux_threshold, progress=gr.Progress()):
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
-            state["source_dir"] = folder
-            state["scores"] = {}
-            state["overrides"] = {}
-            state["preview_fname"] = None
-            state["left_marked"] = []
-            state["right_marked"] = []
-            clear_preview_search_context()
-            set_browse_mode([], f"Invalid folder: {folder!r}")
+            set_browse_folder_state(folder, [], f"Invalid folder: {folder!r}")
             return (*render_view_with_controls(main_threshold, aux_threshold),)
 
         image_paths = scan_image_paths(folder)
         if not image_paths:
-            state["source_dir"] = folder
-            state["scores"] = {}
-            state["overrides"] = {}
-            state["preview_fname"] = None
-            state["left_marked"] = []
-            state["right_marked"] = []
-            clear_preview_search_context()
-            set_browse_mode([], f"No images found in {folder}")
+            set_browse_folder_state(folder, [], f"No images found in {folder}")
             return (*render_view_with_controls(main_threshold, aux_threshold),)
 
         sync_promptmatch_proxy_cache(folder)
@@ -5551,15 +5687,9 @@ def create_app():
             state["proxy_map"] = dict(proxy_map)
             state["proxy_signature"] = image_signature
 
-        state["source_dir"] = folder
-        state["scores"] = {}
-        state["overrides"] = {}
-        state["preview_fname"] = None
-        state["left_marked"] = []
-        state["right_marked"] = []
-        clear_preview_search_context()
         browse_items = [(path, os.path.basename(path)) for path in image_paths]
-        set_browse_mode(
+        set_browse_folder_state(
+            folder,
             browse_items,
             f"Browse mode for {folder}. {len(image_paths)} images loaded. Preview an image to search or generate a prompt.",
         )
@@ -5921,37 +6051,92 @@ def create_app():
             }
         return results
 
-    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
-        # Main entrypoint for "Run scoring"; both methods converge back into current_view().
+    def prepare_scored_run_context(method, folder, main_threshold, aux_threshold):
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
-            return empty_result(f"Invalid folder: {folder!r}", method)
-        main_label, aux_label, _, _ = threshold_labels(method)
-        previous_method = state.get("method")
-        recalled_main, recalled_aux, has_recalled = recalled_mode_thresholds(method, main_threshold, aux_threshold)
-        requested_main = float(main_threshold)
-        requested_aux = float(aux_threshold)
-        if previous_method != method and has_recalled:
-            requested_main = recalled_main
-            requested_aux = recalled_aux
+            return None, empty_result(f"Invalid folder: {folder!r}", method)
 
         image_paths = scan_image_paths(folder)
         if not image_paths:
-            return empty_result(f"No images found in {folder}", method)
-        image_signature = get_image_paths_signature(image_paths)
+            return None, empty_result(f"No images found in {folder}", method)
+
         folder_key = normalize_folder_identity(folder)
-        previous_folder = state.get("source_dir")
-        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
-        available_names = {os.path.basename(path) for path in image_paths}
-        preserved_overrides = {}
-        if previous_folder_key == folder_key:
-            # Keep manual pins across rescoring the same folder, but drop them once
-            # the file is gone from that folder.
-            preserved_overrides = {
-                fname: side
-                for fname, side in state.get("overrides", {}).items()
-                if fname in available_names
-            }
+        ctx = {
+            "folder": folder,
+            "folder_key": folder_key,
+            "image_paths": image_paths,
+            "image_signature": get_image_paths_signature(image_paths),
+            "main_label": threshold_labels(method)[0],
+            "aux_label": threshold_labels(method)[1],
+            "previous_method": state.get("method"),
+            "requested_main": float(main_threshold),
+            "requested_aux": float(aux_threshold),
+        }
+        recalled_main, recalled_aux, has_recalled = recalled_mode_thresholds(method, main_threshold, aux_threshold)
+        ctx["has_recalled"] = has_recalled
+        if ctx["previous_method"] != method and has_recalled:
+            ctx["requested_main"] = recalled_main
+            ctx["requested_aux"] = recalled_aux
+        ctx["preserved_overrides"] = preserve_overrides_for_folder_key(
+            folder_key,
+            {os.path.basename(path) for path in image_paths},
+        )
+        return ctx, None
+
+    def render_scored_mode_result(method, next_main, next_aux, main_upd, aux_upd, percentile_upd, percentile_mid_upd):
+        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, next_aux)
+        return build_scored_callback_result(
+            (left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state),
+            main_upd,
+            aux_upd,
+            percentile_upd,
+            percentile_mid_upd,
+        )
+
+    def normalize_preview_search_request(folder, preview_missing_message, preview_not_in_folder_template):
+        folder = (folder or "").strip()
+        if not folder or not os.path.isdir(folder):
+            return None, f"Invalid folder: {folder!r}"
+
+        image_paths = scan_image_paths(folder)
+        if not image_paths:
+            return None, f"No images found in {folder}"
+
+        _, preview_fname = get_preview_image_path()
+        if not preview_fname:
+            return None, preview_missing_message
+
+        folder_name_map = {os.path.basename(path): path for path in image_paths}
+        query_path = folder_name_map.get(preview_fname)
+        if not query_path:
+            return None, preview_not_in_folder_template.format(preview_fname=preview_fname)
+
+        folder_key = normalize_folder_identity(folder)
+        return {
+            "folder": folder,
+            "folder_key": folder_key,
+            "image_paths": image_paths,
+            "query_path": query_path,
+            "preview_fname": preview_fname,
+            "preserved_overrides": preserve_overrides_for_folder_key(folder_key, set(folder_name_map.keys())),
+        }, None
+
+    def score_folder(method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
+        # Main entrypoint for "Run scoring"; both methods converge back into current_view().
+        run_ctx, error_result = prepare_scored_run_context(method, folder, main_threshold, aux_threshold)
+        if error_result is not None:
+            return error_result
+        folder = run_ctx["folder"]
+        image_paths = run_ctx["image_paths"]
+        image_signature = run_ctx["image_signature"]
+        folder_key = run_ctx["folder_key"]
+        main_label = run_ctx["main_label"]
+        aux_label = run_ctx["aux_label"]
+        previous_method = run_ctx["previous_method"]
+        requested_main = run_ctx["requested_main"]
+        requested_aux = run_ctx["requested_aux"]
+        has_recalled = run_ctx["has_recalled"]
+        preserved_overrides = run_ctx["preserved_overrides"]
         preserve_promptmatch_thresholds = (
             bool(keep_pm_thresholds)
             and method == METHOD_PROMPTMATCH
@@ -5966,15 +6151,7 @@ def create_app():
             and state.get("last_scored_folder_key") == folder_key
         )
 
-        state["method"] = method
-        set_scored_mode()
-        sync_promptmatch_proxy_cache(folder)
-        state["source_dir"] = folder
-        state["overrides"] = preserved_overrides
-        state["left_marked"] = []
-        state["right_marked"] = []
-        state["preview_fname"] = None
-        clear_preview_search_context()
+        begin_scored_run(method, folder, preserved_overrides)
         release_inactive_gpu_models(method)
 
         if method == METHOD_LLMSEARCH:
@@ -6087,22 +6264,14 @@ def create_app():
             next_main = clamp_threshold(requested_main, pos_min, pos_max) if (previous_method != METHOD_LLMSEARCH and has_recalled) else default_main
             safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
             safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
-            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
-            return (
-                left_head,
-                left_gallery,
-                right_head,
-                right_gallery,
-                status,
-                hist,
-                sel_info,
-                mark_state,
+            return render_scored_mode_result(
+                METHOD_LLMSEARCH,
+                next_main,
+                NEGATIVE_THRESHOLD,
                 gr.update(minimum=safe_pos_min, maximum=safe_pos_max, value=next_main, label=main_label),
                 gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=NEGATIVE_THRESHOLD, visible=False, interactive=False, label=aux_label),
                 percentile_slider_update(METHOD_LLMSEARCH, state["scores"]),
                 percentile_reset_button_update(METHOD_LLMSEARCH, state["scores"]),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
             )
 
         if method == METHOD_PROMPTMATCH:
@@ -6177,22 +6346,14 @@ def create_app():
             state["last_scored_method"] = METHOD_PROMPTMATCH
             state["last_scored_folder_key"] = folder_key
             state["last_promptmatch_model_label"] = model_label
-            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, next_aux)
-            return (
-                left_head,
-                left_gallery,
-                right_head,
-                right_gallery,
-                status,
-                hist,
-                sel_info,
-                mark_state,
+            return render_scored_mode_result(
+                METHOD_PROMPTMATCH,
+                next_main,
+                next_aux,
                 gr.update(minimum=safe_pos_min, maximum=safe_pos_max, value=next_main, label=main_label),
                 gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=next_aux, visible=True, interactive=has_neg, label=aux_label),
                 percentile_slider_update(METHOD_PROMPTMATCH, state["scores"]),
                 percentile_reset_button_update(METHOD_PROMPTMATCH, state["scores"]),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
             )
 
         if method == METHOD_TAGMATCH:
@@ -6215,22 +6376,14 @@ def create_app():
             else:
                 next_main = tm_mid
             safe_lo, safe_hi = expand_slider_bounds(tm_lo, tm_hi, requested_main, next_main)
-            left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
-            return (
-                left_head,
-                left_gallery,
-                right_head,
-                right_gallery,
-                status,
-                hist,
-                sel_info,
-                mark_state,
+            return render_scored_mode_result(
+                METHOD_TAGMATCH,
+                next_main,
+                NEGATIVE_THRESHOLD,
                 gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
                 gr.update(value=NEGATIVE_THRESHOLD, visible=False),
                 percentile_slider_update(METHOD_TAGMATCH, state["scores"]),
                 percentile_reset_button_update(METHOD_TAGMATCH, state["scores"]),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
             )
 
         if state["ir_model"] is None:
@@ -6253,90 +6406,30 @@ def create_app():
         safe_lo, safe_hi = expand_slider_bounds(lo, hi, requested_main, next_main)
         state["last_scored_method"] = METHOD_IMAGEREWARD
         state["last_scored_folder_key"] = folder_key
-        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, NEGATIVE_THRESHOLD)
-        return (
-            left_head,
-            left_gallery,
-            right_head,
-            right_gallery,
-                status,
-                hist,
-                sel_info,
-                mark_state,
+        return render_scored_mode_result(
+            METHOD_IMAGEREWARD,
+            next_main,
+            NEGATIVE_THRESHOLD,
             gr.update(minimum=safe_lo, maximum=safe_hi, value=next_main, label=main_label),
             gr.update(value=NEGATIVE_THRESHOLD, visible=False),
             percentile_slider_update(METHOD_IMAGEREWARD, state["scores"]),
             percentile_reset_button_update(METHOD_IMAGEREWARD, state["scores"]),
-            promptmatch_model_status_json(),
-            *ui_visibility_updates(),
         )
 
     def find_similar_images(folder, model_label, main_threshold, aux_threshold, progress=gr.Progress()):
-        folder = (folder or "").strip()
         recalled_main, _, has_recalled = recalled_mode_thresholds(METHOD_SIMILARITY, main_threshold, aux_threshold)
-        if not folder or not os.path.isdir(folder):
-            return (
-                gr.update(value=f"Invalid folder: {folder!r}"),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        image_paths = scan_image_paths(folder)
-        if not image_paths:
-            return (
-                gr.update(value=f"No images found in {folder}"),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        _, preview_fname = get_preview_image_path()
-        if not preview_fname:
-            return (
-                gr.update(value="Select a preview image first, then find similar images."),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        folder_name_map = {os.path.basename(path): path for path in image_paths}
-        query_path = folder_name_map.get(preview_fname)
-        if not query_path:
-            return (
-                gr.update(value=f"{preview_fname} is not part of the current folder, so similarity search cannot run."),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        previous_folder = state.get("source_dir")
-        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
-        folder_key = normalize_folder_identity(folder)
-        available_names = set(folder_name_map.keys())
-        preserved_overrides = {}
-        if previous_folder_key == folder_key:
-            preserved_overrides = {
-                fname: side
-                for fname, side in state.get("overrides", {}).items()
-                if fname in available_names
-            }
+        request_ctx, request_error = normalize_preview_search_request(
+            folder,
+            "Select a preview image first, then find similar images.",
+            "{preview_fname} is not part of the current folder, so similarity search cannot run.",
+        )
+        if request_error:
+            return build_preview_search_result(request_error, status_with_current_view(request_error, main_threshold, aux_threshold))
+        folder = request_ctx["folder"]
+        image_paths = request_ctx["image_paths"]
+        query_path = request_ctx["query_path"]
+        preview_fname = request_ctx["preview_fname"]
+        preserved_overrides = request_ctx["preserved_overrides"]
 
         release_inactive_gpu_models(METHOD_SIMILARITY)
         try:
@@ -6357,15 +6450,10 @@ def create_app():
                 query_path,
             )
         except Exception as exc:
-            return (
-                gr.update(value=f"Similarity search failed: {exc}"),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
+            message = f"Similarity search failed: {exc}"
+            return build_preview_search_result(
+                message,
+                status_with_current_view(message, main_threshold, aux_threshold),
             )
 
         state["method"] = METHOD_SIMILARITY
@@ -6373,8 +6461,7 @@ def create_app():
         state["source_dir"] = folder
         state["scores"] = similarity_scores
         state["overrides"] = preserved_overrides
-        state["left_marked"] = []
-        state["right_marked"] = []
+        reset_selection_state()
         state["preview_fname"] = preview_fname
         clear_preview_search_context()
         state["similarity_query_fname"] = preview_fname
@@ -6387,9 +6474,10 @@ def create_app():
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
         status_text = f"Similarity search using {model_label} from {preview_fname}."
-        return (
-            gr.update(value=status_text),
-            *current_view(next_main, NEGATIVE_THRESHOLD),
+        score_outputs = render_scored_mode_result(
+            METHOD_SIMILARITY,
+            next_main,
+            NEGATIVE_THRESHOLD,
             gr.update(
                 minimum=safe_pos_min,
                 maximum=safe_pos_max,
@@ -6406,76 +6494,23 @@ def create_app():
             ),
             percentile_slider_update(METHOD_SIMILARITY, state["scores"]),
             percentile_reset_button_update(METHOD_SIMILARITY, state["scores"]),
-            promptmatch_model_status_json(),
-            *ui_visibility_updates(),
         )
+        return build_preview_search_result(status_text, score_outputs)
 
     def find_same_person_images(folder, main_threshold, aux_threshold, progress=gr.Progress()):
-        folder = (folder or "").strip()
         recalled_main, _, has_recalled = recalled_mode_thresholds(METHOD_SAMEPERSON, main_threshold, aux_threshold)
-        if not folder or not os.path.isdir(folder):
-            return (
-                gr.update(value=f"Invalid folder: {folder!r}"),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        image_paths = scan_image_paths(folder)
-        if not image_paths:
-            return (
-                gr.update(value=f"No images found in {folder}"),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        _, preview_fname = get_preview_image_path()
-        if not preview_fname:
-            return (
-                gr.update(value="Select a preview image first, then find the same person."),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        folder_name_map = {os.path.basename(path): path for path in image_paths}
-        query_path = folder_name_map.get(preview_fname)
-        if not query_path:
-            return (
-                gr.update(value=f"{preview_fname} is not part of the current folder, so same-person search cannot run."),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
-            )
-
-        previous_folder = state.get("source_dir")
-        previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
-        folder_key = normalize_folder_identity(folder)
-        available_names = set(folder_name_map.keys())
-        preserved_overrides = {}
-        if previous_folder_key == folder_key:
-            preserved_overrides = {
-                fname: side
-                for fname, side in state.get("overrides", {}).items()
-                if fname in available_names
-            }
+        request_ctx, request_error = normalize_preview_search_request(
+            folder,
+            "Select a preview image first, then find the same person.",
+            "{preview_fname} is not part of the current folder, so same-person search cannot run.",
+        )
+        if request_error:
+            return build_preview_search_result(request_error, status_with_current_view(request_error, main_threshold, aux_threshold))
+        folder = request_ctx["folder"]
+        image_paths = request_ctx["image_paths"]
+        query_path = request_ctx["query_path"]
+        preview_fname = request_ctx["preview_fname"]
+        preserved_overrides = request_ctx["preserved_overrides"]
 
         release_inactive_gpu_models(METHOD_SAMEPERSON)
         try:
@@ -6488,15 +6523,10 @@ def create_app():
                 query_path,
             )
         except Exception as exc:
-            return (
-                gr.update(value=f"Same-person search failed: {exc}"),
-                *current_view(main_threshold, aux_threshold),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                promptmatch_model_status_json(),
-                *ui_visibility_updates(),
+            message = f"Same-person search failed: {exc}"
+            return build_preview_search_result(
+                message,
+                status_with_current_view(message, main_threshold, aux_threshold),
             )
 
         state["method"] = METHOD_SAMEPERSON
@@ -6504,8 +6534,7 @@ def create_app():
         state["source_dir"] = folder
         state["scores"] = sameperson_scores
         state["overrides"] = preserved_overrides
-        state["left_marked"] = []
-        state["right_marked"] = []
+        reset_selection_state()
         state["preview_fname"] = preview_fname
         clear_preview_search_context()
         state["sameperson_query_fname"] = preview_fname
@@ -6518,9 +6547,10 @@ def create_app():
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
         status_text = f"Same-person search using {FACE_MODEL_LABEL} from {preview_fname}."
-        return (
-            gr.update(value=status_text),
-            *current_view(next_main, NEGATIVE_THRESHOLD),
+        score_outputs = render_scored_mode_result(
+            METHOD_SAMEPERSON,
+            next_main,
+            NEGATIVE_THRESHOLD,
             gr.update(
                 minimum=safe_pos_min,
                 maximum=safe_pos_max,
@@ -6537,9 +6567,8 @@ def create_app():
             ),
             percentile_slider_update(METHOD_SAMEPERSON, state["scores"]),
             percentile_reset_button_update(METHOD_SAMEPERSON, state["scores"]),
-            promptmatch_model_status_json(),
-            *ui_visibility_updates(),
         )
+        return build_preview_search_result(status_text, score_outputs)
 
     def handle_shortcut_action(action, method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         action = (action or "").strip()
@@ -7997,6 +8026,11 @@ def create_app():
 
         _score_folder_inputs = [method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, pm_segment_cb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb]
         _score_folder_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
+        assert len(_score_folder_outputs) == len(SCORE_FOLDER_OUTPUT_KEYS), "score-folder output wiring drifted"
+        _preview_search_outputs = [promptgen_status_md, *_score_folder_outputs]
+        assert len(_preview_search_outputs) == len(PREVIEW_SEARCH_OUTPUT_KEYS), "preview-search output wiring drifted"
+        _view_with_controls_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
+        assert len(_view_with_controls_outputs) == len(VIEW_WITH_CONTROLS_OUTPUT_KEYS), "view-with-controls output wiring drifted"
 
         promptmatch_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
         imagereward_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
@@ -8005,12 +8039,12 @@ def create_app():
         folder_input.submit(
             fn=load_folder_for_browse,
             inputs=[folder_input, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=_view_with_controls_outputs,
         )
         load_folder_btn.click(
             fn=load_folder_for_browse,
             inputs=[folder_input, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=_view_with_controls_outputs,
         )
         prompt_generator_dd.change(
             fn=update_prompt_generator,
@@ -8025,12 +8059,12 @@ def create_app():
         find_similar_btn.click(
             fn=find_similar_images,
             inputs=[folder_input, model_dd, main_slider, aux_slider],
-            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=_preview_search_outputs,
         )
         find_same_person_btn.click(
             fn=find_same_person_images,
             inputs=[folder_input, main_slider, aux_slider],
-            outputs=[promptgen_status_md, left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=_preview_search_outputs,
         )
         generated_prompt_detail_slider.change(
             fn=update_generated_prompt_detail,
@@ -8045,8 +8079,8 @@ def create_app():
 
         main_slider.input(fn=update_histogram_only, inputs=[main_slider, aux_slider], outputs=[hist_plot], queue=False)
         aux_slider.input(fn=update_histogram_only, inputs=[main_slider, aux_slider], outputs=[hist_plot], queue=False)
-        main_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col], queue=False)
-        aux_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col], queue=False)
+        main_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs, queue=False)
+        aux_slider.release(fn=update_split, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs, queue=False)
         percentile_slider.input(
             fn=update_histogram_from_percentile,
             inputs=[percentile_slider, aux_slider],
@@ -8077,12 +8111,12 @@ def create_app():
         zoom_slider.change(
             fn=update_zoom,
             inputs=[zoom_slider, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=_view_with_controls_outputs,
         )
         proxy_display_cb.change(
             fn=update_proxy_display,
             inputs=[proxy_display_cb, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=_view_with_controls_outputs,
         )
         ir_penalty_weight_tb.change(
             fn=update_imagereward_penalty_weight,
@@ -8110,12 +8144,12 @@ def create_app():
             inputs=[thumb_action, main_slider, aux_slider],
             outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
-        move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
         fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
-        pin_selected_btn.click(fn=pin_selected, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
-        move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
-        clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
-        clear_all_status_btn.click(fn=clear_all_status, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col])
+        pin_selected_btn.click(fn=pin_selected, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
+        move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
+        clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
+        clear_all_status_btn.click(fn=clear_all_status, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
         hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
         export_btn.click(
             fn=export_files,
