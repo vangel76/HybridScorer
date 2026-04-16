@@ -5852,7 +5852,7 @@ def create_app():
                 gr.update(visible=False),
                 percentile_slider_update(method),
                 percentile_reset_button_update(method),
-                gr.update(value="TagMatch scores images by WD tagger confidence for the specified tags. Use comma-separated booru-style tags like: body_horror, extra_fingers, deformed."),
+                gr.update(value="TagMatch scores images by WD tagger confidence for the specified tags. Use comma-separated booru-style tags from https://aibooru.online/wiki_pages"),
             )
         return (
             gr.update(visible=False),
