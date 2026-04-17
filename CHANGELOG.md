@@ -1,5 +1,21 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.3.0 - Huihui, Better Model Pickers & ImageReward Compatibility
+
+**New Huihui Gemma 4 Option**
+- `Huihui Gemma 4 E4B` can now be used in both `Prompt from image` and `LM Search`
+- Prompt generation keeps the same 3 output styles: short tags, compact prompt, and fuller prose
+- `LM Search` can use Huihui as the deeper rerank backend after PromptMatch builds the shortlist
+
+**Clearer Downloadable Model Pickers**
+- All downloadable model dropdowns now show whether a model is already cached
+- Green means the model is already on disk
+- Orange means the model will need a first download before use
+
+**LM Search Polish**
+- Direct numeric LM backends like Huihui and JoyCaption now use a proper `0-100` threshold scale
+- PromptMatch shortlist stability was improved for newer Hugging Face output formats
+
 ## Version 2.2.5 - TagMatch Polish & Stability
 
 **TagMatch Typing Help**

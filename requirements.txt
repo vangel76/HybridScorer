@@ -4,7 +4,7 @@ tqdm
 fairscale==0.4.13
 open_clip_torch
 timm>=1.0.0
-transformers==4.57.3
+transformers>=5.5.0,<6
 sentencepiece
 protobuf
 hf_xet

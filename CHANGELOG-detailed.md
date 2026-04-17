@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.3.0] - 2026-04-17
+
+- Added `Huihui Gemma 4 E4B` (`huihui-ai/Huihui-gemma-4-E4B-it-abliterated`) as a new multimodal backend in both `Prompt from image` and `LM Search`.
+- Extended prompt-generation backend registration so Huihui appears in `PROMPT_GENERATOR_ALL_CHOICES` and in the LM Search backend choices, while leaving the existing default backends unchanged.
+- Added a dedicated torch-backed Huihui loader path built on Hugging Face Transformers multimodal APIs and cached under `state["prompt_backend_cache"]`. The loader:
+  - prefers CUDA `bfloat16` when supported, otherwise `float16`
+  - validates that the installed Transformers build actually exposes Gemma 4 runtime classes
+  - tries the finetuned repo processor metadata first and falls back to the base Gemma 4 processor assets when needed
+  - raises backend-specific setup errors instead of failing silently
+- Added Huihui-specific prompt generation and LM Search rerank helpers:
+  - prompt generation maps the existing detail levels to short tags / compact prompt / fuller prose
+  - LM Search uses Huihui as a direct numeric reranker over the PromptMatch shortlist
+  - current Huihui LM Search inference stays sequential by design (no batch pre-pass yet)
+- Added Huihui output cleanup to strip echoed chat-template scaffolding such as `system`, `user`, and `model` lines before prompt insertion or numeric score parsing.
+- Fixed LM Search threshold-range handling for direct numeric rerank backends (`JoyCaption Beta One`, `Huihui Gemma 4 E4B`). The LM Search threshold slider, midpoint helper, saved-threshold recall, and fit-threshold behavior now use the rerank backend's real score range (`0..100`) instead of snapping back to PromptMatch-style shortlist similarity values.
+- Extended cached-vs-download UI markers to all downloadable model selectors, not just the main PromptMatch dropdown. The injected JS availability painter now covers `#hy-model`, `#hy-llm-model`, `#hy-llm-backend`, and `#hy-prompt-generator`.
+- Added cache-status-aware dropdown choice builders for prompt-style backends and WD TagMatch, plus tooltip help text explaining the green cached / amber first-download marker scheme.
+- Updated PromptMatch shortlist compatibility with newer Hugging Face output objects:
+  - text-feature encoding now unwraps `BaseModelOutputWithPooling`-style returns before normalization
+  - the single-image retry path now unpacks `prepare_promptmatch_loaded_batch(...)` correctly instead of failing with `too many values to unpack (expected 3)`
+- Raised the Transformers floor in `requirements.txt` to `transformers>=5.5.0,<6` so Gemma 4-capable installs are the default after rerunning setup.
+- Added a broad ImageReward-on-Transformers-5 compatibility layer inside `get_imagereward_utils()` rather than patching the installed `ImageReward` package:
+  - restore legacy imports expected by ImageReward BLIP code (`apply_chunking_to_forward`, `prune_linear_layer`)
+  - provide a compatibility implementation of `find_pruneable_heads_and_indices`, which is gone in Transformers 5
+  - add a legacy `BertTokenizer.additional_special_tokens_ids` shim so BLIP tokenizer setup can still assign `enc_token_id`
+  - add `PreTrainedModel.all_tied_weights_keys` compatibility for older BLIP `BertModel` subclasses running under newer `tie_weights()` logic
+  - add legacy `get_head_mask()` / `_convert_head_mask_to_5d()` helpers required by old BLIP forward passes
+  - reuse already-downloaded local `ImageReward.pt` and `med_config.json` files before calling back into `hf_hub_download()`
+  - convert ImageReward import failures from `sys.exit(...)` to normal runtime exceptions so a bad import no longer tears down the Gradio server
+- Updated user-facing docs (`README.md`, `docs/architecture.md`, `docs/behavior-notes.md`) and bumped `VERSION` to `2.3.0`.
+
 ## [2.2.5] - 2026-04-16
 
 - Added live TagMatch tag suggestions backed by the WD tagger vocabulary file (`selected_tags.csv`). New state keys: `tagmatch_vocab_tags` caches the parsed tag list in Python, and `tagmatch_vocab_json` mirrors that list into the hidden Gradio bridge textbox `#hy-tagmatch-vocab` so frontend JS can filter suggestions locally without round-tripping through Python on every keystroke.

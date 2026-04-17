@@ -180,11 +180,13 @@ HIST_HEIGHT_SCALE = 0.7
 PROMPT_GENERATOR_FLORENCE = "Florence-2"
 PROMPT_GENERATOR_JOYCAPTION = "JoyCaption Beta One"
 PROMPT_GENERATOR_JOYCAPTION_GGUF = "JoyCaption Beta One GGUF (Q4_K_M)"
+PROMPT_GENERATOR_HUIHUI_GEMMA4 = "Huihui Gemma 4 E4B"
 PROMPT_GENERATOR_WD_TAGS = "WD Tags (ONNX)"
 PROMPT_GENERATOR_CHOICES = (
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_GGUF,
+    PROMPT_GENERATOR_HUIHUI_GEMMA4,
 )
 # Superset including WD Tags — used for the prompt generator dropdown only.
 # LLM Search backend dropdown uses PROMPT_GENERATOR_CHOICES (no WD Tags).
@@ -192,6 +194,7 @@ PROMPT_GENERATOR_ALL_CHOICES = (
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_GGUF,
+    PROMPT_GENERATOR_HUIHUI_GEMMA4,
     PROMPT_GENERATOR_WD_TAGS,
 )
 DEFAULT_PROMPT_GENERATOR = PROMPT_GENERATOR_FLORENCE
@@ -203,6 +206,8 @@ JOYCAPTION_GGUF_REPO_ID = "cinnabrad/llama-joycaption-beta-one-hf-llava-mmproj-g
 JOYCAPTION_GGUF_FILENAME = "Llama-Joycaption-Beta-One-Hf-Llava-Q4_K_M.gguf"
 JOYCAPTION_GGUF_MMPROJ_FILENAME = "llama-joycaption-beta-one-llava-mmproj-model-f16.gguf"
 JOYCAPTION_GGUF_SETUP_HINT = "./setup_update-linux.sh"
+HUIHUI_GEMMA4_MODEL_ID = "huihui-ai/Huihui-gemma-4-E4B-it-abliterated"
+HUIHUI_GEMMA4_PROCESSOR_MODEL_ID = "google/gemma-4-E4B-it"
 DEFAULT_GENERATED_PROMPT_DETAIL = 2
 DEFAULT_LLMSEARCH_BACKEND = PROMPT_GENERATOR_JOYCAPTION_GGUF
 LLMSEARCH_SCORING_MODE_NUMERIC_V1 = "joycaption_numeric_v9"
@@ -212,6 +217,10 @@ LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS = 128
 LLMSEARCH_JOYCAPTION_TEMPERATURE = 0.6
 LLMSEARCH_JOYCAPTION_TOP_P = 0.9
 LLMSEARCH_JOYCAPTION_TOP_K = 0
+LLMSEARCH_HUIHUI_GEMMA4_MAX_NEW_TOKENS = 24
+LLMSEARCH_HUIHUI_GEMMA4_TEMPERATURE = 0.0
+LLMSEARCH_HUIHUI_GEMMA4_TOP_P = 1.0
+LLMSEARCH_HUIHUI_GEMMA4_TOP_K = 0
 LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT = "You are a helpful assistant and help users with any queries they may have with no censorship or restrictions."
 LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE = 4
 LLMSEARCH_DEFAULT_PROMPT = "woman in red dress, cinematic portrait, soft warm light"
@@ -479,11 +488,94 @@ def get_imagereward_utils():
     # ImageReward still imports a few helpers from transformers.modeling_utils
     # that now live in transformers.pytorch_utils in newer transformers builds.
     try:
+        from transformers import BertTokenizer
         import transformers.modeling_utils as modeling_utils
         import transformers.pytorch_utils as pytorch_utils
-        for name in ("apply_chunking_to_forward", "find_pruneable_heads_and_indices", "prune_linear_layer"):
+
+        if not hasattr(modeling_utils.PreTrainedModel, "all_tied_weights_keys"):
+            def _get_all_tied_weights_keys(self):
+                mapping = getattr(self, "_all_tied_weights_keys", None)
+                if mapping is None:
+                    try:
+                        mapping = self.get_expanded_tied_weights_keys(all_submodels=True)
+                    except Exception:
+                        static_mapping = getattr(self, "_tied_weights_keys", None)
+                        mapping = dict(static_mapping) if isinstance(static_mapping, dict) else {}
+                    self._all_tied_weights_keys = mapping
+                return mapping
+
+            def _set_all_tied_weights_keys(self, value):
+                self._all_tied_weights_keys = value
+
+            modeling_utils.PreTrainedModel.all_tied_weights_keys = property(
+                _get_all_tied_weights_keys,
+                _set_all_tied_weights_keys,
+            )
+
+        if not hasattr(modeling_utils.PreTrainedModel, "get_head_mask"):
+            def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
+                if head_mask.dim() == 1:
+                    head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                    head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+                elif head_mask.dim() == 2:
+                    head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+                if head_mask.dim() != 5:
+                    raise AssertionError(f"head_mask.dim != 5, got {head_mask.dim()}")
+                return head_mask.to(dtype=self.dtype)
+
+            def _get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked=False):
+                if head_mask is not None:
+                    head_mask = self._convert_head_mask_to_5d(head_mask, num_hidden_layers)
+                    if is_attention_chunked:
+                        head_mask = head_mask.unsqueeze(-1)
+                else:
+                    head_mask = [None] * num_hidden_layers
+                return head_mask
+
+            modeling_utils.PreTrainedModel._convert_head_mask_to_5d = _convert_head_mask_to_5d
+            modeling_utils.PreTrainedModel.get_head_mask = _get_head_mask
+
+        for name in ("apply_chunking_to_forward", "prune_linear_layer"):
             if not hasattr(modeling_utils, name) and hasattr(pytorch_utils, name):
                 setattr(modeling_utils, name, getattr(pytorch_utils, name))
+        if not hasattr(modeling_utils, "find_pruneable_heads_and_indices"):
+            # Transformers 5.x removed this helper entirely, but ImageReward's BLIP code
+            # still imports it from modeling_utils using the older signature.
+            def _find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+                mask = torch.ones(n_heads, head_size)
+                heads = set(heads) - already_pruned_heads
+                for head in heads:
+                    head = head - sum(1 if pruned < head else 0 for pruned in already_pruned_heads)
+                    mask[head] = 0
+                mask = mask.view(-1).contiguous().eq(1)
+                index = torch.arange(len(mask))[mask].long()
+                return heads, index
+
+            setattr(modeling_utils, "find_pruneable_heads_and_indices", _find_pruneable_heads_and_indices)
+
+        if not getattr(BertTokenizer, "_hybridscorer_additional_special_tokens_patch", False):
+            original_add_special_tokens = BertTokenizer.add_special_tokens
+
+            def _patched_add_special_tokens(self, special_tokens_dict, *args, **kwargs):
+                added = original_add_special_tokens(self, special_tokens_dict, *args, **kwargs)
+                extra_tokens = special_tokens_dict.get("additional_special_tokens")
+                if extra_tokens is not None:
+                    remembered = list(getattr(self, "_hybridscorer_additional_special_tokens", []))
+                    for token in extra_tokens:
+                        token_text = str(token)
+                        if token_text not in remembered:
+                            remembered.append(token_text)
+                    self._hybridscorer_additional_special_tokens = remembered
+                return added
+
+            BertTokenizer.add_special_tokens = _patched_add_special_tokens
+            BertTokenizer.additional_special_tokens_ids = property(
+                lambda self: [
+                    self.convert_tokens_to_ids(token)
+                    for token in getattr(self, "_hybridscorer_additional_special_tokens", [])
+                ]
+            )
+            BertTokenizer._hybridscorer_additional_special_tokens_patch = True
     except Exception:
         pass
 
@@ -495,7 +587,7 @@ def get_imagereward_utils():
             break
 
     if package_dir is None:
-        sys.exit(
+        raise RuntimeError(
             "ImageReward not installed.\n"
             "Run: python -m pip install -r requirements.txt"
         )
@@ -511,9 +603,22 @@ def get_imagereward_utils():
         sys.modules[package_name] = package
 
     try:
-        return import_module(module_name)
+        utils_module = import_module(module_name)
+        if not getattr(utils_module, "_hybridscorer_local_cache_patch", False):
+            original_download = utils_module.ImageReward_download
+
+            def _patched_imagereward_download(url, root):
+                filename = os.path.basename(url)
+                download_target = os.path.join(root, filename)
+                if os.path.isfile(download_target):
+                    return download_target
+                return original_download(url, root)
+
+            utils_module.ImageReward_download = _patched_imagereward_download
+            utils_module._hybridscorer_local_cache_patch = True
+        return utils_module
     except Exception as exc:
-        sys.exit(
+        raise RuntimeError(
             "ImageReward could not be imported.\n"
             f"{exc}"
         )
@@ -662,6 +767,14 @@ def describe_joycaption_gguf_source():
     cached = (
         huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_FILENAME)
         and huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_MMPROJ_FILENAME)
+    )
+    return "disk cache" if cached else "network download"
+
+
+def describe_tagmatch_source():
+    cached = (
+        huggingface_file_cached(TAGMATCH_WD_REPO_ID, TAGMATCH_WD_MODEL_FILE)
+        and huggingface_file_cached(TAGMATCH_WD_REPO_ID, TAGMATCH_WD_TAGS_FILE)
     )
     return "disk cache" if cached else "network download"
 
@@ -913,13 +1026,25 @@ def describe_prompt_generator_source(generator_name):
         return describe_huggingface_transformers_source(JOYCAPTION_MODEL_ID)
     if generator_name == PROMPT_GENERATOR_JOYCAPTION_GGUF:
         return describe_joycaption_gguf_source()
+    if generator_name == PROMPT_GENERATOR_HUIHUI_GEMMA4:
+        return describe_huggingface_transformers_source(HUIHUI_GEMMA4_MODEL_ID)
     if generator_name == PROMPT_GENERATOR_WD_TAGS:
         return "WD tagger ONNX (onnxruntime)"
     return "network or disk cache"
 
 
 def prompt_generator_supports_torch_cleanup(generator_name):
-    return generator_name in {PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION}
+    return generator_name in {
+        PROMPT_GENERATOR_FLORENCE,
+        PROMPT_GENERATOR_JOYCAPTION,
+        PROMPT_GENERATOR_HUIHUI_GEMMA4,
+    }
+
+
+def prompt_backend_warning_text(generator_name):
+    if generator_name == PROMPT_GENERATOR_HUIHUI_GEMMA4:
+        return " This backend uses a less-filtered abliterated Gemma 4 model and may produce less-filtered text."
+    return ""
 
 
 def llmsearch_backend_choices():
@@ -1494,6 +1619,32 @@ class ModelBackend:
         ).to(self.device)
         self._model.eval()
 
+    def _extract_feature_tensor(self, output, kind="feature"):
+        if torch.is_tensor(output):
+            return output
+
+        for attr_name in (f"{kind}_embeds", "text_embeds", "image_embeds", "pooler_output", "last_hidden_state"):
+            value = getattr(output, attr_name, None)
+            if torch.is_tensor(value):
+                if attr_name == "last_hidden_state" and value.ndim >= 3:
+                    return value[:, 0, :]
+                return value
+
+        if isinstance(output, dict):
+            for key in (f"{kind}_embeds", "text_embeds", "image_embeds", "pooler_output", "last_hidden_state"):
+                value = output.get(key)
+                if torch.is_tensor(value):
+                    if key == "last_hidden_state" and value.ndim >= 3:
+                        return value[:, 0, :]
+                    return value
+
+        if isinstance(output, (list, tuple)):
+            for value in output:
+                if torch.is_tensor(value):
+                    return value
+
+        raise TypeError(f"Unsupported {kind} output type from backend {self.backend}: {type(output).__name__}")
+
     def _encode_text_plain(self, prompt):
         prompt = normalize_prompt_text(prompt)
         # Average a few prompt phrasings to make matching a little less brittle.
@@ -1508,6 +1659,7 @@ class ModelBackend:
             else:
                 inputs = self._processor(text=phrases, return_tensors="pt", padding="max_length", truncation=True).to(self.device)
                 feat = self._model.get_text_features(**inputs)
+                feat = self._extract_feature_tensor(feat, kind="text")
             feat = F.normalize(feat.float(), dim=-1)
             return F.normalize(feat.mean(dim=0, keepdim=True), dim=-1)
 
@@ -1597,6 +1749,7 @@ class ModelBackend:
                 timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
                 gpu_started = time.perf_counter()
                 feat = self._model.get_image_features(pixel_values=pixel_values)
+                feat = self._extract_feature_tensor(feat, kind="image")
             else:
                 preprocess_started = time.perf_counter()
                 inputs = self._processor(images=pil_images, return_tensors="pt").to(self.device)
@@ -1604,6 +1757,7 @@ class ModelBackend:
                 timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
                 gpu_started = time.perf_counter()
                 feat = self._model.get_image_features(**inputs)
+                feat = self._extract_feature_tensor(feat, kind="image")
             if self.device == "cuda":
                 torch.cuda.synchronize()
             timings["gpu_encode"] = promptmatch_timing_ms(gpu_started)
@@ -1718,7 +1872,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
                     failed = 0
                     for original_path, _ in loaded:
                         try:
-                            single_loaded, single_imgs, single_failed = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
+                            single_loaded, single_imgs, single_failed, _single_load_timings = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
                             for failed_path in single_failed:
                                 _mark_failed(failed_path)
                             if not single_imgs:
@@ -1871,7 +2025,7 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
                         before_count = len(feature_paths)
                         before_failed = len(failed_paths)
                         try:
-                            single_loaded, single_imgs, single_failed = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
+                            single_loaded, single_imgs, single_failed, _single_load_timings = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
                             for failed_path in single_failed:
                                 _mark_failed(failed_path)
                             if not single_imgs:
@@ -1992,6 +2146,15 @@ def promptmatch_model_status_map():
             "cached": source in {"disk cache", "disk file"},
             "source": source,
         }
+    for label in PROMPT_GENERATOR_ALL_CHOICES:
+        if label == PROMPT_GENERATOR_WD_TAGS:
+            source = describe_tagmatch_source()
+        else:
+            source = describe_prompt_generator_source(label)
+        mapping[label] = {
+            "cached": source in {"disk cache", "disk file"},
+            "source": source,
+        }
     return mapping
 
 
@@ -2003,6 +2166,16 @@ def promptmatch_model_dropdown_choices():
     status_map = promptmatch_model_status_map()
     choices = []
     for label in MODEL_LABELS:
+        entry = status_map.get(label) or {}
+        marker = MODEL_STATUS_CACHED_MARKER if entry.get("cached") else MODEL_STATUS_DOWNLOAD_MARKER
+        choices.append((f"{marker} {label}", label))
+    return choices
+
+
+def prompt_backend_dropdown_choices(labels):
+    status_map = promptmatch_model_status_map()
+    choices = []
+    for label in labels:
         entry = status_map.get(label) or {}
         marker = MODEL_STATUS_CACHED_MARKER if entry.get("cached") else MODEL_STATUS_DOWNLOAD_MARKER
         choices.append((f"{marker} {label}", label))
@@ -2140,6 +2313,30 @@ def imagereward_slider_range(scores):
     hi = round(max(vals) + 0.05, 3)
     mid = round((lo + hi) / 2.0, 3)
     return lo, hi, mid
+
+
+def llmsearch_uses_numeric_scores(backend_id):
+    return backend_id in {
+        PROMPT_GENERATOR_JOYCAPTION,
+        PROMPT_GENERATOR_JOYCAPTION_GGUF,
+        PROMPT_GENERATOR_HUIHUI_GEMMA4,
+    }
+
+
+def llmsearch_slider_range(scores, backend_id=None):
+    vals = [float(v["pos"]) for v in (scores or {}).values() if not v.get("failed", False) and v.get("pos") is not None]
+    if llmsearch_uses_numeric_scores(backend_id):
+        if not vals:
+            return 0.0, 100.0, 50.0
+        lo = max(0.0, round(min(vals) - 0.5, 3))
+        hi = min(100.0, round(max(vals) + 0.5, 3))
+        if lo == hi:
+            lo = max(0.0, lo - 0.5)
+            hi = min(100.0, hi + 0.5)
+        mid = round((lo + hi) / 2.0, 3)
+        return lo, hi, mid
+    pos_lo, pos_hi, pos_mid, _, _, _, _ = promptmatch_slider_range(scores or {})
+    return pos_lo, pos_hi, pos_mid
 
 
 def threshold_for_percentile(method, scores, percentile):
@@ -2293,12 +2490,15 @@ def expand_slider_bounds(lo, hi, *values):
     return math.floor(lo * 1000) / 1000, math.ceil(hi * 1000) / 1000
 
 
-def normalize_threshold_inputs(method, main_threshold, aux_threshold):
+def normalize_threshold_inputs(method, main_threshold, aux_threshold, llm_backend_id=None):
     main_value = float(main_threshold)
     aux_value = float(aux_threshold)
     if method == METHOD_TAGMATCH:
         main_value = clamp_threshold(main_value, TAGMATCH_SLIDER_MIN, TAGMATCH_SLIDER_MAX)
         aux_value = clamp_threshold(aux_value, TAGMATCH_SLIDER_MIN, TAGMATCH_SLIDER_MAX)
+    elif method == METHOD_LLMSEARCH and llmsearch_uses_numeric_scores(llm_backend_id):
+        main_value = clamp_threshold(main_value, 0.0, 100.0)
+        aux_value = clamp_threshold(aux_value, 0.0, 100.0)
     elif method == METHOD_IMAGEREWARD:
         main_value = clamp_threshold(main_value, IMAGEREWARD_SLIDER_MIN, IMAGEREWARD_SLIDER_MAX)
         aux_value = clamp_threshold(aux_value, PROMPTMATCH_SLIDER_MIN, PROMPTMATCH_SLIDER_MAX)
@@ -2481,6 +2681,53 @@ def extract_joycaption_caption(text):
     return text.strip()
 
 
+def extract_huihui_gemma4_caption(text):
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return ""
+
+    text = re.sub(r"^(assistant|caption)\s*:\s*", "", text, flags=re.IGNORECASE)
+
+    role_echo_match = re.search(r"\bsystem\b.*\buser\b.*\bmodel\b\s*(.+)$", text, flags=re.IGNORECASE)
+    if role_echo_match:
+        candidate = role_echo_match.group(1).strip()
+        if candidate:
+            text = candidate
+
+    text = re.sub(r"^(model|assistant)\s*:\s*", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def move_processor_batch_to_device(batch, target_device, float_dtype=None):
+    if hasattr(batch, "to"):
+        try:
+            batch = batch.to(target_device)
+        except Exception:
+            pass
+
+    if not isinstance(batch, dict):
+        return batch
+
+    moved = {}
+    for key, value in batch.items():
+        if hasattr(value, "to"):
+            try:
+                moved[key] = value.to(target_device)
+            except Exception:
+                moved[key] = value
+        else:
+            moved[key] = value
+
+    if float_dtype is not None:
+        pixel_values = moved.get("pixel_values")
+        if hasattr(pixel_values, "to"):
+            try:
+                moved["pixel_values"] = pixel_values.to(float_dtype)
+            except Exception:
+                pass
+    return moved
+
+
 def llmsearch_joycaption_system_prompt():
     return LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT
 
@@ -2504,6 +2751,21 @@ def build_llmsearch_joycaption_user_prompt(query_text):
         "Output format:\n"
         "- Return ONLY the number.\n"
         "- No explanation, no text, no symbols, no percentage sign.\n\n"
+        "Prompt:\n"
+        f"{normalized_query or 'no traits provided'}"
+    )
+
+
+def build_llmsearch_huihui_gemma4_user_prompt(query_text):
+    normalized_query = normalize_prompt_text(query_text or "")
+    return (
+        "Score how well the image matches the user prompt.\n\n"
+        "Rules:\n"
+        "- Return exactly one integer from 0 to 100.\n"
+        "- 0 means no meaningful match.\n"
+        "- 100 means the prompt is clearly and strongly present.\n"
+        "- Be strict and rely only on visible evidence.\n"
+        "- If the output contains anything except the integer, the answer is invalid.\n\n"
         "Prompt:\n"
         f"{normalized_query or 'no traits provided'}"
     )
@@ -4233,8 +4495,9 @@ def create_app():
         paintPromptMatchModelNode(child, entry, colors);
       }}
     }};
-    const root = document.getElementById("hy-model");
-    if (root) {{
+    for (const rootId of ["hy-model", "hy-llm-model", "hy-llm-backend", "hy-prompt-generator"]) {{
+      const root = document.getElementById(rootId);
+      if (!root) continue;
       const input = root.querySelector("input");
       if (input) applyToNode(input);
       for (const node of root.querySelectorAll("span, div")) applyToNode(node);
@@ -4263,23 +4526,27 @@ def create_app():
     root.dataset.hyStateHooked = "1";
   }};
   const hookPromptMatchModelAvailability = () => {{
-    const root = document.getElementById("hy-model");
-    if (!root || root.dataset.hyAvailabilityHooked) return;
     const repaint = () => schedulePromptMatchModelAvailability();
-    for (const eventName of ["click", "pointerdown", "mousedown", "focusin", "focusout", "input", "change", "keydown", "keyup"]) {{
-      root.addEventListener(eventName, repaint);
+    for (const rootId of ["hy-model", "hy-llm-model", "hy-llm-backend", "hy-prompt-generator"]) {{
+      const root = document.getElementById(rootId);
+      if (!root || root.dataset.hyAvailabilityHooked) continue;
+      for (const eventName of ["click", "pointerdown", "mousedown", "focusin", "focusout", "input", "change", "keydown", "keyup"]) {{
+        root.addEventListener(eventName, repaint);
+      }}
+      root.dataset.hyAvailabilityHooked = "1";
     }}
+    if (document.body.dataset.hyAvailabilityDocHooked) return;
     const docRepaint = (event) => {{
       const target = event.target;
       if (!(target instanceof Element)) return;
-      if (target.closest('#hy-model, [role="option"], [role="listbox"]')) {{
+      if (target.closest('#hy-model, #hy-llm-model, #hy-llm-backend, #hy-prompt-generator, [role="option"], [role="listbox"]')) {{
         schedulePromptMatchModelAvailability();
       }}
     }};
     document.addEventListener("click", docRepaint, true);
     document.addEventListener("pointerup", docRepaint, true);
     document.addEventListener("keyup", docRepaint, true);
-    root.dataset.hyAvailabilityHooked = "1";
+    document.body.dataset.hyAvailabilityDocHooked = "1";
   }};
   const hookTagMatchAutocomplete = () => {{
     const root = document.getElementById("hy-tagmatch-tags");
@@ -4391,8 +4658,8 @@ def create_app():
         "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
         "hy-load-folder": "Load the current folder into unscored browse mode and prepare proxies for faster gallery display.",
         "hy-model": "Choose the PromptMatch model. Cached models are shown in green text, and models that still need a first download are shown in amber.",
-        "hy-llm-model": "Choose the PromptMatch model used for the fast shortlist stage before the vision-LLM rerank pass.",
-        "hy-llm-backend": "Choose the local vision-language backend used to rerank shortlisted images at a deeper semantic level.",
+        "hy-llm-model": "Choose the PromptMatch model used for the fast shortlist stage before the vision-LLM rerank pass. Cached models are shown in green text, and models that still need a first download are shown in amber.",
+        "hy-llm-backend": "Choose the local vision-language backend used to rerank shortlisted images at a deeper semantic level. Cached backends are shown in green text, and backends that still need a first download are shown in amber. The Huihui Gemma 4 option is less filtered and may produce less-filtered text.",
         "hy-llm-prompt": "Natural-language search request for the hybrid PromptMatch plus vision-LLM rerank mode.",
         "hy-llm-shortlist": "How many top PromptMatch candidates should be sent into the slower vision-LLM rerank stage.",
         "hy-pos": "Describe what you want to find in the images. PromptMatch also supports fragment weights like beautiful (blonde:1.2) woman. Select text and press Ctrl +/- to wrap or adjust it by 0.1. Press Ctrl+Enter to run scoring.",
@@ -4402,7 +4669,7 @@ def create_app():
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
         "hy-tagmatch-tags": "Comma-separated booru-style tags for TagMatch. Start typing to get live vocabulary suggestions, then use arrow keys plus Enter/Tab or click a suggestion.",
         "hy-run-llm": "Run hybrid image search: PromptMatch first shortlists likely matches, then the local vision-language backend reranks the top candidates.",
-        "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image.",
+        "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image. Cached backends are shown in green text, and backends that still need a first download are shown in amber. The Huihui Gemma 4 option is less filtered and may produce less-filtered text.",
         "hy-generate-prompt": "Use the currently previewed image to draft an editable prompt with the selected caption backend.",
         "hy-find-similar": "Use the currently previewed image as the query and rank the current folder by visual similarity with the active PromptMatch model.",
         "hy-generated-prompt": "Editable scratch prompt generated from the previewed image. You can tweak it before scoring or reinsert it into the active method.",
@@ -4562,6 +4829,82 @@ def create_app():
             "processor": processor,
         }
         print("[JoyCaption] Ready.")
+        return model, processor
+
+    def ensure_huihui_gemma4_model():
+        cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_HUIHUI_GEMMA4)
+        if cached and cached.get("model") is not None and cached.get("processor") is not None:
+            return cached["model"], cached["processor"]
+
+        try:
+            import transformers
+            from transformers import AutoModelForImageTextToText, AutoProcessor
+        except ImportError as exc:
+            raise RuntimeError(
+                "Huihui Gemma 4 prompt generation needs a newer transformers build with Gemma 4 multimodal support.\n"
+                "Run setup again after updating requirements."
+            ) from exc
+
+        if not all(
+            hasattr(transformers, name)
+            for name in ("Gemma4Processor", "Gemma4ImageProcessor", "Gemma4ForConditionalGeneration")
+        ):
+            raise RuntimeError(
+                "The installed transformers build does not include Gemma 4 runtime classes yet.\n"
+                f"Detected transformers=={getattr(transformers, '__version__', 'unknown')}.\n"
+                "This environment has Gemma 3 classes but not Gemma 4, so Huihui Gemma 4 cannot run here.\n"
+                "Update transformers to a Gemma-4-capable release by rerunning setup after refreshing requirements."
+            )
+
+        dtype = torch.bfloat16 if cuda_prefers_bfloat16() else torch.float16
+        local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_HUIHUI_GEMMA4) == "disk cache"
+        print(f"[Huihui Gemma 4] Loading {HUIHUI_GEMMA4_MODEL_ID} …")
+        processor_repo_id = HUIHUI_GEMMA4_MODEL_ID
+        processor_load_errors = []
+        try:
+            processor = AutoProcessor.from_pretrained(
+                HUIHUI_GEMMA4_MODEL_ID,
+                padding_side="left",
+                local_files_only=local_files_only,
+                trust_remote_code=True,
+                cache_dir=get_cache_config()["huggingface_dir"],
+            )
+        except Exception as primary_exc:
+            processor_load_errors.append(f"{HUIHUI_GEMMA4_MODEL_ID}: {primary_exc}")
+            processor_repo_id = HUIHUI_GEMMA4_PROCESSOR_MODEL_ID
+            try:
+                processor = AutoProcessor.from_pretrained(
+                    HUIHUI_GEMMA4_PROCESSOR_MODEL_ID,
+                    padding_side="left",
+                    local_files_only=local_files_only,
+                    trust_remote_code=True,
+                    cache_dir=get_cache_config()["huggingface_dir"],
+                )
+                print(
+                    "[Huihui Gemma 4] Repo processor metadata was incompatible; "
+                    f"reusing processor assets from {HUIHUI_GEMMA4_PROCESSOR_MODEL_ID}."
+                )
+            except Exception as fallback_exc:
+                processor_load_errors.append(f"{HUIHUI_GEMMA4_PROCESSOR_MODEL_ID}: {fallback_exc}")
+                raise RuntimeError(
+                    "Huihui Gemma 4 processor loading failed.\n"
+                    "Tried the finetuned repo processor assets and the base Gemma 4 processor assets.\n"
+                    + "\n".join(processor_load_errors)
+                ) from fallback_exc
+        model = AutoModelForImageTextToText.from_pretrained(
+            HUIHUI_GEMMA4_MODEL_ID,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=get_cache_config()["huggingface_dir"],
+        ).to(device)
+        model.eval()
+        state["prompt_backend_cache"][PROMPT_GENERATOR_HUIHUI_GEMMA4] = {
+            "model": model,
+            "processor": processor,
+            "processor_repo_id": processor_repo_id,
+        }
+        print("[Huihui Gemma 4] Ready.")
         return model, processor
 
     def ensure_joycaption_gguf_model():
@@ -5170,7 +5513,12 @@ def create_app():
                 }),
             )
 
-        main_threshold, aux_threshold = normalize_threshold_inputs(state["method"], main_threshold, aux_threshold)
+        main_threshold, aux_threshold = normalize_threshold_inputs(
+            state["method"],
+            main_threshold,
+            aux_threshold,
+            state.get("llmsearch_backend"),
+        )
         remember_mode_thresholds(state["method"], main_threshold, aux_threshold)
         left_items, right_items = build_split(
             state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold
@@ -5252,6 +5600,7 @@ def create_app():
             state["generated_prompt_backend"] = generator_name
             state["generated_prompt_status"] = (
                 f"Showing cached {detail_label.lower()} prompt for {preview_fname} via {generator_name}."
+                f"{prompt_backend_warning_text(generator_name)}"
             )
             return (
                 gr.update(value=state["generated_prompt_status"]),
@@ -5299,6 +5648,123 @@ def create_app():
         return normalize_generated_prompt(
             extract_florence_caption(parsed, raw_text, task_prompt)
         )
+
+    def prepare_huihui_gemma4_inputs(processor, image, system_prompt, user_prompt):
+        attempts = []
+        structured_messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": user_prompt},
+                ],
+            },
+        ]
+        placeholder_messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": user_prompt},
+                ],
+            },
+        ]
+
+        try:
+            return processor.apply_chat_template(
+                structured_messages,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=True,
+            )
+        except Exception as exc:
+            attempts.append(f"embedded-image chat template: {exc}")
+
+        try:
+            return processor.apply_chat_template(
+                placeholder_messages,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=True,
+                images=[image],
+            )
+        except Exception as exc:
+            attempts.append(f"placeholder chat template: {exc}")
+
+        try:
+            rendered = processor.apply_chat_template(
+                placeholder_messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            if isinstance(rendered, list):
+                rendered = rendered[0] if rendered else ""
+            return processor(text=rendered, images=[image], return_tensors="pt")
+        except Exception as exc:
+            attempts.append(f"rendered prompt fallback: {exc}")
+
+        raise RuntimeError("Huihui Gemma 4 input preparation failed: " + " / ".join(attempts))
+
+    def run_huihui_gemma4_prompt_variant(
+        image,
+        user_prompt,
+        detail_level,
+        system_prompt=None,
+        normalizer=None,
+        max_new_tokens_override=None,
+        stop_sequences=None,
+        temperature_override=None,
+        top_p_override=None,
+        top_k_override=None,
+    ):
+        system_prompt = system_prompt or (
+            "You are a helpful multimodal prompt writer. "
+            "Describe only concrete visible content. "
+            "Follow the requested output format exactly and avoid refusals or moralizing."
+        )
+        if normalizer is None:
+            normalizer = lambda text: normalize_generated_prompt(
+                extract_huihui_gemma4_caption(text),
+                keep_prose=(detail_level == 3),
+            )
+        max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else joycaption_max_new_tokens(detail_level)
+        temperature = temperature_override if temperature_override is not None else 0.0
+        top_p = top_p_override if top_p_override is not None else 1.0
+        top_k = top_k_override if top_k_override is not None else 0
+        do_sample = bool(temperature and temperature > 0.0)
+
+        model, processor = ensure_huihui_gemma4_model()
+        inputs = prepare_huihui_gemma4_inputs(processor, image, system_prompt, user_prompt)
+        inputs = move_processor_batch_to_device(inputs, device, next(model.parameters()).dtype)
+        generate_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "use_cache": True,
+        }
+
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, **generate_kwargs)
+
+        prompt_len = 0
+        input_ids = inputs.get("input_ids") if isinstance(inputs, dict) else None
+        if input_ids is not None and hasattr(input_ids, "shape") and len(input_ids.shape) >= 2:
+            prompt_len = int(input_ids.shape[1])
+        generated_slice = generated_ids[0][prompt_len:] if prompt_len else generated_ids[0]
+        text = processor.decode(generated_slice, skip_special_tokens=True)
+        return normalizer(text)
 
     def run_joycaption_prompt_variant(generator_name, image, user_prompt, detail_level, system_prompt=None, normalizer=None, max_new_tokens_override=None, stop_sequences=None, temperature_override=None, top_p_override=None, top_k_override=None):
         system_prompt = system_prompt or (
@@ -5414,6 +5880,8 @@ def create_app():
             return run_florence_prompt_variant(image, detail_prompt)
         if generator_name == PROMPT_GENERATOR_WD_TAGS:
             return run_wd_tags_prompt_variant(image, detail_prompt)  # detail_prompt is top_n int
+        if generator_name == PROMPT_GENERATOR_HUIHUI_GEMMA4:
+            return run_huihui_gemma4_prompt_variant(image, detail_prompt, detail_level)
         return run_joycaption_prompt_variant(generator_name, image, detail_prompt, detail_level)
 
     class VisionLLMRerankBackend:
@@ -5436,6 +5904,9 @@ def create_app():
             elif self.backend_id == PROMPT_GENERATOR_JOYCAPTION_GGUF:
                 progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
                 ensure_joycaption_gguf_model()
+            elif self.backend_id == PROMPT_GENERATOR_HUIHUI_GEMMA4:
+                progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
+                ensure_huihui_gemma4_model()
             else:
                 raise RuntimeError(f"Unknown LLM rerank backend: {self.backend_id}")
 
@@ -5443,11 +5914,26 @@ def create_app():
             return None
 
         def uses_direct_numeric_score(self):
-            return self.backend_id in {PROMPT_GENERATOR_JOYCAPTION, PROMPT_GENERATOR_JOYCAPTION_GGUF}
+            return self.backend_id in {
+                PROMPT_GENERATOR_JOYCAPTION,
+                PROMPT_GENERATOR_JOYCAPTION_GGUF,
+                PROMPT_GENERATOR_HUIHUI_GEMMA4,
+            }
 
         def candidate_text(self, image, query_text):
             if self.backend_id == PROMPT_GENERATOR_FLORENCE:
                 return run_florence_prompt_variant(image, "<MORE_DETAILED_CAPTION>")
+            if self.backend_id == PROMPT_GENERATOR_HUIHUI_GEMMA4:
+                return run_huihui_gemma4_prompt_variant(
+                    image,
+                    build_llmsearch_huihui_gemma4_user_prompt(query_text),
+                    2,
+                    system_prompt=llmsearch_joycaption_system_prompt(),
+                    normalizer=lambda text: normalize_generated_prompt(
+                        extract_huihui_gemma4_caption(text)
+                    ),
+                    max_new_tokens_override=joycaption_max_new_tokens(2),
+                )
 
             user_prompt = build_llmsearch_joycaption_user_prompt(query_text)
             return run_joycaption_prompt_variant(
@@ -5464,19 +5950,33 @@ def create_app():
                 caption_text = self.candidate_text(image, query_text)
                 return llmsearch_similarity(state["backend"].encode_text((query_text or "").strip()), caption_text), caption_text
 
-            raw_score_text = run_joycaption_prompt_variant(
-                self.backend_id,
-                image,
-                build_llmsearch_joycaption_user_prompt(query_text),
-                1,
-                system_prompt=llmsearch_joycaption_system_prompt(),
-                normalizer=extract_joycaption_caption,
-                max_new_tokens_override=LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS,
-                stop_sequences=[" ", "\n", "\t", ",", ".", "%", "</s>", "User:", "Assistant:"],
-                temperature_override=LLMSEARCH_JOYCAPTION_TEMPERATURE,
-                top_p_override=LLMSEARCH_JOYCAPTION_TOP_P,
-                top_k_override=LLMSEARCH_JOYCAPTION_TOP_K,
-            )
+            if self.backend_id == PROMPT_GENERATOR_HUIHUI_GEMMA4:
+                raw_score_text = run_huihui_gemma4_prompt_variant(
+                    image,
+                    build_llmsearch_huihui_gemma4_user_prompt(query_text),
+                    1,
+                    system_prompt=llmsearch_joycaption_system_prompt(),
+                    normalizer=extract_huihui_gemma4_caption,
+                    max_new_tokens_override=LLMSEARCH_HUIHUI_GEMMA4_MAX_NEW_TOKENS,
+                    stop_sequences=[" ", "\n", "\t", ",", ".", "%", "</s>", "User:", "Assistant:"],
+                    temperature_override=LLMSEARCH_HUIHUI_GEMMA4_TEMPERATURE,
+                    top_p_override=LLMSEARCH_HUIHUI_GEMMA4_TOP_P,
+                    top_k_override=LLMSEARCH_HUIHUI_GEMMA4_TOP_K,
+                )
+            else:
+                raw_score_text = run_joycaption_prompt_variant(
+                    self.backend_id,
+                    image,
+                    build_llmsearch_joycaption_user_prompt(query_text),
+                    1,
+                    system_prompt=llmsearch_joycaption_system_prompt(),
+                    normalizer=extract_joycaption_caption,
+                    max_new_tokens_override=LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS,
+                    stop_sequences=[" ", "\n", "\t", ",", ".", "%", "</s>", "User:", "Assistant:"],
+                    temperature_override=LLMSEARCH_JOYCAPTION_TEMPERATURE,
+                    top_p_override=LLMSEARCH_JOYCAPTION_TOP_P,
+                    top_k_override=LLMSEARCH_JOYCAPTION_TOP_K,
+                )
             return float(extract_llmsearch_numeric_score(raw_score_text)), raw_score_text
 
         def score_candidates_batch(self, images, query_text):
@@ -5795,13 +6295,25 @@ def create_app():
                 gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
             )
         if method == METHOD_LLMSEARCH:
+            llm_numeric = llmsearch_uses_numeric_scores(state.get("llmsearch_backend"))
             return (
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=True),
                 gr.update(visible=False),
-                gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-                gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
+                gr.update(
+                    label=main_label,
+                    value=50.0 if llm_numeric else 0.14,
+                    minimum=0.0 if llm_numeric else PROMPTMATCH_SLIDER_MIN,
+                    maximum=100.0 if llm_numeric else PROMPTMATCH_SLIDER_MAX,
+                ),
+                gr.update(
+                    visible=False,
+                    value=50.0 if llm_numeric else NEGATIVE_THRESHOLD,
+                    label=aux_label,
+                    minimum=0.0 if llm_numeric else PROMPTMATCH_SLIDER_MIN,
+                    maximum=100.0 if llm_numeric else PROMPTMATCH_SLIDER_MAX,
+                ),
                 gr.update(visible=False),
                 gr.update(visible=False),
                 gr.update(visible=False),
@@ -5980,6 +6492,9 @@ def create_app():
         return gr.update(choices=promptmatch_model_dropdown_choices(), value=selected)
 
     def middle_threshold_values(method):
+        if method == METHOD_LLMSEARCH:
+            lo, hi, mid = llmsearch_slider_range(state["scores"], state.get("llmsearch_backend"))
+            return round(float(mid), 3), NEGATIVE_THRESHOLD, False
         if uses_pos_similarity_scores(method):
             if state["scores"]:
                 _, _, pos_mid, _, _, neg_mid, has_neg = promptmatch_slider_range(state["scores"])
@@ -6331,7 +6846,7 @@ def create_app():
             }
         return results
 
-    def prepare_scored_run_context(method, folder, main_threshold, aux_threshold):
+    def prepare_scored_run_context(method, folder, main_threshold, aux_threshold, llm_backend_id=None):
         folder = (folder or "").strip()
         if not folder or not os.path.isdir(folder):
             return None, empty_result(f"Invalid folder: {folder!r}", method)
@@ -6356,6 +6871,7 @@ def create_app():
             method,
             ctx["requested_main"],
             ctx["requested_aux"],
+            llm_backend_id,
         )
         recalled_main, recalled_aux, has_recalled = recalled_mode_thresholds(method, main_threshold, aux_threshold)
         ctx["has_recalled"] = has_recalled
@@ -6364,6 +6880,7 @@ def create_app():
                 method,
                 recalled_main,
                 recalled_aux,
+                llm_backend_id,
             )
         ctx["preserved_overrides"] = preserve_overrides_for_folder_key(
             folder_key,
@@ -6411,7 +6928,7 @@ def create_app():
 
     def score_folder(method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
         # Main entrypoint for "Run scoring"; both methods converge back into current_view().
-        run_ctx, error_result = prepare_scored_run_context(method, folder, main_threshold, aux_threshold)
+        run_ctx, error_result = prepare_scored_run_context(method, folder, main_threshold, aux_threshold, llm_backend_id)
         if error_result is not None:
             return error_result
         folder = run_ctx["folder"]
@@ -6543,21 +7060,19 @@ def create_app():
                 state["llmsearch_cached_model_label"] = llm_model_label
                 state["llmsearch_cached_scores"] = dict(wrapped_scores)
 
-            pos_vals = [
-                item["pos"] for item in state["scores"].values()
-                if item.get("base_pos") is not None and not item.get("failed", False)
-            ]
-            pos_min, pos_max, pos_mid, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
-            default_main = round(min(pos_vals), 3) if pos_vals else pos_mid
-            next_main = clamp_threshold(requested_main, pos_min, pos_max) if (previous_method != METHOD_LLMSEARCH and has_recalled) else default_main
+            pos_min, pos_max, pos_mid = llmsearch_slider_range(state["scores"], llm_backend_id)
+            default_main = pos_mid
+            should_preserve_main = (previous_method == METHOD_LLMSEARCH) or has_recalled
+            next_main = clamp_threshold(requested_main, pos_min, pos_max) if should_preserve_main else default_main
             safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
-            safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
+            aux_default = 50.0 if llmsearch_uses_numeric_scores(llm_backend_id) else NEGATIVE_THRESHOLD
+            safe_neg_min, safe_neg_max = expand_slider_bounds(aux_default, aux_default, aux_default)
             return render_scored_mode_result(
                 METHOD_LLMSEARCH,
                 next_main,
-                NEGATIVE_THRESHOLD,
+                aux_default,
                 gr.update(minimum=safe_pos_min, maximum=safe_pos_max, value=next_main, label=main_label),
-                gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=NEGATIVE_THRESHOLD, visible=False, interactive=False, label=aux_label),
+                gr.update(minimum=safe_neg_min, maximum=safe_neg_max, value=aux_default, visible=False, interactive=False, label=aux_label),
                 percentile_slider_update(METHOD_LLMSEARCH, state["scores"]),
                 percentile_reset_button_update(METHOD_LLMSEARCH, state["scores"]),
             )
@@ -6925,6 +7440,7 @@ def create_app():
             state["generated_prompt_backend"] = generator_name
             state["generated_prompt_status"] = (
                 f"Reused cached prompt set for {preview_fname} via {generator_name}. Showing {detail_label.lower()} detail."
+                f"{prompt_backend_warning_text(generator_name)}"
             )
             return (
                 gr.update(value=state["generated_prompt_status"]),
@@ -6976,6 +7492,7 @@ def create_app():
         state["generated_prompt_status"] = (
             f"Generated {ready_count} prompt detail levels for {preview_fname} via {generator_name}. "
             f"Showing {detail_label.lower()} detail."
+            f"{prompt_backend_warning_text(generator_name)}"
         )
         return (
             gr.update(value=state["generated_prompt_status"]),
@@ -7212,6 +7729,19 @@ def create_app():
                     new_main = min(new_main, slider_step_floor(min(valid_scores)))
                 else:
                     new_main = max(new_main, slider_step_ceil_exclusive(max(valid_scores)))
+                new_main = round(max(lo, min(hi, new_main)), 3)
+        elif state["method"] == METHOD_LLMSEARCH:
+            lo, hi, _ = llmsearch_slider_range(state["scores"], state.get("llmsearch_backend"))
+            valid_items = [
+                state["scores"][fname]
+                for fname in targets
+                if fname in state["scores"] and not state["scores"][fname].get("failed", False)
+            ]
+            if valid_items:
+                if right_targets:
+                    new_main = min(new_main, slider_step_floor(min(item["pos"] for item in valid_items)))
+                else:
+                    new_main = max(new_main, slider_step_ceil_exclusive(max(item["pos"] for item in valid_items)))
                 new_main = round(max(lo, min(hi, new_main)), 3)
         else:
             pos_lo, pos_hi, _, neg_lo, neg_hi, _, has_neg = promptmatch_slider_range(state["scores"])
@@ -8170,7 +8700,7 @@ def create_app():
                                 elem_id="hy-llm-model",
                             )
                             llm_backend_dd = gr.Dropdown(
-                                choices=llmsearch_backend_choices(),
+                                choices=prompt_backend_dropdown_choices(llmsearch_backend_choices()),
                                 value=DEFAULT_LLMSEARCH_BACKEND,
                                 label="Vision LM backend",
                                 elem_id="hy-llm-backend",
@@ -8207,7 +8737,7 @@ def create_app():
                         with gr.Group(elem_classes=["preview-prompt-group"]):
                             gr.Markdown("**Prompt from image**", elem_classes=["method-note"])
                             prompt_generator_dd = gr.Dropdown(
-                                choices=list(PROMPT_GENERATOR_ALL_CHOICES),
+                                choices=prompt_backend_dropdown_choices(PROMPT_GENERATOR_ALL_CHOICES),
                                 value=state["prompt_generator"],
                                 label="Prompt generator",
                                 elem_id="hy-prompt-generator",
