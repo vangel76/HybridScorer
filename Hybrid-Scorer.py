@@ -2110,11 +2110,14 @@ MODEL_CHOICES = [
     ("OpenCLIP  ViT-bigG-14  laion2b  [14-16 GB]  ★ best CLIP", "openclip", {"openclip_model": "ViT-bigG-14", "openclip_pretrained": "laion2b_s39b_b160k"}),
 ]
 MODEL_LABELS = [choice[0] for choice in MODEL_CHOICES]
+DEFAULT_PROMPTMATCH_MODEL_LABEL = MODEL_LABELS[1]
 MODEL_STATUS_CACHED_MARKER = "🟢"
 MODEL_STATUS_DOWNLOAD_MARKER = "🟠"
 
 
 def label_for_backend(backend):
+    if backend is None:
+        return DEFAULT_PROMPTMATCH_MODEL_LABEL
     for label, name, kwargs in MODEL_CHOICES:
         if name != backend.backend:
             continue
@@ -2128,7 +2131,7 @@ def label_for_backend(backend):
             return label
         if name == "siglip" and kwargs.get("siglip_model") == backend._siglip_model:
             return label
-    return MODEL_LABELS[0]
+    return DEFAULT_PROMPTMATCH_MODEL_LABEL
 
 
 def promptmatch_model_status_map():
@@ -2887,16 +2890,6 @@ def create_app():
     if not os.path.isdir(source_dir):
         source_dir = script_dir
 
-    # Start with the lighter recommended SigLIP model so first-run download size
-    # and VRAM pressure are more reasonable than the much larger ViT-bigG-14.
-    prompt_backend = ModelBackend(
-        device,
-        backend="siglip",
-        siglip_model="google/siglip-so400m-patch14-384",
-        clip_cache_dir=get_cache_config()["clip_dir"],
-        huggingface_cache_dir=get_cache_config()["huggingface_dir"],
-    )
-
     def get_state_defaults():
         # Keep state dict storage to preserve existing callback expectations, but
         # centralize defaults so reset paths cannot silently drift apart.
@@ -2914,7 +2907,7 @@ def create_app():
             "left_marked": [],
             "right_marked": [],
             "preview_fname": None,
-            "backend": prompt_backend,
+            "backend": None,
             "ir_model": None,
             "face_backend": None,
             "tagmatch_backend": None,
@@ -6512,7 +6505,7 @@ def create_app():
         if cfg is None:
             raise RuntimeError(f"Unknown PromptMatch model: {model_label}")
         _, backend_name, kwargs = cfg
-        if label_for_backend(state["backend"]) != model_label:
+        if state["backend"] is None or label_for_backend(state["backend"]) != model_label:
             if backend_name == "openai":
                 source = describe_openai_clip_source(kwargs.get("clip_model"))
             elif backend_name == "openclip":
@@ -6960,7 +6953,7 @@ def create_app():
         release_inactive_gpu_models(method)
 
         if method == METHOD_LLMSEARCH:
-            llm_model_label = llm_model_label if llm_model_label in MODEL_LABELS else label_for_backend(prompt_backend)
+            llm_model_label = llm_model_label if llm_model_label in MODEL_LABELS else DEFAULT_PROMPTMATCH_MODEL_LABEL
             llm_backend_id = llm_backend_id if llm_backend_id in llmsearch_backend_choices() else DEFAULT_LLMSEARCH_BACKEND
             llm_prompt = (llm_prompt or "").strip() or LLMSEARCH_DEFAULT_PROMPT
             try:
@@ -8664,7 +8657,7 @@ def create_app():
                         with gr.Group(visible=True) as promptmatch_group:
                             model_dd = gr.Dropdown(
                                 choices=promptmatch_model_dropdown_choices(),
-                                value=label_for_backend(prompt_backend),
+                                value=DEFAULT_PROMPTMATCH_MODEL_LABEL,
                                 label="PromptMatch model",
                                 elem_id="hy-model",
                             )
@@ -8695,7 +8688,7 @@ def create_app():
                         with gr.Group(visible=False) as llmsearch_group:
                             llm_model_dd = gr.Dropdown(
                                 choices=promptmatch_model_dropdown_choices(),
-                                value=label_for_backend(prompt_backend),
+                                value=DEFAULT_PROMPTMATCH_MODEL_LABEL,
                                 label="PromptMatch shortlist model",
                                 elem_id="hy-llm-model",
                             )
@@ -9087,6 +9080,25 @@ def create_setup_required_app(requirement_issues):
 
 
 if __name__ == "__main__":
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)
+    cache_cfg = get_cache_config()
+    cache_mode = os.environ.get("HYBRIDSCORER_CACHE_MODE", "").strip().lower() or default_cache_mode()
+    port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
+
+    print(f"[Startup] Launching {APP_WINDOW_TITLE}")
+    print(f"[Startup] Project dir: {script_dir}")
+    print(f"[Startup] Input folder default: {source_dir}")
+    print(f"[Startup] Cache mode: {cache_mode}")
+    if cache_mode == CACHE_MODE_PROJECT and cache_cfg.get("huggingface_dir"):
+        print(f"[Startup] Project model store: {cache_cfg['huggingface_dir']}")
+    elif cache_cfg.get("huggingface_dir"):
+        print(f"[Startup] Hugging Face cache: {cache_cfg['huggingface_dir']}")
+    print(f"[Startup] PromptMatch default: {DEFAULT_PROMPTMATCH_MODEL_LABEL} (lazy-loaded on first scoring run)")
+    print(f"[Startup] Prompt generator default: {DEFAULT_PROMPT_GENERATOR}")
+    print(f"[Startup] LLM Search default backend: {DEFAULT_LLMSEARCH_BACKEND}")
+    print(f"[Startup] Preparing Gradio server on port {port}...")
+
     requirement_issues = runtime_requirement_issues()
     if requirement_issues:
         print("[Startup check] Dependency mismatch detected. Please rerun setup.")
@@ -9094,10 +9106,10 @@ if __name__ == "__main__":
             print(f"  - {issue}")
         app, css, head = create_setup_required_app(requirement_issues)
     else:
+        print("[Startup check] Dependency versions look OK.")
+        print("[Startup] Building UI...")
         app, css, head = create_app()
-    port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    source_dir = os.path.join(script_dir, INPUT_FOLDER_NAME)
+        print("[Startup] UI ready. Starting web server...")
     app.launch(
         server_name="0.0.0.0",
         server_port=port,
