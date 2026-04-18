@@ -1,5 +1,18 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.3.3 - Easier Windows Setup & Clearer Startup
+
+**Faster, Clearer App Startup**
+- The app now prints a more helpful startup summary in the console before the Gradio URL appears
+- Startup logs now explain the project folder, model storage location, default backends, and that the default PromptMatch model is loaded only when first needed
+- PromptMatch no longer downloads or loads its default SigLIP model during app launch; it now waits until the first PromptMatch or LM Search use
+
+**Safer Windows Python Setup**
+- `setup_update-windows.bat` now tries much harder to get `Python 3.12` automatically for the user
+- If `py -3.12` is missing, the script first tries `winget`, then falls back to downloading the official `python.org` installer
+- The script now uses a dedicated `Python 3.12` executable for `venv312` creation instead of trying to make `3.12` the user's normal default Python
+- Windows setup now tells the user clearly that this project-specific `Python 3.12` runtime is only for `venv312` and will not replace their usual Python setup
+
 ## Version 2.3.0 - Huihui, Better Model Pickers & ImageReward Compatibility
 
 **New Huihui Gemma 4 Option**

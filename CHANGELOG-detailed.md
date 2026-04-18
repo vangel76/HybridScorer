@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.3.3] - 2026-04-18
+
+- Added a new lightweight startup log sequence before `app.launch(...)` so the console now reports:
+  - app title
+  - project directory
+  - default input folder
+  - cache mode / project model store path
+  - default PromptMatch model, prompt generator, and LM Search backend
+  - dependency-check and UI-build progress
+- Changed the startup wording on Windows project mode from `Hugging Face cache` to `Project model store` so the console reflects the intended packaging model (`models/huggingface` under the repo) instead of sounding like an external user-managed cache.
+- Removed eager construction of the default PromptMatch backend from `create_app()`. The app no longer instantiates `ModelBackend(... siglip-so400m-patch14-384 ...)` during UI startup; `state["backend"]` now starts as `None` and the default PromptMatch / LLM Search shortlist dropdowns use a new `DEFAULT_PROMPTMATCH_MODEL_LABEL` constant instead.
+- Updated `label_for_backend()` to tolerate `None` and return the default PromptMatch label cleanly for UI display.
+- Fixed the lazy-load regression in `ensure_promptmatch_backend_loaded(...)`: the first PromptMatch run on the default model previously skipped loading because the UI default label matched even while `state["backend"]` was still `None`. The loader now explicitly loads when no backend instance exists yet.
+- Expanded `setup_update-windows.bat` so Python 3.12 bootstrapping is more automatic:
+  - still handles the original `py` launcher missing case
+  - now also handles the case where `py` exists but `py -3.12` is unavailable
+  - first tries `winget install -e --id Python.Python.3.12`
+  - falls back to downloading and silently running the official `python.org` installer when `winget` is unavailable or fails
+- Added configurable Windows Python installer knobs in `setup_update-windows.bat`:
+  - `PYTHON312_VERSION`
+  - `PYTHON312_INSTALLER_URL`
+  - `PYTHON312_INSTALL_ARGS`
+- Changed the Windows Python install strategy to avoid taking over the user's normal interpreter setup:
+  - installer arguments now use `PrependPath=0` and `Include_launcher=0`
+  - the setup script resolves a dedicated Python 3.12 executable path and uses that exact binary for `venv312` creation
+  - setup output now explicitly tells the user that this Python 3.12 runtime is only for the project's `venv312` and will not replace the normal default Python
+- Updated the Windows venv-creation messaging so failures now say `Python 3.12 is available` instead of the older misleading wording.
+
 ## [2.3.0] - 2026-04-17
 
 - Added `Huihui Gemma 4 E4B` (`huihui-ai/Huihui-gemma-4-E4B-it-abliterated`) as a new multimodal backend in both `Prompt from image` and `LM Search`.

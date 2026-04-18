@@ -15,6 +15,9 @@ set "VENV_DIR=%CD%\venv312"
 if "%PYTORCH_CUDA_INDEX_URL%"=="" set "PYTORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu128"
 if "%PYTORCH_TORCH_VERSION%"=="" set "PYTORCH_TORCH_VERSION=2.9.1"
 if "%PYTORCH_TORCHVISION_VERSION%"=="" set "PYTORCH_TORCHVISION_VERSION=0.24.1"
+if "%PYTHON312_VERSION%"=="" set "PYTHON312_VERSION=3.12.10"
+if "%PYTHON312_INSTALLER_URL%"=="" set "PYTHON312_INSTALLER_URL=https://www.python.org/ftp/python/%PYTHON312_VERSION%/python-%PYTHON312_VERSION%-amd64.exe"
+if "%PYTHON312_INSTALL_ARGS%"=="" set "PYTHON312_INSTALL_ARGS=/quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0 Shortcuts=0"
 
 where py >nul 2>nul
 if errorlevel 1 (
@@ -22,25 +25,58 @@ if errorlevel 1 (
     where winget >nul 2>nul
     if errorlevel 1 (
         echo winget was not found.
-        echo Install Python 3.12 for Windows from python.org and enable the launcher.
-        exit /b 1
+        echo Falling back to the official python.org installer...
+        call :install_python312_from_python_org
+        if errorlevel 1 exit /b 1
+        goto python_launcher_ready
     )
 
     echo Attempting to install Python 3.12 with winget...
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --override "%PYTHON312_INSTALL_ARGS%"
     if errorlevel 1 (
         echo Automatic Python install failed.
-        echo Install Python 3.12 for Windows from python.org and enable the launcher.
-        exit /b 1
-    )
-
-    where py >nul 2>nul
-    if errorlevel 1 (
-        echo Python 3.12 installation finished, but the py launcher is still not available in this shell.
-        echo Close this window, open a new one, and run setup_update-windows.bat again.
-        exit /b 1
+        echo Falling back to the official python.org installer...
+        call :install_python312_from_python_org
+        if errorlevel 1 exit /b 1
+        goto :python312_ready_check
     )
 )
+:python_launcher_ready
+
+py -3.12 -c "import sys; print(sys.version)" >nul 2>nul
+if errorlevel 1 (
+    echo Python 3.12 is not currently available from the py launcher.
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo winget was not found.
+        echo Falling back to the official python.org installer...
+        call :install_python312_from_python_org
+        if errorlevel 1 exit /b 1
+        goto :python312_ready_check
+    )
+
+    echo Attempting to install Python 3.12 with winget...
+    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --override "%PYTHON312_INSTALL_ARGS%"
+    if errorlevel 1 (
+        echo Automatic Python 3.12 install failed.
+        echo Falling back to the official python.org installer...
+        call :install_python312_from_python_org
+        if errorlevel 1 exit /b 1
+        goto :python312_ready_check
+    )
+)
+:python312_ready_check
+set "PYTHON312_EXE="
+call :resolve_python312_exe
+if not defined PYTHON312_EXE (
+    echo Python 3.12 installation finished, but a dedicated Python 3.12 executable could not be found.
+    echo Close this window, open a new one, and run setup_update-windows.bat again.
+    exit /b 1
+)
+echo Using Python 3.12 at:
+echo   %PYTHON312_EXE%
+echo This Python 3.12 runtime will only be used for this project's venv312.
+echo It will not be added to PATH or replace your normal default Python.
 
 where git >nul 2>nul
 if errorlevel 1 (
@@ -112,9 +148,9 @@ echo.
 
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo Creating virtual environment at "%VENV_DIR%"...
-    py -3.12 -m venv "%VENV_DIR%"
+    "%PYTHON312_EXE%" -m venv "%VENV_DIR%"
     if errorlevel 1 (
-        echo Python 3.12 was found, but creating the virtual environment failed.
+        echo Python 3.12 is available, but creating the virtual environment failed.
         echo Make sure Python 3.12 is installed correctly, then run this script again.
         exit /b 1
     )
@@ -227,3 +263,33 @@ echo.
 echo venv312 is ready.
 echo Activate later with:
 echo   venv312\Scripts\activate.bat
+goto :eof
+
+:install_python312_from_python_org
+set "PYTHON312_INSTALLER=%TEMP%\python-%PYTHON312_VERSION%-amd64.exe"
+echo Downloading Python %PYTHON312_VERSION% from:
+echo   %PYTHON312_INSTALLER_URL%
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri '%PYTHON312_INSTALLER_URL%' -OutFile '%PYTHON312_INSTALLER%'"
+if errorlevel 1 (
+    echo Downloading the official Python installer failed.
+    echo Install Python 3.12 for Windows from python.org, then run this script again.
+    exit /b 1
+)
+
+echo Running Python %PYTHON312_VERSION% installer silently...
+"%PYTHON312_INSTALLER%" %PYTHON312_INSTALL_ARGS%
+if errorlevel 1 (
+    echo The official Python installer failed.
+    echo Install Python 3.12 for Windows from python.org, then run this script again.
+    exit /b 1
+)
+exit /b 0
+
+:resolve_python312_exe
+for /f "usebackq delims=" %%I in (`py -3.12 -c "import sys; print(sys.executable)" 2^>nul`) do (
+    if not defined PYTHON312_EXE set "PYTHON312_EXE=%%~fI"
+)
+if not defined PYTHON312_EXE if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "PYTHON312_EXE=%LocalAppData%\Programs\Python\Python312\python.exe"
+if not defined PYTHON312_EXE if exist "%ProgramFiles%\Python312\python.exe" set "PYTHON312_EXE=%ProgramFiles%\Python312\python.exe"
+if not defined PYTHON312_EXE if exist "%ProgramFiles(x86)%\Python312\python.exe" set "PYTHON312_EXE=%ProgramFiles(x86)%\Python312\python.exe"
+exit /b 0
