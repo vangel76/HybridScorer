@@ -171,9 +171,50 @@ echo Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python
 set "CMAKE_ARGS=-DGGML_CUDA=on"
 set "FORCE_CMAKE=1"
 python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Standard CUDA llama-cpp-python build failed.
+    echo Trying Visual Studio developer shell plus Ninja fallback...
+
+    set "VSDEVCMD="
+    for %%F in (
+        "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+        "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat"
+        "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
+        "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
+    ) do (
+        if exist "%%~fF" if not defined VSDEVCMD set "VSDEVCMD=%%~fF"
+    )
+
+    where ninja >nul 2>nul
+    if errorlevel 1 (
+        echo Ninja was not found in PATH, so the fallback build cannot run.
+        exit /b 1
+    )
+    if not defined VSDEVCMD (
+        echo Visual Studio developer shell was not found, so the fallback build cannot run.
+        exit /b 1
+    )
+
+    call "%VSDEVCMD%" -arch=x64 -host_arch=x64 >nul
+    if errorlevel 1 (
+        echo Failed to initialize the Visual Studio developer shell.
+        exit /b 1
+    )
+    if not defined VCToolsInstallDir (
+        echo VCToolsInstallDir was not set by the developer shell.
+        exit /b 1
+    )
+
+    set "CC=%VCToolsInstallDir%bin\Hostx64\x64\cl.exe"
+    set "CXX=%CC%"
+    set "CMAKE_ARGS=-G Ninja -DCMAKE_MAKE_PROGRAM=C:/Windows/ninja.exe -DGGML_CUDA=on"
+    python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
+    if errorlevel 1 exit /b 1
+)
 set "CMAKE_ARGS="
 set "FORCE_CMAKE="
+set "CC="
+set "CXX="
 
 python -c "import sys, torch; ok=torch.cuda.is_available(); print(f'CUDA OK: {torch.cuda.get_device_name(0)}' if ok else 'CUDA missing'); sys.exit(0 if ok else 1)"
 if errorlevel 1 (
