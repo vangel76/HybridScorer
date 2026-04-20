@@ -21,7 +21,7 @@ Default app URL: `http://localhost:7862`
 
 ## Architecture
 
-**Single-file Gradio app.** All application logic lives in `Hybrid-Scorer.py`. This is intentional — do not split it.
+**Single-file Gradio app.** All application logic lives in `Hybrid-Scorer.py`.
 
 `create_app()` is the center of gravity:
 - owns the shared mutable `state` dict
