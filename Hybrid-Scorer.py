@@ -256,6 +256,8 @@ VIEW_WITH_CONTROLS_OUTPUT_KEYS = (
     "hist_plot",
     "sel_info",
     "mark_state",
+    "external_query_image",
+    "clear_external_query_btn",
     "left_export_cb",
     "left_export_name_tb",
     "export_acc",
@@ -273,6 +275,8 @@ SCORE_FOLDER_OUTPUT_KEYS = (
     "hist_plot",
     "sel_info",
     "mark_state",
+    "external_query_image",
+    "clear_external_query_btn",
     "main_slider",
     "aux_slider",
     "percentile_slider",
@@ -2958,10 +2962,16 @@ def create_app():
             "generated_prompt_backend": DEFAULT_PROMPT_GENERATOR,
             "generated_prompt_detail": DEFAULT_GENERATED_PROMPT_DETAIL,
             "generated_prompt_variants": {},
-            "generated_prompt_status": "Preview an image, then generate a prompt from it.",
+            "generated_prompt_status": "Preview, drop, paste, or upload an image, then generate a prompt from it.",
+            "external_query_path": None,
+            "external_query_label": None,
+            "external_query_active": False,
+            "external_query_signature": None,
             "similarity_query_fname": None,
+            "similarity_query_source": None,
             "similarity_model_label": None,
             "sameperson_query_fname": None,
+            "sameperson_query_source": None,
             "sameperson_model_label": None,
             "mode_thresholds": {
                 METHOD_PROMPTMATCH: {"main": None, "aux": None},
@@ -2991,6 +3001,128 @@ def create_app():
         state["browse_items"] = list(items or [])
         state["browse_status"] = status_text
 
+    def remove_file_quietly(path):
+        if not path:
+            return
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    def clear_external_query_state(delete_file=True):
+        existing_path = state.get("external_query_path")
+        state["external_query_path"] = None
+        state["external_query_label"] = None
+        state["external_query_active"] = False
+        state["external_query_signature"] = None
+        if delete_file:
+            remove_file_quietly(existing_path)
+
+    def save_external_query_image(upload_path):
+        if not upload_path or not os.path.isfile(upload_path):
+            raise RuntimeError("No query image was received.")
+
+        with Image.open(upload_path) as src_img:
+            image = src_img.convert("RGB")
+            image.load()
+
+        label = os.path.basename(upload_path) or "query-image.png"
+        return save_external_query_image_bytes(image, label)
+
+    def save_external_query_image_bytes(image_or_bytes, label):
+        if isinstance(image_or_bytes, Image.Image):
+            image = image_or_bytes.convert("RGB")
+        else:
+            with Image.open(io.BytesIO(image_or_bytes)) as src_img:
+                image = src_img.convert("RGB")
+                image.load()
+
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+        signature = sha256(image_bytes).hexdigest()
+        label = (label or "query-image.png").strip() or "query-image.png"
+
+        temp_handle = tempfile.NamedTemporaryFile(
+            prefix="hybridscorer-query-",
+            suffix=".png",
+            delete=False,
+        )
+        temp_path = temp_handle.name
+        temp_handle.close()
+        try:
+            with open(temp_path, "wb") as handle:
+                handle.write(image_bytes)
+        except Exception:
+            remove_file_quietly(temp_path)
+            raise
+
+        clear_external_query_state(delete_file=True)
+        state["external_query_path"] = temp_path
+        state["external_query_label"] = label
+        state["external_query_active"] = True
+        state["external_query_signature"] = signature
+        return temp_path, label
+
+    def active_query_image_context():
+        if state.get("external_query_active"):
+            external_path = state.get("external_query_path")
+            if external_path and os.path.isfile(external_path):
+                external_label = state.get("external_query_label") or os.path.basename(external_path)
+                external_sig = state.get("external_query_signature") or external_label
+                return {
+                    "path": external_path,
+                    "label": external_label,
+                    "source_kind": "external",
+                    "source_label": "external query image",
+                    "cache_key": f"external::{external_sig}",
+                    "preview_fname": None,
+                }
+            clear_external_query_state(delete_file=True)
+
+        image_path, preview_fname = get_preview_image_path()
+        if image_path and os.path.isfile(image_path):
+            return {
+                "path": image_path,
+                "label": preview_fname,
+                "source_kind": "gallery",
+                "source_label": "gallery preview",
+                "cache_key": preview_fname,
+                "preview_fname": preview_fname,
+            }
+        return {
+            "path": None,
+            "label": preview_fname,
+            "source_kind": None,
+            "source_label": None,
+            "cache_key": preview_fname,
+            "preview_fname": preview_fname,
+        }
+
+    def active_query_image_widget_update():
+        query_ctx = active_query_image_context()
+        image_path = query_ctx.get("path")
+        source_kind = query_ctx.get("source_kind")
+        source_label = query_ctx.get("label")
+        if source_kind == "external":
+            label = f"Query image - EXTERNAL OVERRIDE: {source_label}"
+        elif source_kind == "gallery" and source_label:
+            label = f"Query image - FOLDER PREVIEW: {source_label}"
+        else:
+            label = "Query image - no active source"
+        if image_path and os.path.isfile(image_path):
+            return gr.update(value=image_path, label=label)
+        return gr.update(value=None, label=label)
+
+    def clear_external_query_button_update():
+        query_ctx = active_query_image_context()
+        external_active = query_ctx.get("source_kind") == "external"
+        return gr.update(
+            interactive=external_active,
+            value="Clear external override" if external_active else "Clear external override",
+        )
+
     def reset_selection_state():
         state["left_marked"] = []
         state["right_marked"] = []
@@ -2999,8 +3131,10 @@ def create_app():
         # Preview-linked search context must be cleared together so Similarity
         # and SamePerson do not leak query labels across mode/folder changes.
         state["similarity_query_fname"] = None
+        state["similarity_query_source"] = None
         state["similarity_model_label"] = None
         state["sameperson_query_fname"] = None
+        state["sameperson_query_source"] = None
         state["sameperson_model_label"] = None
 
     def clear_active_scores():
@@ -3246,6 +3380,88 @@ def create_app():
   const dispatchTextboxEvents = (input) => {{
     input.dispatchEvent(new Event("input", {{ bubbles: true }}));
     input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const externalQueryBridgeInput = () => {{
+    const root = document.getElementById("hy-external-query-bridge");
+    return root ? root.querySelector("input, textarea") : null;
+  }};
+  const externalQueryButtons = () => {{
+    const root = document.getElementById("hy-external-query-image");
+    return root ? Array.from(root.querySelectorAll("button")) : [];
+  }};
+  const externalQueryRemoveButton = () => {{
+    for (const button of externalQueryButtons()) {{
+      const aria = `${{button.getAttribute("aria-label") || ""}} ${{button.title || ""}} ${{button.textContent || ""}}`.toLowerCase();
+      if (aria.includes("remove") || aria.includes("clear")) return button;
+    }}
+    return null;
+  }};
+  const externalQueryClipboardButtons = () => {{
+    return externalQueryButtons().filter((button) => {{
+      const aria = `${{button.getAttribute("aria-label") || ""}} ${{button.title || ""}} ${{button.textContent || ""}}`.toLowerCase();
+      return aria.includes("clipboard") || aria.includes("paste");
+    }});
+  }};
+  const clearExternalQueryWidget = () => {{
+    const button = externalQueryRemoveButton();
+    if (!button) return false;
+    button.click();
+    return true;
+  }};
+  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {{
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read image blob."));
+    reader.readAsDataURL(blob);
+  }});
+  const pushExternalQueryPayload = (payload) => {{
+    const input = externalQueryBridgeInput();
+    if (!input) return false;
+    input.value = JSON.stringify({{ ...payload, ts: Date.now() }});
+    dispatchTextboxEvents(input);
+    return true;
+  }};
+  const replaceExternalQueryFromBlob = async (blob, label) => {{
+    if (!blob) return false;
+    try {{
+      clearExternalQueryWidget();
+      const dataUrl = await blobToDataUrl(blob);
+      return pushExternalQueryPayload({{
+        data_url: dataUrl,
+        label: label || (blob.type && blob.type.includes("png") ? "clipboard-image.png" : "query-image"),
+      }});
+    }} catch (error) {{
+      console.warn("External query image import failed", error);
+      return false;
+    }}
+  }};
+  const clipboardImageBlobFromEvent = (event) => {{
+    const items = Array.from(event?.clipboardData?.items || []);
+    for (const item of items) {{
+      if (item && item.kind === "file" && String(item.type || "").startsWith("image/")) {{
+        return item.getAsFile();
+      }}
+    }}
+    return null;
+  }};
+  const clipboardImageBlobFromNavigator = async () => {{
+    if (!navigator.clipboard || typeof navigator.clipboard.read !== "function") {{
+      throw new Error("Clipboard image read is unavailable in this browser.");
+    }}
+    const items = await navigator.clipboard.read();
+    for (const item of items) {{
+      for (const type of item.types || []) {{
+        if (String(type).startsWith("image/")) {{
+          return await item.getType(type);
+        }}
+      }}
+    }}
+    throw new Error("Clipboard does not currently contain an image.");
+  }};
+  const importExternalQueryFromClipboard = async () => {{
+    const blob = await clipboardImageBlobFromNavigator();
+    const ext = (blob.type || "image/png").split("/")[1] || "png";
+    return replaceExternalQueryFromBlob(blob, `clipboard-image.${{ext}}`);
   }};
   const getPromptRootForElement = (element) => {{
     if (!element || typeof element.closest !== "function") return null;
@@ -4457,6 +4673,7 @@ def create_app():
       if (!root) continue;
       root.title = text;
       root.setAttribute("aria-label", text);
+      if (id === "hy-external-query-image") continue;
       const targets = root.querySelectorAll("button, input, textarea, select, img");
       for (const el of targets) {{
         el.title = text;
@@ -4599,12 +4816,59 @@ def create_app():
     input.addEventListener("change", refresh);
     root.dataset.hyStateHooked = "1";
   }};
+  const hookExternalQueryArea = () => {{
+    const root = document.getElementById("hy-external-query-image");
+    if (!root || root.dataset.hyExternalHooked) return;
+    root.tabIndex = 0;
+    root.addEventListener("paste", async (event) => {{
+      const blob = clipboardImageBlobFromEvent(event);
+      if (!blob) return;
+      event.preventDefault();
+      event.stopPropagation();
+      await replaceExternalQueryFromBlob(blob, blob.name || "clipboard-image.png");
+    }}, true);
+    root.addEventListener("dragover", (event) => {{
+      const dt = event.dataTransfer;
+      const hasImageFile = Array.from(dt?.items || []).some((item) => item.kind === "file" && String(item.type || "").startsWith("image/"));
+      if (!hasImageFile) return;
+      event.preventDefault();
+      if (dt) dt.dropEffect = "copy";
+    }});
+    root.addEventListener("drop", async (event) => {{
+      const files = Array.from(event.dataTransfer?.files || []);
+      const imageFile = files.find((file) => String(file.type || "").startsWith("image/"));
+      if (!imageFile) return;
+      event.preventDefault();
+      event.stopPropagation();
+      await replaceExternalQueryFromBlob(imageFile, imageFile.name || "dropped-image.png");
+    }}, true);
+    root.addEventListener("click", () => {{
+      if (typeof root.focus === "function") root.focus();
+    }});
+    if (!document.body.dataset.hyExternalClipboardDocHooked) {{
+      document.addEventListener("paste", async (event) => {{
+        const queryRoot = document.getElementById("hy-external-query-image");
+        if (!queryRoot) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const isRelevant = !!(target && queryRoot.contains(target)) || queryRoot.matches?.(":hover") || document.activeElement === queryRoot;
+        if (!isRelevant) return;
+        const blob = clipboardImageBlobFromEvent(event);
+        if (!blob) return;
+        event.preventDefault();
+        event.stopPropagation();
+        await replaceExternalQueryFromBlob(blob, blob.name || "clipboard-image.png");
+      }}, true);
+      document.body.dataset.hyExternalClipboardDocHooked = "1";
+    }}
+    root.dataset.hyExternalHooked = "1";
+  }};
   applyTooltips();
   hookMarkState();
   hookModelStatusState();
   hookPromptMatchModelAvailability();
   hookTagMatchAutocomplete();
   hookTagMatchVocabularyState();
+  hookExternalQueryArea();
   hookHistogramResize();
   hookPreviewDialogTracking();
   hookInlinePreviewNavigationLock();
@@ -4636,6 +4900,7 @@ def create_app():
     hookPromptMatchModelAvailability();
     hookTagMatchAutocomplete();
     hookTagMatchVocabularyState();
+    hookExternalQueryArea();
     hookHistogramResize();
     hookPreviewDialogTracking();
     hookInlinePreviewNavigationLock();
@@ -4649,6 +4914,8 @@ def create_app():
     tooltips = {
         "hy-method": "Choose whether to sort by PromptMatch or ImageReward.",
         "hy-folder": "Path to the image folder you want to score. You can paste a full folder path here.",
+        "hy-external-query-image": "This area shows the active query image. It displays the selected folder preview by default, or a dropped, pasted, or uploaded custom image when one overrides the preview.",
+        "hy-clear-external-query": "Clear the external query image and fall back to the gallery preview.",
         "hy-load-folder": "Load the current folder into unscored browse mode and prepare proxies for faster gallery display.",
         "hy-model": "Choose the PromptMatch model. Cached models are shown in green text, and models that still need a first download are shown in amber.",
         "hy-llm-model": "Choose the PromptMatch model used for the fast shortlist stage before the vision-LLM rerank pass. Cached models are shown in green text, and models that still need a first download are shown in amber.",
@@ -4662,10 +4929,11 @@ def create_app():
         "hy-ir-weight": "How strongly the penalty prompt should reduce the final ImageReward score.",
         "hy-tagmatch-tags": "Comma-separated booru-style tags for TagMatch. Start typing to get live vocabulary suggestions, then use arrow keys plus Enter/Tab or click a suggestion.",
         "hy-run-llm": "Run hybrid image search: PromptMatch first shortlists likely matches, then the local vision-language backend reranks the top candidates.",
-        "hy-prompt-generator": "Choose which caption model should draft the prompt from the preview image. Cached backends are shown in green text, and backends that still need a first download are shown in amber. The Huihui Gemma 4 option is less filtered and may produce less-filtered text.",
-        "hy-generate-prompt": "Use the currently previewed image to draft an editable prompt with the selected caption backend.",
-        "hy-find-similar": "Use the currently previewed image as the query and rank the current folder by visual similarity with the active PromptMatch model.",
-        "hy-generated-prompt": "Editable scratch prompt generated from the previewed image. You can tweak it before scoring or reinsert it into the active method.",
+        "hy-prompt-generator": "Choose which caption model should draft the prompt from the active query image. Cached backends are shown in green text, and backends that still need a first download are shown in amber. The Huihui Gemma 4 option is less filtered and may produce less-filtered text.",
+        "hy-generate-prompt": "Use the active query image to draft an editable prompt with the selected caption backend.",
+        "hy-find-similar": "Use the active query image and rank the current folder by visual similarity with the active PromptMatch model.",
+        "hy-find-same-person": "Use the active query image and rank the current folder by face identity similarity with InsightFace.",
+        "hy-generated-prompt": "Editable scratch prompt generated from the active query image. You can tweak it before scoring or reinsert it into the active method.",
         "hy-generated-prompt-detail": "Choose whether the caption backend should describe only the core facts, a balanced amount of detail, or the full detailed prompt.",
         "hy-insert-prompt": "Copy the editable generated prompt back into the active method's main prompt field.",
         "hy-promptgen-status": "Small status readout for prompt generation.",
@@ -5490,7 +5758,7 @@ def create_app():
             state["left_marked"] = []
             state["right_marked"] = []
             state["hist_geom"] = None
-            status = state.get("browse_status") or "Unscored browse mode. Preview an image to search or generate a prompt."
+            status = state.get("browse_status") or "Unscored browse mode. Preview a gallery image or use the external query image to search or generate a prompt."
             return (
                 f"**UNSCORED**  •  **{len(browse_items)} images**",
                 gallery_update(gallery_display_items(browse_items), columns=zoom_columns),
@@ -5498,12 +5766,14 @@ def create_app():
                 gallery_update([], columns=zoom_columns),
                 status,
                 None,
-                "Unscored browse mode. Preview an image to search or generate a prompt.",
+                "Unscored browse mode. Preview a gallery image or use the external query image to search or generate a prompt.",
                 json.dumps({
                     **json.loads(marked_state_json(left_names)),
                     "left_order": left_order,
                     "right_order": [],
                 }),
+                active_query_image_widget_update(),
+                clear_external_query_button_update(),
             )
 
         main_threshold, aux_threshold = normalize_threshold_inputs(
@@ -5529,10 +5799,12 @@ def create_app():
             status = f"LLM rerank via {backend_label}  •  {status}"
         if state["method"] == METHOD_SIMILARITY and state.get("similarity_query_fname"):
             model_label = state.get("similarity_model_label") or "PromptMatch model"
-            status = f"Similarity from {state['similarity_query_fname']} via {model_label}  •  {status}"
+            query_source = state.get("similarity_query_source") or "gallery preview"
+            status = f"Similarity from {query_source} ({state['similarity_query_fname']}) via {model_label}  •  {status}"
         elif state["method"] == METHOD_SAMEPERSON and state.get("sameperson_query_fname"):
             model_label = state.get("sameperson_model_label") or FACE_MODEL_LABEL
-            status = f"Same person from {state['sameperson_query_fname']} via {model_label}  •  {status}"
+            query_source = state.get("sameperson_query_source") or "gallery preview"
+            status = f"Same person from {query_source} ({state['sameperson_query_fname']}) via {model_label}  •  {status}"
         return (
             f"**{len(left_items)} images**",
             gallery_update(gallery_display_items(left_items), columns=zoom_columns),
@@ -5546,6 +5818,8 @@ def create_app():
                 "left_order": left_order,
                 "right_order": right_order,
             }),
+            active_query_image_widget_update(),
+            clear_external_query_button_update(),
         )
 
     def get_preview_image_path():
@@ -5562,15 +5836,15 @@ def create_app():
             return None, preview_fname
         return item.get("path"), preview_fname
 
-    def generated_prompt_variants_for(preview_fname, generator_name, create=False):
-        if not preview_fname:
+    def generated_prompt_variants_for(query_cache_key, generator_name, create=False):
+        if not query_cache_key:
             return {}
-        preview_bucket = state["generated_prompt_variants"].get(preview_fname)
+        preview_bucket = state["generated_prompt_variants"].get(query_cache_key)
         if preview_bucket is None:
             if not create:
                 return {}
             preview_bucket = {}
-            state["generated_prompt_variants"][preview_fname] = preview_bucket
+            state["generated_prompt_variants"][query_cache_key] = preview_bucket
         backend_bucket = preview_bucket.get(generator_name)
         if backend_bucket is None:
             if not create:
@@ -5583,16 +5857,16 @@ def create_app():
         detail_level, detail_label, _ = prompt_generator_detail_config(generator_name, detail_level)
         state["prompt_generator"] = generator_name
         state["generated_prompt_detail"] = detail_level
-        _, preview_fname = get_preview_image_path()
-        if not preview_fname:
-            preview_fname = state.get("generated_prompt_source")
-        prompt_text = generated_prompt_variants_for(preview_fname, generator_name).get(detail_level)
+        query_ctx = active_query_image_context()
+        query_key = query_ctx.get("cache_key")
+        query_label = query_ctx.get("label") or state.get("generated_prompt_source")
+        prompt_text = generated_prompt_variants_for(query_key, generator_name).get(detail_level)
         if prompt_text:
             state["generated_prompt"] = prompt_text
-            state["generated_prompt_source"] = preview_fname
+            state["generated_prompt_source"] = query_label
             state["generated_prompt_backend"] = generator_name
             state["generated_prompt_status"] = (
-                f"Showing cached {detail_label.lower()} prompt for {preview_fname} via {generator_name}."
+                f"Showing cached {detail_label.lower()} prompt for {query_label} via {generator_name}."
                 f"{prompt_backend_warning_text(generator_name)}"
             )
             return (
@@ -5600,16 +5874,16 @@ def create_app():
                 gr.update(value=prompt_text),
             )
 
-        if preview_fname:
+        if query_label:
             state["generated_prompt_status"] = (
-                f"{generator_name} {detail_label.lower()} prompt is not cached for {preview_fname}. Click generate to create it."
+                f"{generator_name} {detail_label.lower()} prompt is not cached for {query_label}. Click generate to create it."
             )
             return (
                 gr.update(value=state["generated_prompt_status"]),
                 gr.update(value=current_generated_prompt),
             )
 
-        state["generated_prompt_status"] = "Preview an image, then generate a prompt from it."
+        state["generated_prompt_status"] = "Preview, drop, paste, or upload an image, then generate a prompt from it."
         return (
             gr.update(value=state["generated_prompt_status"]),
             gr.update(value=current_generated_prompt),
@@ -6404,6 +6678,8 @@ def create_app():
                 view[5],
                 view[6],
                 view[7],
+                view[8],
+                view[9],
             ),
             gr.update(),
             gr.update(),
@@ -6426,6 +6702,8 @@ def create_app():
             None,
             selection_info(),
             marked_state_json(),
+            active_query_image_widget_update(),
+            clear_external_query_button_update(),
             ),
             main_upd,
             aux_upd,
@@ -6476,7 +6754,7 @@ def create_app():
         set_browse_folder_state(
             folder,
             browse_items,
-            f"Browse mode for {folder}. {len(image_paths)} images loaded. Preview an image to search or generate a prompt.",
+            f"Browse mode for {folder}. {len(image_paths)} images loaded. Preview a gallery image or use the external query image to search or generate a prompt.",
         )
         return (*render_view_with_controls(main_threshold, aux_threshold),)
 
@@ -6651,6 +6929,15 @@ def create_app():
             list(state.get("pm_cached_failed_paths") or []),
         )
 
+    def encode_single_promptmatch_image(query_path):
+        loaded_items, pil_imgs = load_promptmatch_rgb_images([(query_path, query_path)])
+        if not loaded_items or not pil_imgs:
+            raise RuntimeError(f"{os.path.basename(query_path)} could not be loaded for similarity search.")
+        features = state["backend"].encode_images_batch(pil_imgs)
+        if features is None or not hasattr(features, "shape") or int(features.shape[0]) < 1:
+            raise RuntimeError(f"{os.path.basename(query_path)} could not be encoded for similarity search.")
+        return features[0:1].detach().float().cpu()
+
     def choose_primary_face(faces):
         if not faces:
             return None
@@ -6768,20 +7055,44 @@ def create_app():
         )
         return image_signature, feature_paths, embedding_tensor, failures
 
-    def score_similarity_cached_features(feature_paths, image_features, failed_paths, query_path):
+    def encode_single_face_embedding(query_path, progress):
+        backend = ensure_face_backend_loaded(progress)
+        try:
+            with Image.open(query_path) as src_img:
+                rgb = src_img.convert("RGB")
+                bgr = np.asarray(rgb)[:, :, ::-1].copy()
+        except Exception as exc:
+            raise RuntimeError(f"{os.path.basename(query_path)} could not be opened for same-person search: {exc}") from exc
+
+        primary_face = choose_primary_face(backend.get(bgr))
+        if primary_face is None:
+            raise RuntimeError(f"{os.path.basename(query_path)}: No face detected.")
+
+        embedding = getattr(primary_face, "normed_embedding", None)
+        if embedding is None:
+            raw_embedding = getattr(primary_face, "embedding", None)
+            if raw_embedding is None:
+                raise RuntimeError(f"{os.path.basename(query_path)}: No face embedding returned.")
+            embedding = F.normalize(torch.as_tensor(raw_embedding, dtype=torch.float32), dim=0).cpu().numpy()
+
+        return F.normalize(torch.as_tensor(embedding, dtype=torch.float32), dim=0).view(1, -1)
+
+    def score_similarity_cached_features(feature_paths, image_features, failed_paths, query_path, query_feature=None):
         if not feature_paths or image_features is None or image_features.numel() == 0:
             raise RuntimeError("No PromptMatch image embeddings are available for similarity search.")
-        if query_path in failed_paths:
-            raise RuntimeError(f"{os.path.basename(query_path)} could not be encoded for similarity search.")
-        try:
-            query_index = feature_paths.index(query_path)
-        except ValueError as exc:
-            raise RuntimeError(f"{os.path.basename(query_path)} is missing from the cached PromptMatch embeddings.") from exc
+        if query_feature is None:
+            if query_path in failed_paths:
+                raise RuntimeError(f"{os.path.basename(query_path)} could not be encoded for similarity search.")
+            try:
+                query_index = feature_paths.index(query_path)
+            except ValueError as exc:
+                raise RuntimeError(f"{os.path.basename(query_path)} is missing from the cached PromptMatch embeddings.") from exc
+            query_feature = image_features[query_index:query_index + 1]
+        else:
+            query_feature = query_feature.detach().float().cpu()
 
         results = {}
-        query_feature = image_features[query_index:query_index + 1]
         sims = (image_features @ query_feature.T).squeeze(1).tolist()
-        query_fname = os.path.basename(query_path)
         for original_path, score in zip(feature_paths, sims):
             fname = os.path.basename(original_path)
             results[fname] = {
@@ -6789,7 +7100,7 @@ def create_app():
                 "neg": None,
                 "path": original_path,
                 "failed": False,
-                "query": fname == query_fname,
+                "query": original_path == query_path,
             }
 
         for original_path in failed_paths:
@@ -6799,24 +7110,26 @@ def create_app():
                 "neg": None,
                 "path": original_path,
                 "failed": True,
-                "query": fname == query_fname,
+                "query": original_path == query_path,
             }
         return results
 
-    def score_sameperson_cached_features(feature_paths, face_embeddings, failures, query_path):
+    def score_sameperson_cached_features(feature_paths, face_embeddings, failures, query_path, query_embedding=None):
         if not feature_paths or face_embeddings is None or face_embeddings.numel() == 0:
             raise RuntimeError("No face embeddings are available for same-person search.")
-        if query_path in failures:
-            raise RuntimeError(f"{os.path.basename(query_path)}: {failures[query_path]}")
-        try:
-            query_index = feature_paths.index(query_path)
-        except ValueError as exc:
-            raise RuntimeError(f"{os.path.basename(query_path)} is missing from the cached face embeddings.") from exc
+        if query_embedding is None:
+            if query_path in failures:
+                raise RuntimeError(f"{os.path.basename(query_path)}: {failures[query_path]}")
+            try:
+                query_index = feature_paths.index(query_path)
+            except ValueError as exc:
+                raise RuntimeError(f"{os.path.basename(query_path)} is missing from the cached face embeddings.") from exc
+            query_embedding = face_embeddings[query_index:query_index + 1]
+        else:
+            query_embedding = F.normalize(query_embedding.detach().float().cpu(), dim=1)
 
         results = {}
-        query_embedding = face_embeddings[query_index:query_index + 1]
         sims = (face_embeddings @ query_embedding.T).squeeze(1).tolist()
-        query_fname = os.path.basename(query_path)
         for original_path, score in zip(feature_paths, sims):
             fname = os.path.basename(original_path)
             results[fname] = {
@@ -6824,7 +7137,7 @@ def create_app():
                 "neg": None,
                 "path": original_path,
                 "failed": False,
-                "query": fname == query_fname,
+                "query": original_path == query_path,
             }
 
         for failed_path, reason in failures.items():
@@ -6834,7 +7147,7 @@ def create_app():
                 "neg": None,
                 "path": failed_path,
                 "failed": True,
-                "query": fname == query_fname,
+                "query": failed_path == query_path,
                 "reason": reason,
             }
         return results
@@ -6882,9 +7195,8 @@ def create_app():
         return ctx, None
 
     def render_scored_mode_result(method, next_main, next_aux, main_upd, aux_upd, percentile_upd, percentile_mid_upd):
-        left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state = current_view(next_main, next_aux)
         return build_scored_callback_result(
-            (left_head, left_gallery, right_head, right_gallery, status, hist, sel_info, mark_state),
+            current_view(next_main, next_aux),
             main_upd,
             aux_upd,
             percentile_upd,
@@ -6900,13 +7212,19 @@ def create_app():
         if not image_paths:
             return None, f"No images found in {folder}"
 
-        _, preview_fname = get_preview_image_path()
-        if not preview_fname:
+        query_ctx = active_query_image_context()
+        query_path = query_ctx.get("path")
+        query_label = query_ctx.get("label")
+        query_source = query_ctx.get("source_label")
+        preview_fname = query_ctx.get("preview_fname")
+        if not query_path:
             return None, preview_missing_message
 
         folder_name_map = {os.path.basename(path): path for path in image_paths}
-        query_path = folder_name_map.get(preview_fname)
-        if not query_path:
+        query_in_folder = query_ctx.get("source_kind") == "gallery"
+        if query_in_folder:
+            query_path = folder_name_map.get(preview_fname)
+        if query_in_folder and not query_path:
             return None, preview_not_in_folder_template.format(preview_fname=preview_fname)
 
         folder_key = normalize_folder_identity(folder)
@@ -6915,6 +7233,9 @@ def create_app():
             "folder_key": folder_key,
             "image_paths": image_paths,
             "query_path": query_path,
+            "query_label": query_label or preview_fname,
+            "query_source": query_source,
+            "query_in_folder": query_in_folder,
             "preview_fname": preview_fname,
             "preserved_overrides": preserve_overrides_for_folder_key(folder_key, set(folder_name_map.keys())),
         }, None
@@ -7217,7 +7538,7 @@ def create_app():
         recalled_main, _, has_recalled = recalled_mode_thresholds(METHOD_SIMILARITY, main_threshold, aux_threshold)
         request_ctx, request_error = normalize_preview_search_request(
             folder,
-            "Select a preview image first, then find similar images.",
+            "Select, drop, paste, or upload a query image first, then find similar images.",
             "{preview_fname} is not part of the current folder, so similarity search cannot run.",
         )
         if request_error:
@@ -7225,7 +7546,9 @@ def create_app():
         folder = request_ctx["folder"]
         image_paths = request_ctx["image_paths"]
         query_path = request_ctx["query_path"]
-        preview_fname = request_ctx["preview_fname"]
+        query_label = request_ctx["query_label"]
+        query_source = request_ctx["query_source"] or "gallery preview"
+        query_in_folder = request_ctx["query_in_folder"]
         preserved_overrides = request_ctx["preserved_overrides"]
 
         release_inactive_gpu_models(METHOD_SIMILARITY)
@@ -7245,6 +7568,7 @@ def create_app():
                 image_features,
                 failed_paths,
                 query_path,
+                query_feature=None if query_in_folder else encode_single_promptmatch_image(query_path),
             )
         except Exception as exc:
             message = f"Similarity search failed: {exc}"
@@ -7259,9 +7583,11 @@ def create_app():
         state["scores"] = similarity_scores
         state["overrides"] = preserved_overrides
         reset_selection_state()
-        state["preview_fname"] = preview_fname
+        if query_in_folder:
+            state["preview_fname"] = request_ctx["preview_fname"]
         clear_preview_search_context()
-        state["similarity_query_fname"] = preview_fname
+        state["similarity_query_fname"] = query_label
+        state["similarity_query_source"] = query_source
         state["similarity_model_label"] = model_label
 
         pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
@@ -7270,7 +7596,7 @@ def create_app():
         next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
-        status_text = f"Similarity search using {model_label} from {preview_fname}."
+        status_text = f"Similarity search using {model_label} from {query_source} ({query_label})."
         score_outputs = render_scored_mode_result(
             METHOD_SIMILARITY,
             next_main,
@@ -7298,7 +7624,7 @@ def create_app():
         recalled_main, _, has_recalled = recalled_mode_thresholds(METHOD_SAMEPERSON, main_threshold, aux_threshold)
         request_ctx, request_error = normalize_preview_search_request(
             folder,
-            "Select a preview image first, then find the same person.",
+            "Select, drop, paste, or upload a query image first, then find the same person.",
             "{preview_fname} is not part of the current folder, so same-person search cannot run.",
         )
         if request_error:
@@ -7306,7 +7632,9 @@ def create_app():
         folder = request_ctx["folder"]
         image_paths = request_ctx["image_paths"]
         query_path = request_ctx["query_path"]
-        preview_fname = request_ctx["preview_fname"]
+        query_label = request_ctx["query_label"]
+        query_source = request_ctx["query_source"] or "gallery preview"
+        query_in_folder = request_ctx["query_in_folder"]
         preserved_overrides = request_ctx["preserved_overrides"]
 
         release_inactive_gpu_models(METHOD_SAMEPERSON)
@@ -7318,6 +7646,7 @@ def create_app():
                 face_embeddings,
                 failures,
                 query_path,
+                query_embedding=None if query_in_folder else encode_single_face_embedding(query_path, progress),
             )
         except Exception as exc:
             message = f"Same-person search failed: {exc}"
@@ -7332,9 +7661,11 @@ def create_app():
         state["scores"] = sameperson_scores
         state["overrides"] = preserved_overrides
         reset_selection_state()
-        state["preview_fname"] = preview_fname
+        if query_in_folder:
+            state["preview_fname"] = request_ctx["preview_fname"]
         clear_preview_search_context()
-        state["sameperson_query_fname"] = preview_fname
+        state["sameperson_query_fname"] = query_label
+        state["sameperson_query_source"] = query_source
         state["sameperson_model_label"] = FACE_MODEL_LABEL
 
         pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
@@ -7343,7 +7674,7 @@ def create_app():
         next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
         safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
         safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
-        status_text = f"Same-person search using {FACE_MODEL_LABEL} from {preview_fname}."
+        status_text = f"Same-person search using {FACE_MODEL_LABEL} from {query_source} ({query_label})."
         score_outputs = render_scored_mode_result(
             METHOD_SAMEPERSON,
             next_main,
@@ -7412,20 +7743,96 @@ def create_app():
     def update_generated_prompt_detail(generator_name, detail_level, current_generated_prompt):
         return select_cached_generated_prompt(generator_name, detail_level, current_generated_prompt)
 
+    def external_query_prompt_status():
+        query_ctx = active_query_image_context()
+        if query_ctx["source_kind"] == "external":
+            return (
+                f"External query image ready: {query_ctx['label']}. "
+                "Click Prompt from image, Find similar images, or Find same person."
+            )
+        if query_ctx["source_kind"] == "gallery" and query_ctx["label"]:
+            return f"Using gallery preview {query_ctx['label']} for preview actions."
+        return "Preview, drop, paste, or upload an image, then generate a prompt from it."
+
+    def set_external_query_image(image_path):
+        if not image_path:
+            clear_external_query_state(delete_file=True)
+            return (
+                active_query_image_widget_update(),
+                clear_external_query_button_update(),
+                gr.update(value=external_query_prompt_status()),
+            )
+        try:
+            save_external_query_image(image_path)
+        except Exception as exc:
+            return (
+                gr.update(value=None),
+                clear_external_query_button_update(),
+                gr.update(value=f"External query image failed: {exc}"),
+            )
+        return (
+            active_query_image_widget_update(),
+            clear_external_query_button_update(),
+            gr.update(value=external_query_prompt_status()),
+        )
+
+    def set_external_query_from_bridge(payload):
+        payload = (payload or "").strip()
+        if not payload:
+            return (
+                active_query_image_widget_update(),
+                clear_external_query_button_update(),
+                gr.update(value=external_query_prompt_status()),
+                gr.update(value=""),
+            )
+        try:
+            parsed = json.loads(payload)
+            data_url = str(parsed.get("data_url") or "")
+            label = str(parsed.get("label") or "clipboard-image.png")
+            if not data_url.startswith("data:image/"):
+                raise ValueError("Unsupported clipboard image payload.")
+            _, encoded = data_url.split(",", 1)
+            image_bytes = base64.b64decode(encoded, validate=True)
+            save_external_query_image_bytes(image_bytes, label)
+        except Exception as exc:
+            return (
+                gr.update(value=None),
+                clear_external_query_button_update(),
+                gr.update(value=f"External query image failed: {exc}"),
+                gr.update(value=""),
+            )
+        return (
+            active_query_image_widget_update(),
+            clear_external_query_button_update(),
+            gr.update(value=external_query_prompt_status()),
+            gr.update(value=""),
+        )
+
+    def clear_external_query_image():
+        clear_external_query_state(delete_file=True)
+        return (
+            active_query_image_widget_update(),
+            clear_external_query_button_update(),
+            gr.update(value=external_query_prompt_status()),
+        )
+
     def generate_prompt_from_preview(generator_name, current_generated_prompt, detail_level, progress=gr.Progress()):
         detail_level, detail_label, _ = prompt_generator_detail_config(generator_name, detail_level)
         state["prompt_generator"] = generator_name
         state["generated_prompt_detail"] = detail_level
-        image_path, preview_fname = get_preview_image_path()
+        query_ctx = active_query_image_context()
+        image_path = query_ctx.get("path")
+        preview_fname = query_ctx.get("label")
+        query_key = query_ctx.get("cache_key")
         if not image_path or not os.path.isfile(image_path):
-            state["generated_prompt_status"] = "Select a preview image first, then generate a prompt."
+            state["generated_prompt_status"] = "Select or drop a query image first, then generate a prompt."
             return (
                 gr.update(value=state["generated_prompt_status"]),
                 gr.update(value=current_generated_prompt),
                 gr.update(),
             )
 
-        variants = generated_prompt_variants_for(preview_fname, generator_name, create=True)
+        variants = generated_prompt_variants_for(query_key, generator_name, create=True)
         if all(level in variants and variants[level] for level in (1, 2, 3)):
             cached_prompt = variants.get(detail_level)
             state["generated_prompt"] = cached_prompt
@@ -7543,29 +7950,31 @@ def create_app():
 
     def handle_thumb_action(action, main_threshold, aux_threshold):
         # Custom JS reports preview clicks, shift-click bulk marking, and drag-drop moves.
-        noop = (
-            gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-            gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-        )
+        def thumb_noop(query_source_update=None):
+            outputs = [gr.skip()] * 19
+            if query_source_update is not None:
+                outputs[8] = query_source_update
+            return tuple(outputs)
+
         with_slider_skips = lambda view: (*view, gr.skip(), gr.skip())
         if not action:
-            return noop
+            return thumb_noop()
         if str(action).startswith("previewfname:"):
             try:
                 _, fname, _ = str(action).split(":", 2)
             except Exception:
-                return noop
+                return thumb_noop()
             visible_names = {os.path.basename(path) for path, _ in state.get("browse_items", [])}
             if fname and (fname in state.get("scores", {}) or fname in visible_names):
                 state["preview_fname"] = fname
-            return noop
+            return thumb_noop(active_query_image_widget_update())
         if str(action).startswith("dialogactionjson:"):
             try:
                 payload = json.loads(str(action)[17:])
                 action_id = str(payload.get("action", "") or "")
                 fname = str(payload.get("fname", "") or "")
             except Exception:
-                return noop
+                return thumb_noop()
             visible_names = {os.path.basename(path) for path, _ in state.get("browse_items", [])}
             if fname and (fname in state.get("scores", {}) or fname in visible_names):
                 state["preview_fname"] = fname
@@ -7575,7 +7984,7 @@ def create_app():
                 return with_slider_skips(move_left(main_threshold, aux_threshold, preview_override=fname))
             if action_id == "hy-fit-threshold":
                 return fit_threshold_to_targets(main_threshold, aux_threshold, preview_override=fname)
-            return noop
+            return thumb_noop(active_query_image_widget_update())
         if str(action).startswith("dropjson:"):
             try:
                 payload = json.loads(str(action)[9:])
@@ -7584,7 +7993,7 @@ def create_app():
                 target_side = payload["target_side"]
                 drop_fnames = [str(name) for name in payload.get("fnames", []) if str(name)]
             except Exception:
-                return noop
+                return thumb_noop()
             left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
             items = left_items if side == "left" else right_items
             if 0 <= index < len(items) and target_side in ("left", "right") and target_side != side:
@@ -7614,16 +8023,16 @@ def create_app():
             _, side, raw_index, _ = parts
             index = int(raw_index)
         except Exception:
-            return noop
+            return thumb_noop()
         items = left_items if side == "left" else right_items
         if 0 <= index < len(items):
             fname = os.path.basename(items[index][0])
             if verb == "preview":
                 state["preview_fname"] = fname
-                return noop
+                return thumb_noop(active_query_image_widget_update())
             if is_browse_mode():
                 state["preview_fname"] = fname
-                return noop
+                return thumb_noop(active_query_image_widget_update())
             else:
                 marked_key = "left_marked" if side == "left" else "right_marked"
                 if fname in state[marked_key]:
@@ -8096,6 +8505,34 @@ def create_app():
         margin-top:4px !important;
         padding-top:4px !important;
         border-top:1px solid rgba(88, 199, 214, 0.22) !important;
+    }
+    .query-source-status {
+        margin-top:4px !important;
+        margin-bottom:4px !important;
+        padding:8px 10px !important;
+        border:1px solid rgba(88, 199, 214, 0.24) !important;
+        border-radius:8px !important;
+        background:linear-gradient(180deg, rgba(16, 23, 30, 0.96), rgba(10, 14, 22, 0.98)) !important;
+    }
+    .query-source-status p {
+        margin:0 !important;
+        font-family:monospace !important;
+        font-size:.76rem !important;
+        line-height:1.35 !important;
+        color:#9fd5ff !important;
+    }
+    .external-query-note p {
+        color:#b6c7d8 !important;
+    }
+    .external-query-image {
+        border:1px dashed rgba(142, 197, 255, 0.35) !important;
+        border-radius:10px !important;
+        overflow:hidden !important;
+        background:linear-gradient(180deg, rgba(14, 18, 28, 0.96), rgba(8, 11, 18, 0.98)) !important;
+    }
+    .external-query-image img {
+        object-fit:contain !important;
+        background:radial-gradient(circle at top, rgba(64, 93, 122, 0.28), rgba(9, 12, 18, 0.96)) !important;
     }
     .status-md p { font-family:monospace !important; color:#9fc27c !important; }
     .hist-img, .hist-img > div { width:100% !important; max-width:100% !important; }
@@ -8629,6 +9066,7 @@ def create_app():
                 thumb_action = gr.Textbox(value="", visible="hidden", elem_id="hy-thumb-action")
                 hist_width_tb = gr.Textbox(value="300", visible="hidden", elem_id="hy-hist-width")
                 shortcut_action = gr.Textbox(value="", visible="hidden", elem_id="hy-shortcut-action")
+                external_query_bridge = gr.Textbox(value="", visible="hidden", elem_id="hy-external-query-bridge")
                 mark_state = gr.Textbox(value='{"left":[],"right":[]}', visible="hidden", elem_id="hy-mark-state")
                 model_status_state = gr.Textbox(value=promptmatch_model_status_json(), visible="hidden", elem_id="hy-model-status")
                 tagmatch_vocab_state = gr.Textbox(value="[]", visible="hidden", elem_id="hy-tagmatch-vocab")
@@ -8723,7 +9161,24 @@ def create_app():
                             )
                             tagmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-tagmatch", variant="primary")
 
-                    with gr.Accordion("3. Actions from preview image", open=False, elem_id="hy-acc-prompt"):
+                    with gr.Accordion("3. Search from image", open=False, elem_id="hy-acc-prompt"):
+                        external_query_image = gr.Image(
+                            value=None,
+                            sources=["upload"],
+                            type="filepath",
+                            image_mode="RGB",
+                            label="Query image",
+                            height=210,
+                            interactive=True,
+                            placeholder="Drop, paste, or upload an image here. If you preview an image from the folder, it will show here too.",
+                            elem_id="hy-external-query-image",
+                            elem_classes=["external-query-image"],
+                        )
+                        clear_external_query_btn = gr.Button(
+                            "Clear external override",
+                            elem_id="hy-clear-external-query",
+                            interactive=False,
+                        )
                         with gr.Column(elem_classes=["preview-action-stack"]):
                             find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
                             find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
@@ -8745,7 +9200,7 @@ def create_app():
                                 value=state["generated_prompt"],
                                 label="Generated prompt",
                                 lines=4,
-                                placeholder="Preview an image, then generate an editable prompt here.",
+                                placeholder="Preview, drop, paste, or upload an image, then generate an editable prompt here.",
                                 elem_id="hy-generated-prompt",
                             )
                             generated_prompt_detail_slider = gr.Slider(
@@ -8887,11 +9342,11 @@ def create_app():
         )
 
         _score_folder_inputs = [method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, pm_segment_cb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb]
-        _score_folder_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
+        _score_folder_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
         assert len(_score_folder_outputs) == len(SCORE_FOLDER_OUTPUT_KEYS), "score-folder output wiring drifted"
         _preview_search_outputs = [promptgen_status_md, *_score_folder_outputs]
         assert len(_preview_search_outputs) == len(PREVIEW_SEARCH_OUTPUT_KEYS), "preview-search output wiring drifted"
-        _view_with_controls_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
+        _view_with_controls_outputs = [left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col]
         assert len(_view_with_controls_outputs) == len(VIEW_WITH_CONTROLS_OUTPUT_KEYS), "view-with-controls output wiring drifted"
 
         promptmatch_run_btn.click(fn=score_folder, inputs=_score_folder_inputs, outputs=_score_folder_outputs)
@@ -8907,6 +9362,20 @@ def create_app():
             fn=load_folder_for_browse,
             inputs=[folder_input, main_slider, aux_slider],
             outputs=_view_with_controls_outputs,
+        )
+        external_query_image.upload(
+            fn=set_external_query_image,
+            inputs=[external_query_image],
+            outputs=[external_query_image, clear_external_query_btn, promptgen_status_md],
+        )
+        external_query_bridge.change(
+            fn=set_external_query_from_bridge,
+            inputs=[external_query_bridge],
+            outputs=[external_query_image, clear_external_query_btn, promptgen_status_md, external_query_bridge],
+        )
+        clear_external_query_btn.click(
+            fn=clear_external_query_image,
+            outputs=[external_query_image, clear_external_query_btn, promptgen_status_md],
         )
         prompt_generator_dd.change(
             fn=update_prompt_generator,
@@ -8952,23 +9421,23 @@ def create_app():
         percentile_slider.release(
             fn=set_from_percentile,
             inputs=[percentile_slider, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider],
             queue=False,
         )
         main_mid_btn.click(
             fn=reset_main_threshold_to_middle,
             inputs=[main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         aux_mid_btn.click(
             fn=reset_aux_threshold_to_middle,
             inputs=[main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         percentile_mid_btn.click(
             fn=reset_percentile_to_middle,
             inputs=[main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, percentile_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, percentile_slider],
         )
         zoom_slider.change(
             fn=update_zoom,
@@ -8983,12 +9452,12 @@ def create_app():
         ir_penalty_weight_tb.change(
             fn=update_imagereward_penalty_weight,
             inputs=[ir_penalty_weight_tb, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         shortcut_action.change(
             fn=handle_shortcut_action,
             inputs=[shortcut_action, method_dd, folder_input, model_dd, pos_prompt_tb, neg_prompt_tb, pm_segment_cb, ir_prompt_tb, ir_negative_prompt_tb, ir_penalty_weight_tb, llm_model_dd, llm_prompt_tb, llm_backend_dd, llm_shortlist_slider, tagmatch_tags_tb, main_slider, aux_slider, keep_pm_thresholds_cb, keep_ir_thresholds_cb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, main_slider, aux_slider, percentile_slider, percentile_mid_btn, model_status_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
         model_status_state.change(
             fn=refresh_promptmatch_model_dropdown,
@@ -9004,19 +9473,19 @@ def create_app():
         thumb_action.change(
             fn=handle_thumb_action,
             inputs=[thumb_action, main_slider, aux_slider],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider],
         )
         move_right_btn.click(fn=move_right, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
-        fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
+        fit_threshold_btn.click(fn=fit_threshold_to_targets, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
         pin_selected_btn.click(fn=pin_selected, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
         move_left_btn.click(fn=move_left, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
         clear_status_btn.click(fn=clear_status, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
         clear_all_status_btn.click(fn=clear_all_status, inputs=[main_slider, aux_slider], outputs=_view_with_controls_outputs)
-        hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
+        hist_plot.select(fn=on_hist_click, inputs=[main_slider, aux_slider], outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, main_slider, aux_slider])
         export_btn.click(
             fn=export_files,
             inputs=[main_slider, aux_slider, left_export_cb, right_export_cb, move_export_cb, left_export_name_tb, right_export_name_tb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, export_tb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, export_tb],
         )
 
     return demo, css, tooltip_head(tooltips)

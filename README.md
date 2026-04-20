@@ -19,7 +19,7 @@ Working modes in the current app:
 
 Everything in the app is built around the same fast loop:
 
-- generate a prompt from any preview image and feed it straight into scoring
+- generate a prompt from any preview image or temporary external query image and feed it straight into scoring
 - export your kept images by copy or by move
 - the histogram shows you exactly where the threshold cuts, so you keep control
 - re-scoring reuses cached results — switching prompts or tweaking the threshold is near-instant
@@ -102,7 +102,9 @@ If `torch.cuda.is_available()` is false, the setup scripts fail intentionally.
 
 ## Prompt Generation
 
-Prompt generation works from the currently previewed image.
+Prompt generation works from the active query image:
+- external query image first if you dropped, pasted, or uploaded one in the sidebar
+- otherwise the currently previewed gallery image
 
 Current prompt generators:
 
