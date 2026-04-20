@@ -1,5 +1,25 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.3.8 - Cleaner Sidebar & Threshold Panel
+
+**Smarter Sidebar**
+- Opening any sidebar section now automatically closes all others — no more hunting through several open panels at once
+- Only **Setup** is open when the app first loads; everything else starts collapsed
+
+**Thresholds Always Visible**
+- The Thresholds panel is no longer a collapsible accordion — it is permanently pinned to the bottom of the sidebar so your sliders and histogram are always one glance away
+- Export is now section 4 (previously 5)
+
+**Changelog Overlay**
+- Click the version number in the top-right corner to open a changelog popup
+- Close it with ✕, click outside, or press Escape
+
+**Cleaner Controls**
+- Removed the 50% reset buttons next to the sliders; sliders now take the full width of the panel
+- Positive prompt box is now twice as tall so longer prompts are easier to read and edit
+- Removed the export result text field — it was redundant
+- Hidden the prompt-generation status message that was left overlaid on the image section
+
 ## Version 2.3.3 - Easier Windows Setup & Clearer Startup
 
 **Faster, Clearer App Startup**

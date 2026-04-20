@@ -56,6 +56,17 @@ UI behavior is callback-driven. Some behavior lives in injected JS, not Python. 
 - On Linux (system mode), proxy thumbnails go to `/dev/shm` (RAM-backed tmpfs) with fallback to `tempfile.gettempdir()`
 - `get_cache_config()` is `@lru_cache(maxsize=1)` — runs once per session
 
+### Sidebar layout
+The sidebar has four collapsible accordion sections (mutually exclusive — opening one closes all others; only **1. Setup** is open on first load):
+- `#hy-acc-setup` — 1. Setup
+- `#hy-acc-scoring` — 2. Scoring & Method/Settings
+- `#hy-acc-search-image` — 3. Search + Prompt from image
+- `#hy-acc-export` — 4. Export
+
+Below the accordion scroll area is a permanent **Thresholds panel** (`#hy-thresholds-panel`, `.thresholds-panel`) pinned to the bottom of the sidebar via `position:sticky; bottom:0`. It always stays visible and is never collapsible.
+
+The accordion JS (`hookSidebarAccordionBehavior`) targets Gradio 6.x's button-based accordion structure (`button.label-wrap` with an `open` class when expanded). Gradio 6 does not use `<details>`/`<summary>` — do not revert to that approach.
+
 ### Hidden JS bridge elements
 The UI wires Python ↔ JS through hidden Gradio components with these ids:
 - `hy-thumb-action`, `hy-shortcut-action`, `hy-mark-state`, `hy-model-status`, `hy-hist-width`

@@ -83,6 +83,17 @@ def load_app_version():
 APP_VERSION = load_app_version()
 APP_GITHUB_TAG = f"v{APP_VERSION}"
 APP_WINDOW_TITLE = f"{APP_DISPLAY_NAME} {APP_GITHUB_TAG}"
+
+def load_changelog():
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(_script_dir, "CHANGELOG.md"), "r", encoding="utf-8") as _f:
+            return _f.read()
+    except Exception:
+        return "Changelog not available."
+
+import html as _html
+APP_CHANGELOG_HTML = _html.escape(load_changelog())
 SETUP_SCRIPT_HINT = "setup_update-windows.bat" if os.name == "nt" else "./setup_update-linux.sh"
 
 try:
@@ -4095,6 +4106,69 @@ def create_app():
     }}, true);
     document.body.dataset.hyButtonPreviewResetHooked = "1";
   }};
+  const getAccordionToggle = (root) => {{
+    if (!(root instanceof Element)) return null;
+    return root.querySelector("button.label-wrap") || root.querySelector("summary, button");
+  }};
+  const isAccordionOpen = (root) => {{
+    if (!(root instanceof Element)) return false;
+    const btn = root.querySelector("button.label-wrap");
+    if (btn) return btn.classList.contains("open");
+    const details = root.querySelector("details");
+    if (details) return !!details.open;
+    return false;
+  }};
+  const _progToggle = new Set();
+  const setAccordionOpen = (root, shouldOpen) => {{
+    if (!(root instanceof Element)) return false;
+    const currentlyOpen = isAccordionOpen(root);
+    if (currentlyOpen === shouldOpen) return false;
+    const toggle = getAccordionToggle(root);
+    if (toggle) {{
+      _progToggle.add(root);
+      toggle.click();
+      setTimeout(() => _progToggle.delete(root), 300);
+      return true;
+    }}
+    return false;
+  }};
+  const hookChangelogOverlay = () => {{
+    const btn = document.getElementById("hy-version-btn");
+    const overlay = document.getElementById("hy-changelog-overlay");
+    const closeBtn = document.getElementById("hy-changelog-close");
+    if (!btn || !overlay || btn.dataset.changelogHooked) return;
+    btn.addEventListener("click", () => overlay.classList.add("open"));
+    closeBtn?.addEventListener("click", () => overlay.classList.remove("open"));
+    overlay.addEventListener("click", (e) => {{ if (e.target === overlay) overlay.classList.remove("open"); }});
+    document.addEventListener("keydown", (e) => {{ if (e.key === "Escape") overlay.classList.remove("open"); }});
+    btn.dataset.changelogHooked = "1";
+  }};
+  const hookSidebarAccordionBehavior = () => {{
+    const setupRoot = document.getElementById("hy-acc-setup");
+    const scoringRoot = document.getElementById("hy-acc-scoring");
+    const searchRoot = document.getElementById("hy-acc-search-image");
+    const exportRoot = document.getElementById("hy-acc-export");
+    const managedRoots = [setupRoot, scoringRoot, searchRoot, exportRoot].filter((root) => root instanceof Element);
+    if (!managedRoots.length) return;
+    for (const root of managedRoots) {{
+      if (!(root instanceof Element)) continue;
+      const toggle = getAccordionToggle(root);
+      if (!(toggle instanceof Element)) continue;
+      if (toggle.dataset.hySidebarAccordionClickHooked === "1") continue;
+      toggle.addEventListener("click", () => {{
+        if (_progToggle.has(root)) return;
+        const willOpen = !isAccordionOpen(root);
+        if (willOpen) {{
+          setTimeout(() => {{
+            for (const r of managedRoots) {{
+              if (r !== root) setAccordionOpen(r, false);
+            }}
+          }}, 60);
+        }}
+      }}, true);
+      toggle.dataset.hySidebarAccordionClickHooked = "1";
+    }}
+  }};
   const hookDialogActionHandoff = () => {{
     if (document.body.dataset.hyDialogActionHooked) return;
     document.addEventListener("click", (event) => {{
@@ -4904,6 +4978,8 @@ def create_app():
   hookTagMatchVocabularyState();
   hookExternalQueryArea();
   hookHistogramResize();
+  hookChangelogOverlay();
+  hookSidebarAccordionBehavior();
   hookPreviewDialogTracking();
   hookInlinePreviewNavigationLock();
   hookButtonPreviewReset();
@@ -4937,6 +5013,8 @@ def create_app():
     hookTagMatchVocabularyState();
     hookExternalQueryArea();
     hookHistogramResize();
+    hookChangelogOverlay();
+  hookSidebarAccordionBehavior();
     hookPreviewDialogTracking();
     hookInlinePreviewNavigationLock();
     hookButtonPreviewReset();
@@ -8322,7 +8400,7 @@ def create_app():
     def export_files(main_threshold, aux_threshold, export_left_enabled, export_right_enabled, export_move_enabled, export_left_name, export_right_name):
         # Export is a lossless copy, not a rewrite or recompression of the originals.
         if is_browse_mode():
-            return (*render_view_with_controls(main_threshold, aux_threshold), "Export is unavailable in browse mode. Run scoring or a search first.")
+            return render_view_with_controls(main_threshold, aux_threshold)
         left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
         left_name, right_name, left_dirname, right_dirname = method_labels(state["method"])
         base = state["source_dir"]
@@ -8332,10 +8410,10 @@ def create_app():
         if export_right_enabled:
             targets.append((right_name, sanitize_export_name(export_right_name) or right_dirname, right_items))
         if not targets:
-            return (*render_view_with_controls(main_threshold, aux_threshold), "Enable at least one bucket for export.")
+            return render_view_with_controls(main_threshold, aux_threshold)
         target_names = [folder_name for _, folder_name, _ in targets]
         if len(set(target_names)) != len(target_names):
-            return (*render_view_with_controls(main_threshold, aux_threshold), "Export folder names must be different when both buckets are enabled.")
+            return render_view_with_controls(main_threshold, aux_threshold)
 
         lines = []
         moved_names = []
@@ -8374,7 +8452,7 @@ def create_app():
                 or state.get("sameperson_query_fname") in moved_set
             ):
                 clear_preview_search_context()
-        return (*render_view_with_controls(main_threshold, aux_threshold), "\n".join(lines))
+        return render_view_with_controls(main_threshold, aux_threshold)
 
     css = """
     html, body { height:100% !important; overflow:hidden !important; }
@@ -8411,6 +8489,17 @@ def create_app():
     }
     h1 { font-family:'Courier New',monospace; letter-spacing:.18em; color:#aadd66; text-transform:uppercase; margin:0; font-size:1.4rem; }
     .header-meta { color:#667755; font-family:monospace; font-size:.78rem; white-space:nowrap; margin-left:auto; }
+    .version-btn { background:none; border:none; cursor:pointer; color:#667755; font-family:monospace; font-size:.78rem; padding:0; text-decoration:underline dotted; }
+    .version-btn:hover { color:#9aaa80; }
+    .changelog-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.72); z-index:9999; align-items:center; justify-content:center; }
+    .changelog-overlay.open { display:flex; }
+    .changelog-modal { background:#171722; border:1px solid #3a3a4a; border-radius:8px; width:min(700px,92vw); max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 40px rgba(0,0,0,0.6); }
+    .changelog-modal-header { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid #2c2c39; flex-shrink:0; }
+    .changelog-modal-header span { font-family:monospace; color:#aadd66; font-size:.95rem; letter-spacing:.1em; text-transform:uppercase; }
+    .changelog-close { background:none; border:none; cursor:pointer; color:#667755; font-size:1.1rem; padding:2px 6px; border-radius:3px; }
+    .changelog-close:hover { color:#d7dbc8; background:#2c2c39; }
+    .changelog-modal-body { overflow-y:auto; padding:16px 20px; }
+    .changelog-content { font-family:monospace; font-size:.76rem; line-height:1.6; color:#c8ccbc; white-space:pre-wrap; margin:0; }
     .sidebar-box {
         background:#171722;
         border:1px solid #2c2c39;
@@ -8439,6 +8528,18 @@ def create_app():
         border:0 !important;
         box-shadow:none !important;
     }
+    .thresholds-panel {
+        position:sticky !important;
+        bottom:0 !important;
+        z-index:5 !important;
+        border-top:1px solid #2c2c39 !important;
+        margin-top:3px !important;
+        padding-top:4px !important;
+        background:#151520 !important;
+        border-radius:0 0 4px 4px !important;
+    }
+    #hy-thresholds-panel { display:block !important; visibility:visible !important; }
+    #hy-hist { display:block !important; min-height:40px; }
     .gallery-pane {
         min-width:0 !important;
         overflow:visible !important;
@@ -8487,20 +8588,6 @@ def create_app():
     #hy-acc-search-image summary, #hy-acc-search-image .label-wrap, #hy-acc-search-image button {
         background:linear-gradient(180deg, rgba(22, 56, 60, 0.98), rgba(14, 38, 41, 0.98)) !important;
     }
-    #hy-acc-prompt-image {
-        border-color:#2f6971 !important;
-        box-shadow:inset 3px 0 0 #58c7d6 !important;
-    }
-    #hy-acc-prompt-image summary, #hy-acc-prompt-image .label-wrap, #hy-acc-prompt-image button {
-        background:linear-gradient(180deg, rgba(22, 56, 60, 0.98), rgba(14, 38, 41, 0.98)) !important;
-    }
-    #hy-acc-thresholds {
-        border-color:#67507e !important;
-        box-shadow:inset 3px 0 0 #b590e8 !important;
-    }
-    #hy-acc-thresholds summary, #hy-acc-thresholds .label-wrap, #hy-acc-thresholds button {
-        background:linear-gradient(180deg, rgba(49, 36, 58, 0.98), rgba(33, 24, 39, 0.98)) !important;
-    }
     #hy-acc-export {
         border-color:#7a6930 !important;
         box-shadow:inset 3px 0 0 #d9c06a !important;
@@ -8536,6 +8623,7 @@ def create_app():
     .sidebar-box .gradio-container-4-0, .sidebar-box .gradio-container-3-0 { gap:2px !important; }
     .method-note { font-family:monospace; color:#8e9d80; background:#11111a; border-radius:4px; padding:2px 4px; }
     .method-note p { margin:0 !important; font-family:monospace !important; font-size:.82rem !important; line-height:1.35 !important; color:#8e9d80 !important; }
+    .promptgen-status { display:none !important; }
     .promptgen-status p { margin:0 !important; font-family:monospace !important; font-size:.76rem !important; line-height:1.35 !important; color:#8ec5ff !important; }
     .preview-action-stack { gap:4px !important; }
     .preview-action-stack .gr-button,
@@ -9096,16 +9184,23 @@ def create_app():
             overflow:visible !important;
         }
         .sidebar-scroll { padding-right:0 !important; }
+        .thresholds-panel { position:static !important; bottom:auto !important; }
     }
     """
 
     with gr.Blocks(title=APP_WINDOW_TITLE) as demo:
-        gr.HTML("""
+        gr.HTML(f"""
 <div class='app-header'>
-  <h1>{title}</h1>
-  <div class='header-meta'>{tag} &middot; created by vangel</div>
+  <h1>{APP_NAME}</h1>
+  <div class='header-meta'><button id='hy-version-btn' class='version-btn'>{APP_GITHUB_TAG}</button> &middot; created by vangel</div>
 </div>
-""".format(title=APP_NAME, tag=APP_GITHUB_TAG))
+<div id='hy-changelog-overlay' class='changelog-overlay'>
+  <div class='changelog-modal'>
+    <div class='changelog-modal-header'><span>Changelog</span><button id='hy-changelog-close' class='changelog-close'>&#x2715;</button></div>
+    <div class='changelog-modal-body'><pre class='changelog-content'>{APP_CHANGELOG_HTML}</pre></div>
+  </div>
+</div>
+""")
 
         with gr.Row(equal_height=False, elem_classes=["app-shell"]):
             with gr.Column(scale=1, min_width=300, elem_classes=["sidebar-box"]):
@@ -9137,7 +9232,7 @@ def create_app():
                         )
                         load_folder_btn = gr.Button("Load folder", elem_id="hy-load-folder")
 
-                    with gr.Accordion("2. SCORING & Method/Settings", open=True, elem_id="hy-acc-scoring"):
+                    with gr.Accordion("2. SCORING & Method/Settings", open=False, elem_id="hy-acc-scoring"):
                         with gr.Group(visible=True) as promptmatch_group:
                             model_dd = gr.Dropdown(
                                 choices=promptmatch_model_dropdown_choices(),
@@ -9145,7 +9240,7 @@ def create_app():
                                 label="PromptMatch model",
                                 elem_id="hy-model",
                             )
-                            pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=1, elem_id="hy-pos")
+                            pos_prompt_tb = gr.Textbox(value=SEARCH_PROMPT, label="Positive prompt", lines=2, elem_id="hy-pos")
                             neg_prompt_tb = gr.Textbox(value=NEGATIVE_PROMPT, label="Negative prompt", lines=1, elem_id="hy-neg")
                             pm_segment_cb = gr.Checkbox(label="Per-segment scoring (hover shows per-phrase match)", value=False, elem_id="hy-pm-segment")
                             promptmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-pm", variant="primary")
@@ -9207,7 +9302,7 @@ def create_app():
                             )
                             tagmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-tagmatch", variant="primary")
 
-                    with gr.Accordion("3. Search from image", open=False, elem_id="hy-acc-search-image"):
+                    with gr.Accordion("3. Search + Prompt from image", open=False, elem_id="hy-acc-search-image"):
                         external_query_image = gr.Image(
                             value=None,
                             sources=["upload"],
@@ -9226,92 +9321,43 @@ def create_app():
                             elem_id="hy-clear-external-query",
                             interactive=False,
                         )
-                        with gr.Column(elem_classes=["preview-action-stack"]):
-                            find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
-                            find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
-                    with gr.Accordion("4. Prompt from image", open=False, elem_id="hy-acc-prompt-image"):
-                        with gr.Group(elem_classes=["preview-prompt-group"]):
-                            prompt_generator_dd = gr.Dropdown(
-                                choices=prompt_backend_dropdown_choices(PROMPT_GENERATOR_ALL_CHOICES),
-                                value=state["prompt_generator"],
-                                label="Prompt generator",
-                                elem_id="hy-prompt-generator",
-                            )
-                            generate_prompt_btn = gr.Button("Prompt from image", elem_id="hy-generate-prompt")
-                            promptgen_status_md = gr.Markdown(
-                                state["generated_prompt_status"],
-                                elem_classes=["promptgen-status"],
-                                elem_id="hy-promptgen-status",
-                            )
-                            generated_prompt_tb = gr.Textbox(
-                                value=state["generated_prompt"],
-                                label="Generated prompt",
-                                lines=4,
-                                placeholder="Preview, drop, paste, or upload an image, then generate an editable prompt here.",
-                                elem_id="hy-generated-prompt",
-                            )
-                            generated_prompt_detail_slider = gr.Slider(
-                                minimum=1,
-                                maximum=3,
-                                value=DEFAULT_GENERATED_PROMPT_DETAIL,
-                                step=1,
-                                label="Prompt detail",
-                                elem_id="hy-generated-prompt-detail",
-                            )
-                            insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
+                        with gr.Tabs():
+                            with gr.Tab("Search"):
+                                with gr.Column(elem_classes=["preview-action-stack"]):
+                                    find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
+                                    find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
+                            with gr.Tab("Prompt"):
+                                with gr.Group(elem_classes=["preview-prompt-group"]):
+                                    prompt_generator_dd = gr.Dropdown(
+                                        choices=prompt_backend_dropdown_choices(PROMPT_GENERATOR_ALL_CHOICES),
+                                        value=state["prompt_generator"],
+                                        label="Prompt generator",
+                                        elem_id="hy-prompt-generator",
+                                    )
+                                    generate_prompt_btn = gr.Button("Prompt from image", elem_id="hy-generate-prompt")
+                                    promptgen_status_md = gr.Markdown(
+                                        state["generated_prompt_status"],
+                                        elem_classes=["promptgen-status"],
+                                        elem_id="hy-promptgen-status",
+                                    )
+                                    generated_prompt_tb = gr.Textbox(
+                                        value=state["generated_prompt"],
+                                        label="Generated prompt",
+                                        lines=4,
+                                        placeholder="Preview, drop, paste, or upload an image, then generate an editable prompt here.",
+                                        elem_id="hy-generated-prompt",
+                                    )
+                                    generated_prompt_detail_slider = gr.Slider(
+                                        minimum=1,
+                                        maximum=3,
+                                        value=DEFAULT_GENERATED_PROMPT_DETAIL,
+                                        step=1,
+                                        label="Prompt detail",
+                                        elem_id="hy-generated-prompt-detail",
+                                    )
+                                    insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
-                    with gr.Accordion("5. Thresholds", open=True, elem_id="hy-acc-thresholds"):
-                        hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
-                        with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
-                            main_slider = gr.Slider(
-                                minimum=-1.0,
-                                maximum=1.0,
-                                value=0.14,
-                                step=0.001,
-                                label=threshold_labels(METHOD_PROMPTMATCH)[0],
-                                elem_id="hy-main-slider",
-                                buttons=[],
-                            )
-                            with gr.Column(scale=0, min_width=58, elem_classes=["threshold-actions"]):
-                                main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", scale=0, min_width=58, elem_classes=["threshold-mid"])
-                        with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
-                            aux_slider = gr.Slider(
-                                minimum=-1.0,
-                                maximum=1.0,
-                                value=NEGATIVE_THRESHOLD,
-                                step=0.001,
-                                label=threshold_labels(METHOD_PROMPTMATCH)[1],
-                                elem_id="hy-aux-slider",
-                                buttons=[],
-                            )
-                            aux_mid_btn = gr.Button("50%", elem_id="hy-aux-mid", scale=0, min_width=50, visible=True, elem_classes=["threshold-mid"])
-                        keep_pm_thresholds_cb = gr.Checkbox(
-                            value=True,
-                            label="Keep PromptMatch thresholds on prompt reruns",
-                            visible=True,
-                            elem_id="hy-keep-pm-thresholds",
-                        )
-                        keep_ir_thresholds_cb = gr.Checkbox(
-                            value=True,
-                            label="Keep ImageReward threshold on prompt reruns",
-                            visible=False,
-                            elem_id="hy-keep-ir-thresholds",
-                        )
-                        with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
-                            percentile_slider = gr.Slider(
-                                minimum=0,
-                                maximum=100,
-                                value=50,
-                                step=1,
-                                label=percentile_slider_label(METHOD_PROMPTMATCH),
-                                elem_id="hy-percentile",
-                                buttons=[],
-                            )
-                            percentile_mid_btn = gr.Button("50%", elem_id="hy-percentile-mid", scale=0, min_width=50, elem_classes=["threshold-mid"])
-                        proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
-                        status_md = gr.Markdown("", elem_classes=["status-md"])
-
-                    with gr.Accordion("6. Export", open=False, elem_id="hy-acc-export") as export_acc:
+                    with gr.Accordion("4. Export", open=False, elem_id="hy-acc-export") as export_acc:
                         with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
                             move_export_cb = gr.Checkbox(
                                 value=False,
@@ -9323,7 +9369,52 @@ def create_app():
                                 elem_classes=["gallery-export-toggle", "export-move-toggle"],
                             )
                         export_btn = gr.Button("Export folders", elem_id="hy-export", variant="primary")
-                        export_tb = gr.Textbox(label="Export result", lines=3, interactive=False)
+
+                with gr.Group(elem_id="hy-thresholds-panel", elem_classes=["thresholds-panel"]):
+                    hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
+                    main_slider = gr.Slider(
+                        minimum=-1.0,
+                        maximum=1.0,
+                        value=0.14,
+                        step=0.001,
+                        label=threshold_labels(METHOD_PROMPTMATCH)[0],
+                        elem_id="hy-main-slider",
+                        buttons=[],
+                    )
+                    main_mid_btn = gr.Button("50%", elem_id="hy-main-mid", visible=False, elem_classes=["threshold-mid"])
+                    aux_slider = gr.Slider(
+                        minimum=-1.0,
+                        maximum=1.0,
+                        value=NEGATIVE_THRESHOLD,
+                        step=0.001,
+                        label=threshold_labels(METHOD_PROMPTMATCH)[1],
+                        elem_id="hy-aux-slider",
+                        buttons=[],
+                    )
+                    aux_mid_btn = gr.Button("50%", elem_id="hy-aux-mid", visible=False, elem_classes=["threshold-mid"])
+                    keep_pm_thresholds_cb = gr.Checkbox(
+                        value=True,
+                        label="Keep PromptMatch thresholds on prompt reruns",
+                        visible=True,
+                        elem_id="hy-keep-pm-thresholds",
+                    )
+                    keep_ir_thresholds_cb = gr.Checkbox(
+                        value=True,
+                        label="Keep ImageReward threshold on prompt reruns",
+                        visible=False,
+                        elem_id="hy-keep-ir-thresholds",
+                    )
+                    percentile_slider = gr.Slider(
+                        minimum=0,
+                        maximum=100,
+                        value=50,
+                        step=1,
+                        label=percentile_slider_label(METHOD_PROMPTMATCH),
+                        elem_id="hy-percentile",
+                        buttons=[],
+                    )
+                    percentile_mid_btn = gr.Button("50%", elem_id="hy-percentile-mid", visible=False, elem_classes=["threshold-mid"])
+                    proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
 
             with gr.Column(scale=5, elem_classes=["gallery-pane"]):
                 with gr.Row(equal_height=False, elem_classes=["gallery-topbar"]):
@@ -9365,6 +9456,7 @@ def create_app():
                     with gr.Column(scale=1, elem_classes=["gallery-side"]):
                         left_gallery = gr.Gallery(show_label=False, columns=5, height="calc(100vh - 130px)", object_fit="contain", preview=True, allow_preview=True, elem_classes=["grid-wrap"], elem_id="hy-left-gallery")
                     with gr.Column(scale=0, min_width=100, elem_classes=["move-col"]) as move_controls_col:
+                        status_md = gr.Markdown("", elem_classes=["status-md"])
                         sel_info = gr.Markdown("Shift+click thumbnails to mark multiple images.", elem_classes=["sel-info"])
                         move_right_btn = gr.Button("Move >>", elem_id="hy-move-right")
                         fit_threshold_btn = gr.Button("Fit thresh to filter image", elem_id="hy-fit-threshold")
@@ -9532,7 +9624,7 @@ def create_app():
         export_btn.click(
             fn=export_files,
             inputs=[main_slider, aux_slider, left_export_cb, right_export_cb, move_export_cb, left_export_name_tb, right_export_name_tb],
-            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col, export_tb],
+            outputs=[left_head, left_gallery, right_head, right_gallery, status_md, hist_plot, sel_info, mark_state, external_query_image, clear_external_query_btn, left_export_cb, left_export_name_tb, export_acc, move_controls_col, gallery_header_spacer_col, right_header_col, right_gallery_col],
         )
 
     return demo, css, tooltip_head(tooltips)

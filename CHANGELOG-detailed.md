@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.3.8] - 2026-04-20
+
+### Sidebar accordion redesign
+- Sidebar sections are now mutually exclusive: opening any section automatically closes all others.
+- On first load only **1. Setup** is open; all other sections start collapsed.
+- Rewrote accordion JS to target Gradio 6.x's button-based accordion (`button.label-wrap.open`) instead of the legacy `<details>`/`<summary>` structure that Gradio 6 dropped entirely. Previous implementation was always reading `isAccordionOpen` as `false`, making the close logic a no-op.
+- Accordion state is driven entirely from user click events; MutationObserver re-runs only re-attach listeners and never enforce state, eliminating the race where Gradio's DOM mutations were immediately re-closing the section the user had just opened.
+
+### Thresholds panel promoted to always-visible bottom strip
+- **4. Thresholds** removed as an accordion section. Content is now a permanent non-collapsible panel pinned to the bottom of the sidebar via `position:sticky; bottom:0`.
+- Scoring section renumbered: **5. Export** → **4. Export**.
+
+### Sidebar cleanup
+- Removed the **Export result** textbox (`export_tb`) — export status output dropped from the export callback.
+- Moved the scoring status line (`status_md`) out of the sidebar thresholds panel and into the gallery middle column next to the selection info, where it belongs contextually.
+- Hidden the prompt-generation status text (`promptgen_status_md`) via CSS — it was rendered as a persistent message overlay inside section 3.
+
+### Threshold slider improvements
+- Removed the three **50%** midpoint buttons from the threshold rows; sliders now take full width.
+- Button components are kept as hidden Gradio elements so all existing callback output arities remain intact.
+
+### Changelog overlay
+- Version tag in the app header (`v2.3.8`) is now a clickable button.
+- Clicking it opens a modal overlay showing the full `CHANGELOG.md` content.
+- `CHANGELOG.md` is read at startup, HTML-escaped, and embedded in the page — no runtime file requests.
+- Close with the ✕ button, clicking the backdrop, or pressing `Escape`.
+
+### Prompt box
+- PromptMatch positive prompt textbox height doubled (`lines=1` → `lines=2`).
+
 ## [2.3.3] - 2026-04-18
 
 - Added a new lightweight startup log sequence before `app.launch(...)` so the console now reports:
