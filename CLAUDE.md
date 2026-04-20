@@ -67,6 +67,11 @@ Below the accordion scroll area is a permanent **Thresholds panel** (`#hy-thresh
 
 The accordion JS (`hookSidebarAccordionBehavior`) targets Gradio 6.x's button-based accordion structure (`button.label-wrap` with an `open` class when expanded). Gradio 6 does not use `<details>`/`<summary>` — do not revert to that approach.
 
+### Changelog overlay
+The version tag (`v2.3.8`) in the app header is a `<button id="hy-version-btn">` that opens a modal overlay (`#hy-changelog-overlay`). `CHANGELOG.md` is read at startup by `load_changelog()`, HTML-escaped into `APP_CHANGELOG_HTML`, and embedded in the page. The overlay is shown/hidden via the `.open` CSS class; `hookChangelogOverlay()` attaches the listeners (idempotent, guarded by `dataset.changelogHooked`).
+
+The three 50% midpoint buttons (`main_mid_btn`, `aux_mid_btn`, `percentile_mid_btn`) are kept as hidden Gradio components (`visible=False`). Do not remove them — they appear in callback output lists and removing them would break output arities.
+
 ### Hidden JS bridge elements
 The UI wires Python ↔ JS through hidden Gradio components with these ids:
 - `hy-thumb-action`, `hy-shortcut-action`, `hy-mark-state`, `hy-model-status`, `hy-hist-width`

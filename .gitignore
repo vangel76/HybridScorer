@@ -8,7 +8,7 @@ images/
 docs/
 .vscode/
 AGENTS.md
-
+CLAUDE.md
 *.pyc
 *.pyo
 *.pyd
