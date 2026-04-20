@@ -3110,17 +3110,9 @@ def create_app():
     def active_query_image_widget_update():
         query_ctx = active_query_image_context()
         image_path = query_ctx.get("path")
-        source_kind = query_ctx.get("source_kind")
-        source_label = query_ctx.get("label")
-        if source_kind == "external":
-            label = f"Query image - EXTERNAL OVERRIDE: {source_label}"
-        elif source_kind == "gallery" and source_label:
-            label = f"Query image - FOLDER PREVIEW: {source_label}"
-        else:
-            label = "Query image - no active source"
         if image_path and os.path.isfile(image_path):
-            return gr.update(value=image_path, label=label)
-        return gr.update(value=None, label=label)
+            return gr.update(value=image_path)
+        return gr.update(value=None)
 
     def clear_external_query_button_update():
         query_ctx = active_query_image_context()
@@ -4068,6 +4060,41 @@ def create_app():
     document.dispatchEvent(escapeEvent);
     return true;
   }};
+  const closeAllGalleryPreviews = () => {{
+    let closedAny = false;
+    const inlinePreviews = Array.from(document.querySelectorAll("#hy-left-gallery .preview, #hy-right-gallery .preview"));
+    for (const previewRoot of inlinePreviews) {{
+      if (!(previewRoot instanceof Element)) continue;
+      const closeButton = findInlinePreviewCloseButton(previewRoot) || findCloseButton(previewRoot);
+      if (!closeButton) continue;
+      closeButton.click();
+      closedAny = true;
+    }}
+    const dialogRoots = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'));
+    for (const dialogRoot of dialogRoots) {{
+      closedAny = closePreviewDialog(dialogRoot) || closedAny;
+    }}
+    if (closedAny) {{
+      activeDialogPreviewFname = "";
+      activeDialogSelection = {{ side: "", index: -1 }};
+      setTimeout(scheduleRepaint, 40);
+      setTimeout(scheduleRepaint, 140);
+    }}
+    return closedAny;
+  }};
+  const hookButtonPreviewReset = () => {{
+    if (document.body.dataset.hyButtonPreviewResetHooked) return;
+    document.addEventListener("click", (event) => {{
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const actionRoot = target.closest("button, [role='button']");
+      if (!actionRoot) return;
+      if (actionRoot.closest("#hy-left-gallery, #hy-right-gallery")) return;
+      if (actionRoot.closest('[role="dialog"], [aria-modal="true"]')) return;
+      closeAllGalleryPreviews();
+    }}, true);
+    document.body.dataset.hyButtonPreviewResetHooked = "1";
+  }};
   const hookDialogActionHandoff = () => {{
     if (document.body.dataset.hyDialogActionHooked) return;
     document.addEventListener("click", (event) => {{
@@ -4879,6 +4906,7 @@ def create_app():
   hookHistogramResize();
   hookPreviewDialogTracking();
   hookInlinePreviewNavigationLock();
+  hookButtonPreviewReset();
   hookDialogActionHandoff();
   scheduleRepaint();
   new MutationObserver((mutations) => {{
@@ -4911,6 +4939,7 @@ def create_app():
     hookHistogramResize();
     hookPreviewDialogTracking();
     hookInlinePreviewNavigationLock();
+    hookButtonPreviewReset();
     hookDialogActionHandoff();
     scheduleRepaint();
   }}).observe(document.body, {{ childList: true, subtree: true }});
@@ -8451,11 +8480,18 @@ def create_app():
     #hy-acc-scoring summary, #hy-acc-scoring .label-wrap, #hy-acc-scoring button {
         background:linear-gradient(180deg, rgba(42, 57, 46, 0.98), rgba(28, 38, 31, 0.98)) !important;
     }
-    #hy-acc-prompt {
+    #hy-acc-search-image {
         border-color:#2f6971 !important;
         box-shadow:inset 3px 0 0 #58c7d6 !important;
     }
-    #hy-acc-prompt summary, #hy-acc-prompt .label-wrap, #hy-acc-prompt button {
+    #hy-acc-search-image summary, #hy-acc-search-image .label-wrap, #hy-acc-search-image button {
+        background:linear-gradient(180deg, rgba(22, 56, 60, 0.98), rgba(14, 38, 41, 0.98)) !important;
+    }
+    #hy-acc-prompt-image {
+        border-color:#2f6971 !important;
+        box-shadow:inset 3px 0 0 #58c7d6 !important;
+    }
+    #hy-acc-prompt-image summary, #hy-acc-prompt-image .label-wrap, #hy-acc-prompt-image button {
         background:linear-gradient(180deg, rgba(22, 56, 60, 0.98), rgba(14, 38, 41, 0.98)) !important;
     }
     #hy-acc-thresholds {
@@ -8536,6 +8572,9 @@ def create_app():
         border-radius:10px !important;
         overflow:hidden !important;
         background:linear-gradient(180deg, rgba(14, 18, 28, 0.96), rgba(8, 11, 18, 0.98)) !important;
+    }
+    .external-query-image label {
+        display:none !important;
     }
     .external-query-image img {
         object-fit:contain !important;
@@ -9168,13 +9207,14 @@ def create_app():
                             )
                             tagmatch_run_btn = gr.Button("Run scoring", elem_id="hy-run-tagmatch", variant="primary")
 
-                    with gr.Accordion("3. Search from image", open=False, elem_id="hy-acc-prompt"):
+                    with gr.Accordion("3. Search from image", open=False, elem_id="hy-acc-search-image"):
                         external_query_image = gr.Image(
                             value=None,
                             sources=["upload"],
                             type="filepath",
                             image_mode="RGB",
                             label="Query image",
+                            show_label=False,
                             height=210,
                             interactive=True,
                             placeholder="Drop, paste, or upload an image here. If you preview an image from the folder, it will show here too.",
@@ -9189,8 +9229,8 @@ def create_app():
                         with gr.Column(elem_classes=["preview-action-stack"]):
                             find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
                             find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
+                    with gr.Accordion("4. Prompt from image", open=False, elem_id="hy-acc-prompt-image"):
                         with gr.Group(elem_classes=["preview-prompt-group"]):
-                            gr.Markdown("**Prompt from image**", elem_classes=["method-note"])
                             prompt_generator_dd = gr.Dropdown(
                                 choices=prompt_backend_dropdown_choices(PROMPT_GENERATOR_ALL_CHOICES),
                                 value=state["prompt_generator"],
@@ -9220,7 +9260,7 @@ def create_app():
                             )
                             insert_prompt_btn = gr.Button("Insert into active prompt", elem_id="hy-insert-prompt")
 
-                    with gr.Accordion("4. Thresholds", open=True, elem_id="hy-acc-thresholds"):
+                    with gr.Accordion("5. Thresholds", open=True, elem_id="hy-acc-thresholds"):
                         hist_plot = gr.Image(value=None, show_label=False, interactive=False, elem_classes=["hist-img"], elem_id="hy-hist")
                         with gr.Row(equal_height=False, elem_classes=["threshold-row"]):
                             main_slider = gr.Slider(
@@ -9271,7 +9311,7 @@ def create_app():
                         proxy_display_cb = gr.Checkbox(value=True, label="Use proxies for gallery display", elem_id="hy-use-proxy-display")
                         status_md = gr.Markdown("", elem_classes=["status-md"])
 
-                    with gr.Accordion("5. Export", open=False, elem_id="hy-acc-export") as export_acc:
+                    with gr.Accordion("6. Export", open=False, elem_id="hy-acc-export") as export_acc:
                         with gr.Row(equal_height=False, elem_classes=["export-options-row"]):
                             move_export_cb = gr.Checkbox(
                                 value=False,
