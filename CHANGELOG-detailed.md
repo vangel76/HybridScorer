@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.4.0] - 2026-04-21
+
+### Codebase modularisation
+- `Hybrid-Scorer.py` split from ~9,710 lines into a `lib/` subfolder; the main file is now ~838 lines of pure Gradio wiring.
+- New modules: `lib/config.py`, `lib/utils.py`, `lib/backend.py`, `lib/scoring.py`, `lib/helpers.py`, `lib/state.py`, `lib/state_helpers.py`, `lib/loaders.py`, `lib/view.py`.
+- Callbacks extracted to `lib/callbacks/scoring.py`, `lib/callbacks/prompts.py`, `lib/callbacks/ui.py`.
+- All extracted callbacks accept `state` as an explicit first parameter; bound in `create_app()` with `functools.partial`.
+- CSS moved to `static/style.css`, JS to `static/app.js` (tooltip dict injected at runtime via sentinel replacement).
+- No user-facing behaviour changes.
+
 ## [2.3.8] - 2026-04-20
 
 ### Sidebar accordion redesign

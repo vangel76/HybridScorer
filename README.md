@@ -2,7 +2,7 @@
 
 `HybridScorer` is a 100% local app for sorting large folders of images with AI scoring.
 
-Current version: `2.3.8`
+Current version: `2.4.0`
 
 ## What The App Does
 

@@ -21,13 +21,35 @@ Default app URL: `http://localhost:7862`
 
 ## Architecture
 
-**Single-file Gradio app.** All application logic lives in `Hybrid-Scorer.py`.
+**Modular Gradio app.** `Hybrid-Scorer.py` (~838 lines) is pure Gradio wiring; all logic lives in `lib/`.
+
+```
+lib/
+  config.py          # constants, method labels, model IDs
+  utils.py           # pure utility functions
+  backend.py         # ModelBackend class
+  scoring.py         # score_all, encode_all_promptmatch_images
+  helpers.py         # UI text helpers, score helpers, prompt helpers
+  state.py           # get_state_defaults(), init_state()
+  state_helpers.py   # state-management helpers (accept state param)
+  loaders.py         # ensure_*_model, ensure_*_backend, feature caches
+  view.py            # gallery, histogram, current_view, render_view_with_controls
+  callbacks/
+    scoring.py       # score_folder, find_similar_images, find_same_person_images
+    prompts.py       # generate_prompt_from_preview, run_*_prompt_variant
+    ui.py            # handle_thumb_action, export_files, threshold callbacks, etc.
+static/
+  style.css          # all app CSS
+  app.js             # all app JS (tooltip dict injected at runtime)
+```
 
 `create_app()` is the center of gravity:
 - owns the shared mutable `state` dict
-- defines all callbacks as closures over `state`
+- binds extracted callbacks with `functools.partial(func, state)` or `partial(func, state, device)`
 - builds the UI and injects JS/CSS
 - creates initial backend/model objects
+
+**Note:** `.select()` event handlers that use `gr.SelectData` must be defined as thin wrapper closures in `create_app()` rather than bound with `partial` — Gradio cannot see the `SelectData` annotation through a partial.
 
 UI behavior is callback-driven. Some behavior lives in injected JS, not Python. Always inspect both before changing UI logic.
 
@@ -68,7 +90,7 @@ Below the accordion scroll area is a permanent **Thresholds panel** (`#hy-thresh
 The accordion JS (`hookSidebarAccordionBehavior`) targets Gradio 6.x's button-based accordion structure (`button.label-wrap` with an `open` class when expanded). Gradio 6 does not use `<details>`/`<summary>` — do not revert to that approach.
 
 ### Changelog overlay
-The version tag (`v2.3.8`) in the app header is a `<button id="hy-version-btn">` that opens a modal overlay (`#hy-changelog-overlay`). `CHANGELOG.md` is read at startup by `load_changelog()`, HTML-escaped into `APP_CHANGELOG_HTML`, and embedded in the page. The overlay is shown/hidden via the `.open` CSS class; `hookChangelogOverlay()` attaches the listeners (idempotent, guarded by `dataset.changelogHooked`).
+The version tag (`v2.4.0`) in the app header is a `<button id="hy-version-btn">` that opens a modal overlay (`#hy-changelog-overlay`). `CHANGELOG.md` is read at startup by `load_changelog()`, HTML-escaped into `APP_CHANGELOG_HTML`, and embedded in the page. The overlay is shown/hidden via the `.open` CSS class; `hookChangelogOverlay()` attaches the listeners (idempotent, guarded by `dataset.changelogHooked`).
 
 The three 50% midpoint buttons (`main_mid_btn`, `aux_mid_btn`, `percentile_mid_btn`) are kept as hidden Gradio components (`visible=False`). Do not remove them — they appear in callback output lists and removing them would break output arities.
 

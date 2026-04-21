@@ -1,5 +1,13 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.4.0 - Modular Codebase
+
+**Code split into modules**
+- `Hybrid-Scorer.py` reduced from ~9,700 lines to ~838 lines of pure Gradio wiring
+- Logic extracted into `lib/` subfolder: `config`, `utils`, `backend`, `scoring`, `helpers`, `state`, `state_helpers`, `loaders`, `view`, and `callbacks/` (scoring, prompts, ui)
+- CSS moved to `static/style.css`, JS to `static/app.js`
+- No user-facing changes; all behavior preserved
+
 ## Version 2.3.8 - Cleaner Sidebar & Threshold Panel
 
 **Smarter Sidebar**
