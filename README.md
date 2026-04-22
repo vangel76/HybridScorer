@@ -2,7 +2,7 @@
 
 `HybridScorer` is a 100% local app for sorting large folders of images with AI scoring.
 
-Current version: `2.4.0`
+Current version: `2.5.0`
 
 ## What The App Does
 
@@ -16,6 +16,7 @@ Working modes in the current app:
 - `LM Search` — use a local vision-language model to deeply understand each image, not just match keywords
 - `Similarity` — pick one image you like and find everything in the folder that looks like it
 - `SamePerson` — pick a face and pull every image of that person from the folder automatically
+- `ObjectSearch` — drop or paste any image of a specific object and find every folder image that contains it, even when the object is small or partially visible; uses DINOv2 dense patch features with GPU-accelerated nearest-neighbor search
 
 Everything in the app is built around the same fast loop:
 
@@ -59,11 +60,12 @@ setup_update-windows.bat
 
 What the setup scripts do now:
 
-- create or refresh the folder `venv312` containing all packages needed:
-- install CUDA-enabled PyTorch
-- install the main app requirements
-- install `onnxruntime-gpu` for face search
-- install the JoyCaption GGUF runtime into `venv312`
+- create or refresh the folder `venv312` containing all packages needed
+- install CUDA-enabled PyTorch (skipped if already at the pinned version)
+- install the main app requirements including `faiss-cpu` for ObjectSearch
+- install `onnxruntime-gpu` for face search (skipped if CUDA provider already present)
+- install `image-reward 1.5` (skipped if already installed)
+- install the JoyCaption GGUF runtime into `venv312` (skipped if CUDA build already present)
 - verify that CUDA is available before finishing
 
 The setup scripts also try a safe `git pull --ff-only` first when the checkout is clean and has an upstream branch.
@@ -176,6 +178,7 @@ Highlights:
 - default PromptMatch model: `SigLIP so400m-patch14-384`
 - ImageReward model: `ImageReward-v1.0`
 - face search model pack: `InsightFace buffalo_l`
+- ObjectSearch model: `facebook/dinov2-base`
 - Florence prompt generation: `florence-community/Florence-2-base`
 - JoyCaption HF: `fancyfeast/llama-joycaption-beta-one-hf-llava`
 - JoyCaption GGUF: `cinnabrad/llama-joycaption-beta-one-hf-llava-mmproj-gguf`

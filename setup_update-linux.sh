@@ -96,6 +96,11 @@ validate_existing_venv() {
   fi
 }
 
+# Returns 0 if a Python snippet exits cleanly, 1 otherwise.
+py_check() {
+  python -c "$1" 2>/dev/null
+}
+
 echo "Checking whether a safe git refresh is needed..."
 maybe_update_git_checkout
 
@@ -111,27 +116,60 @@ source "$VENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel
 
-echo
-echo "Installing CUDA-enabled PyTorch from:"
-echo "  $PYTORCH_CUDA_INDEX_URL"
-echo "Pinned package versions:"
-echo "  torch==$PYTORCH_TORCH_VERSION"
-echo "  torchvision==$PYTORCH_TORCHVISION_VERSION"
-echo "If you override PYTORCH_CUDA_INDEX_URL, make sure these pinned versions exist on that index."
-python -m pip install \
-  "torch==$PYTORCH_TORCH_VERSION" \
-  "torchvision==$PYTORCH_TORCHVISION_VERSION" \
-  --index-url "$PYTORCH_CUDA_INDEX_URL"
+# ── PyTorch ───────────────────────────────────────────────────────────────────
+if py_check "
+import torch, torchvision
+assert torch.__version__ == '$PYTORCH_TORCH_VERSION', torch.__version__
+assert torchvision.__version__ == '$PYTORCH_TORCHVISION_VERSION', torchvision.__version__
+"; then
+  echo "PyTorch $PYTORCH_TORCH_VERSION + torchvision $PYTORCH_TORCHVISION_VERSION already installed, skipping."
+else
+  echo
+  echo "Installing CUDA-enabled PyTorch from:"
+  echo "  $PYTORCH_CUDA_INDEX_URL"
+  echo "Pinned package versions:"
+  echo "  torch==$PYTORCH_TORCH_VERSION"
+  echo "  torchvision==$PYTORCH_TORCHVISION_VERSION"
+  python -m pip install \
+    "torch==$PYTORCH_TORCH_VERSION" \
+    "torchvision==$PYTORCH_TORCHVISION_VERSION" \
+    --index-url "$PYTORCH_CUDA_INDEX_URL"
+fi
 
+# ── requirements.txt ──────────────────────────────────────────────────────────
 python -m pip install -r "$SCRIPT_DIR/requirements.txt"
-python -m pip uninstall -y onnxruntime onnxruntime-gpu >/dev/null 2>&1 || true
-python -m pip install onnxruntime-gpu
-python -m pip install --no-deps image-reward==1.5
 
-echo
-echo "Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python"
-CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
-  python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
+# ── onnxruntime-gpu ───────────────────────────────────────────────────────────
+if py_check "
+import onnxruntime as ort
+assert 'CUDAExecutionProvider' in ort.get_available_providers()
+"; then
+  echo "onnxruntime-gpu (CUDA) already installed, skipping."
+else
+  python -m pip uninstall -y onnxruntime onnxruntime-gpu >/dev/null 2>&1 || true
+  python -m pip install onnxruntime-gpu
+fi
+
+# ── image-reward ──────────────────────────────────────────────────────────────
+if py_check "from importlib.metadata import version; assert version('image-reward') == '1.5'"; then
+  echo "image-reward 1.5 already installed, skipping."
+else
+  python -m pip install --no-deps image-reward==1.5
+fi
+
+# ── llama-cpp-python (CUDA build) ─────────────────────────────────────────────
+# llama_supports_gpu_offload() returns True only when built with GGML_CUDA=on.
+if py_check "
+import llama_cpp
+assert hasattr(llama_cpp, 'llama_supports_gpu_offload') and llama_cpp.llama_supports_gpu_offload()
+"; then
+  echo "llama-cpp-python with CUDA already installed, skipping rebuild."
+else
+  echo
+  echo "Building llama-cpp-python with CUDA support (this takes a few minutes)..."
+  CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+    python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
+fi
 
 python - <<'PY'
 import sys

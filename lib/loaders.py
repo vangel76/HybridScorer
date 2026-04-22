@@ -15,6 +15,16 @@ from .config import (
     METHOD_IMAGEREWARD,
     METHOD_SAMEPERSON,
     METHOD_TAGMATCH,
+    METHOD_OBJECTSEARCH,
+    DINOV2_MODEL_ID,
+    DINOV2_INPUT_SIZE,
+    DINOV2_PATCH_DIM,
+    DINOV2_PATCHES_PER_IMAGE,
+    DINOV2_BASE_BATCH_SIZE,
+    DINOV2_MAX_BATCH_SIZE,
+    DINOV2_BATCH_AGGRESSION,
+    DINOV2_MIN_FREE_VRAM_GB,
+    OBJECTSEARCH_FAISS_TOP_K_PATCHES,
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_HUIHUI_GEMMA4,
@@ -91,6 +101,15 @@ def release_inactive_gpu_models(state, target_method):
     if target_method != METHOD_TAGMATCH and state.get("tagmatch_backend") is not None:
         state["tagmatch_backend"] = None
         released.append("TagMatch")
+
+    if target_method != METHOD_OBJECTSEARCH and state.get("dinov2_backend") is not None:
+        dinov2 = state["dinov2_backend"]
+        if isinstance(dinov2, dict):
+            _clear_torch_model(dinov2.get("model"))
+        state["dinov2_backend"] = None
+        state["os_cached_faiss_index"] = None
+        state["os_cached_patch_gpu_tensor"] = None
+        released.append("DINOv2")
 
     if state.get("prompt_backend_cache"):
         for backend_name, cached in list((state.get("prompt_backend_cache") or {}).items()):
@@ -755,3 +774,174 @@ def encode_single_face_embedding(state, query_path, progress):
         embedding = F.normalize(torch.as_tensor(raw_embedding, dtype=torch.float32), dim=0).cpu().numpy()
 
     return F.normalize(torch.as_tensor(embedding, dtype=torch.float32), dim=0).view(1, -1)
+
+
+def ensure_dinov2_backend(state, device, progress=None):
+    if state.get("dinov2_backend") is not None:
+        if progress is not None:
+            progress(0, desc=f"Using loaded DINOv2 model from memory: {DINOV2_MODEL_ID}")
+        return state["dinov2_backend"]
+
+    try:
+        from transformers import AutoImageProcessor, AutoModel
+    except Exception as exc:
+        raise RuntimeError("transformers is required for DINOv2 but could not be imported.") from exc
+
+    hf_cache = get_cache_config().get("huggingface_dir")
+    cache_kwargs = {"cache_dir": hf_cache} if hf_cache else {}
+    if progress is not None:
+        progress(0, desc=f"Loading DINOv2 model: {DINOV2_MODEL_ID}")
+    processor = AutoImageProcessor.from_pretrained(DINOV2_MODEL_ID, **cache_kwargs)
+    model = AutoModel.from_pretrained(DINOV2_MODEL_ID, **cache_kwargs)
+    model = model.to(device).eval()
+    state["dinov2_backend"] = {"model": model, "processor": processor, "device": device}
+    print(f"[DINOv2] Loaded {DINOV2_MODEL_ID} on {device}")
+    return state["dinov2_backend"]
+
+
+def _extract_dinov2_patches_batch(dinov2_backend, pil_images):
+    model = dinov2_backend["model"]
+    processor = dinov2_backend["processor"]
+    device = dinov2_backend["device"]
+
+    resized = [img.convert("RGB").resize((DINOV2_INPUT_SIZE, DINOV2_INPUT_SIZE), Image.Resampling.BILINEAR) for img in pil_images]
+    inputs = processor(images=resized, return_tensors="pt")
+    pixel_values = inputs["pixel_values"].to(device)
+
+    with torch.no_grad():
+        outputs = model(pixel_values=pixel_values)
+
+    patch_tokens = outputs.last_hidden_state[:, 1:, :]
+    patch_tokens = F.normalize(patch_tokens.float(), dim=-1)
+    return patch_tokens.cpu().numpy()
+
+
+def ensure_objectsearch_feature_cache(state, device, image_paths, progress=None):
+    from .utils import get_image_paths_signature, get_auto_batch_size, current_free_vram_gb
+
+    image_signature = get_image_paths_signature(image_paths)
+    can_reuse = (
+        state.get("os_cached_signature") == image_signature
+        and state.get("os_cached_model_id") == DINOV2_MODEL_ID
+        and state.get("os_cached_feature_paths") is not None
+        and state.get("os_cached_patch_features") is not None
+        and state.get("os_cached_patch_image_idx") is not None
+        and state.get("os_cached_faiss_index") is not None
+        and state.get("os_cached_failures") is not None
+    )
+    if can_reuse:
+        if progress is not None:
+            progress(0, desc=f"Reusing cached DINOv2 patch embeddings for {len(image_paths)} images")
+        return (
+            image_signature,
+            list(state["os_cached_feature_paths"]),
+            state["os_cached_patch_features"],
+            state["os_cached_patch_image_idx"],
+            state["os_cached_faiss_index"],
+            dict(state["os_cached_failures"]),
+        )
+
+    ensure_dinov2_backend(state, device, progress)
+    dinov2_backend = state["dinov2_backend"]
+
+    vram_info = current_free_vram_gb()
+    free_gb = vram_info[0] if vram_info else None
+    batch_size = DINOV2_BASE_BATCH_SIZE
+    if free_gb is not None and free_gb > DINOV2_MIN_FREE_VRAM_GB:
+        extra = free_gb - DINOV2_MIN_FREE_VRAM_GB
+        batch_size = min(DINOV2_MAX_BATCH_SIZE, max(DINOV2_BASE_BATCH_SIZE, int(DINOV2_BASE_BATCH_SIZE * (1 + extra * DINOV2_BATCH_AGGRESSION / 8.0))))
+
+    total = len(image_paths)
+    feature_paths = []
+    all_patches = []
+    patch_image_idx = []
+    failures = {}
+    completed = 0
+
+    if progress is not None:
+        progress(0, desc=f"Extracting DINOv2 patch embeddings 0/{total} (batch {batch_size})")
+
+    for batch_start in range(0, total, batch_size):
+        batch_paths = image_paths[batch_start:batch_start + batch_size]
+        pil_batch = []
+        batch_idx_map = []
+        for path in batch_paths:
+            try:
+                with Image.open(path) as src:
+                    pil_batch.append(src.convert("RGB").copy())
+                batch_idx_map.append((path, True))
+            except Exception as exc:
+                failures[path] = str(exc) or "Could not open image."
+                batch_idx_map.append((path, False))
+
+        valid_pil = [img for img, (_, ok) in zip(pil_batch, batch_idx_map) if ok]
+        if valid_pil:
+            try:
+                patches = _extract_dinov2_patches_batch(dinov2_backend, valid_pil)
+            except Exception as exc:
+                for path, ok in batch_idx_map:
+                    if ok and path not in failures:
+                        failures[path] = str(exc) or "DINOv2 extraction failed."
+                patches = None
+
+            if patches is not None:
+                valid_idx = 0
+                for path, ok in batch_idx_map:
+                    if ok:
+                        image_idx = len(feature_paths)
+                        feature_paths.append(path)
+                        img_patches = patches[valid_idx]
+                        all_patches.append(img_patches)
+                        patch_image_idx.extend([image_idx] * img_patches.shape[0])
+                        valid_idx += 1
+
+        completed += len(batch_paths)
+        if progress is not None:
+            progress(completed / max(total, 1), desc=f"Extracting DINOv2 patch embeddings {completed}/{total}")
+
+    if all_patches:
+        flat_patches = np.concatenate(all_patches, axis=0).astype(np.float32)
+        patch_image_idx_arr = np.array(patch_image_idx, dtype=np.int32)
+    else:
+        flat_patches = np.empty((0, DINOV2_PATCH_DIM), dtype=np.float32)
+        patch_image_idx_arr = np.empty((0,), dtype=np.int32)
+
+    try:
+        import faiss
+    except ImportError as exc:
+        raise RuntimeError("faiss-cpu is required for ObjectSearch but is not installed. Run the setup script.") from exc
+
+    index = faiss.IndexFlatIP(DINOV2_PATCH_DIM)
+    if flat_patches.shape[0] > 0:
+        index.add(flat_patches)
+
+    gpu_tensor = None
+    if torch.cuda.is_available() and flat_patches.shape[0] > 0:
+        try:
+            gpu_tensor = torch.from_numpy(flat_patches).to("cuda")
+            print(f"[DINOv2] Patch gallery uploaded to GPU ({flat_patches.shape[0]} patches)")
+        except Exception as exc:
+            print(f"[DINOv2] GPU tensor upload failed ({exc}), will use FAISS CPU for search")
+
+    state["os_cached_signature"] = image_signature
+    state["os_cached_model_id"] = DINOV2_MODEL_ID
+    state["os_cached_feature_paths"] = list(feature_paths)
+    state["os_cached_patch_features"] = flat_patches
+    state["os_cached_patch_image_idx"] = patch_image_idx_arr
+    state["os_cached_faiss_index"] = index
+    state["os_cached_patch_gpu_tensor"] = gpu_tensor
+    state["os_cached_failures"] = dict(failures)
+
+    print(f"[DINOv2] Patch cache built: {len(feature_paths)} images, {flat_patches.shape[0]} patches, {len(failures)} failures")
+    return image_signature, feature_paths, flat_patches, patch_image_idx_arr, index, failures
+
+
+def encode_single_objectsearch_query(state, device, query_path, progress=None):
+    ensure_dinov2_backend(state, device, progress)
+    try:
+        with Image.open(query_path) as src:
+            pil_img = src.convert("RGB").copy()
+    except Exception as exc:
+        raise RuntimeError(f"{os.path.basename(query_path)} could not be opened for object search: {exc}") from exc
+    patches = _extract_dinov2_patches_batch(state["dinov2_backend"], [pil_img])
+    return patches[0].astype(np.float32)

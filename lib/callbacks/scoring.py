@@ -8,7 +8,7 @@ from PIL import Image
 
 from ..config import (
     METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_SIMILARITY, METHOD_SAMEPERSON,
-    METHOD_LLMSEARCH, METHOD_TAGMATCH,
+    METHOD_LLMSEARCH, METHOD_TAGMATCH, METHOD_OBJECTSEARCH,
     TAGMATCH_WD_MIN_CACHE_PROB,
     PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_GGUF, PROMPT_GENERATOR_HUIHUI_GEMMA4,
@@ -24,6 +24,7 @@ from ..config import (
     TAGMATCH_SLIDER_MIN, TAGMATCH_SLIDER_MAX, TAGMATCH_DEFAULT_THRESHOLD,
     TAGMATCH_SLIDER_PREPROCESS_MIN, FACE_MODEL_LABEL, SEARCH_PROMPT,
     DEFAULT_LLMSEARCH_BACKEND, MODEL_LABELS, IMAGEREWARD_THRESHOLD,
+    DINOV2_MODEL_ID, OBJECTSEARCH_FAISS_TOP_K_PATCHES,
 )
 from ..utils import (
     get_image_paths_signature, get_auto_batch_size, normalize_folder_identity,
@@ -1225,6 +1226,143 @@ def find_same_person_images(state, folder, main_threshold, aux_threshold, progre
         ),
         percentile_slider_update(METHOD_SAMEPERSON, state["scores"]),
         percentile_reset_button_update(METHOD_SAMEPERSON, state["scores"]),
+    )
+    return _vw.build_preview_search_result(status_text, score_outputs)
+
+
+def score_objectsearch_cached_features(feature_paths, faiss_index, patch_image_idx, query_patches, failed_paths, patch_gpu_tensor=None):
+    if not feature_paths or faiss_index is None or faiss_index.ntotal == 0:
+        raise RuntimeError("No DINOv2 patch embeddings are available for object search.")
+
+    n_images = len(feature_paths)
+    k = min(OBJECTSEARCH_FAISS_TOP_K_PATCHES, faiss_index.ntotal)
+
+    if patch_gpu_tensor is not None:
+        query_t = torch.from_numpy(query_patches).to(patch_gpu_tensor.device)
+        sims_gpu = torch.mm(query_t, patch_gpu_tensor.T)
+        top_scores_t, top_indices_t = torch.topk(sims_gpu, k=k, dim=1)
+        scores_matrix = top_scores_t.cpu().numpy()
+        indices_matrix = top_indices_t.cpu().numpy()
+    else:
+        scores_matrix, indices_matrix = faiss_index.search(query_patches, k=k)
+
+    best_per_query = np.full((len(query_patches), n_images), -1.0, dtype=np.float64)
+    for q_idx in range(len(query_patches)):
+        for k_idx in range(scores_matrix.shape[1]):
+            patch_flat_idx = int(indices_matrix[q_idx, k_idx])
+            if patch_flat_idx < 0 or patch_flat_idx >= len(patch_image_idx):
+                continue
+            img_idx = int(patch_image_idx[patch_flat_idx])
+            sim = float(scores_matrix[q_idx, k_idx])
+            if sim > best_per_query[q_idx, img_idx]:
+                best_per_query[q_idx, img_idx] = sim
+
+    image_scores = best_per_query.mean(axis=0).tolist()
+
+    results = {}
+    for i, path in enumerate(feature_paths):
+        fname = os.path.basename(path)
+        results[fname] = {
+            "pos": float(image_scores[i]),
+            "neg": None,
+            "path": path,
+            "failed": False,
+            "query": False,
+        }
+
+    for path, _reason in failed_paths.items():
+        fname = os.path.basename(path)
+        results[fname] = {
+            "pos": 0.0,
+            "neg": None,
+            "path": path,
+            "failed": True,
+            "query": False,
+        }
+    return results
+
+
+def find_objectsearch_images(state, device, folder, main_threshold, aux_threshold, progress=gr.Progress()):
+    recalled_main, _, has_recalled = recalled_mode_thresholds(state, METHOD_OBJECTSEARCH, main_threshold, aux_threshold)
+    request_ctx, request_error = normalize_preview_search_request(
+        state,
+        folder,
+        "Select, drop, paste, or upload a query image first, then find object matches.",
+        "{preview_fname} is not part of the current folder, so object search cannot run.",
+    )
+    if request_error:
+        return _vw.build_preview_search_result(request_error, _vw.status_with_current_view(state, request_error, main_threshold, aux_threshold))
+    folder = request_ctx["folder"]
+    image_paths = request_ctx["image_paths"]
+    query_path = request_ctx["query_path"]
+    query_label = request_ctx["query_label"]
+    query_source = request_ctx["query_source"] or "gallery preview"
+    query_in_folder = request_ctx["query_in_folder"]
+    preserved_overrides = request_ctx["preserved_overrides"]
+
+    _lo.release_inactive_gpu_models(state, METHOD_OBJECTSEARCH)
+    try:
+        sync_promptmatch_proxy_cache(state, folder)
+        _, feature_paths, _flat_patches, patch_image_idx, faiss_index, failures = _lo.ensure_objectsearch_feature_cache(
+            state, device, image_paths, progress
+        )
+        patch_gpu_tensor = state.get("os_cached_patch_gpu_tensor")
+        query_patches = _lo.encode_single_objectsearch_query(state, device, query_path, progress)
+        objectsearch_scores = score_objectsearch_cached_features(
+            feature_paths,
+            faiss_index,
+            patch_image_idx,
+            query_patches,
+            failures,
+            patch_gpu_tensor=patch_gpu_tensor,
+        )
+    except Exception as exc:
+        message = f"Object search failed: {exc}"
+        return _vw.build_preview_search_result(
+            message,
+            _vw.status_with_current_view(state, message, main_threshold, aux_threshold),
+        )
+
+    state["method"] = METHOD_OBJECTSEARCH
+    set_scored_mode(state)
+    state["source_dir"] = folder
+    state["scores"] = objectsearch_scores
+    state["overrides"] = preserved_overrides
+    reset_selection_state(state)
+    if query_in_folder:
+        state["preview_fname"] = request_ctx["preview_fname"]
+    clear_preview_search_context(state)
+    state["objectsearch_query_fname"] = query_label
+    state["objectsearch_query_source"] = query_source
+
+    pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
+    _, default_top_n = similarity_topn_defaults(state["scores"])
+    default_main = threshold_for_percentile(METHOD_OBJECTSEARCH, state["scores"], default_top_n)
+    next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
+    safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
+    safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
+    status_text = f"Object search using {DINOV2_MODEL_ID} from {query_source} ({query_label})."
+    score_outputs = render_scored_mode_result(
+        state,
+        METHOD_OBJECTSEARCH,
+        next_main,
+        NEGATIVE_THRESHOLD,
+        gr.update(
+            minimum=safe_pos_min,
+            maximum=safe_pos_max,
+            value=next_main,
+            label=threshold_labels(METHOD_OBJECTSEARCH)[0],
+        ),
+        gr.update(
+            minimum=safe_neg_min,
+            maximum=safe_neg_max,
+            value=NEGATIVE_THRESHOLD,
+            visible=False,
+            interactive=False,
+            label=threshold_labels(METHOD_OBJECTSEARCH)[1],
+        ),
+        percentile_slider_update(METHOD_OBJECTSEARCH, state["scores"]),
+        percentile_reset_button_update(METHOD_OBJECTSEARCH, state["scores"]),
     )
     return _vw.build_preview_search_result(status_text, score_outputs)
 

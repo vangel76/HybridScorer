@@ -211,6 +211,7 @@ def create_app():
     score_folder = partial(_sc.score_folder, state, device)
     find_similar_images = partial(_sc.find_similar_images, state, device)
     find_same_person_images = partial(_sc.find_same_person_images, state)
+    find_objectsearch_images = partial(_sc.find_objectsearch_images, state, device)
     handle_shortcut_action = partial(_sc.handle_shortcut_action, state, device)
 
     # Bind prompt callbacks
@@ -453,6 +454,7 @@ def create_app():
                                 with gr.Column(elem_classes=["preview-action-stack"]):
                                     find_same_person_btn = gr.Button("Find same person", elem_id="hy-find-same-person")
                                     find_similar_btn = gr.Button("Find similar images", elem_id="hy-find-similar")
+                                    find_object_btn = gr.Button("Find object images", elem_id="hy-find-object")
                             with gr.Tab("Prompt"):
                                 with gr.Group(elem_classes=["preview-prompt-group"]):
                                     prompt_generator_dd = gr.Dropdown(
@@ -660,6 +662,11 @@ def create_app():
         )
         find_same_person_btn.click(
             fn=find_same_person_images,
+            inputs=[folder_input, main_slider, aux_slider],
+            outputs=_preview_search_outputs,
+        )
+        find_object_btn.click(
+            fn=find_objectsearch_images,
             inputs=[folder_input, main_slider, aux_slider],
             outputs=_preview_search_outputs,
         )

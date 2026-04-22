@@ -1,5 +1,25 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.5.0 - ObjectSearch & Faster Setup
+
+**New ObjectSearch Mode**
+- New search mode: point at any image (or paste/upload a query) and find every image in the folder that contains that specific object, even as a small part of a larger scene
+- Uses DINOv2 patch-level features — 256 dense patches per image — so a small object in the corner of a photo still registers as a match
+- Gallery patch features are uploaded to GPU memory for fast torch-matmul nearest-neighbor search; falls back to CPU FAISS when no GPU is available
+- Results use the same threshold slider and top-N controls as Similarity and SamePerson
+- Feature cache is reused across queries against the same folder, so a second search is near-instant
+- Model: `facebook/dinov2-base` (downloaded once on first use)
+
+**Faster Setup / Update**
+- `setup_update-linux.sh` now skips each install step when the package is already present and working
+- PyTorch is skipped if the pinned version is already installed (avoids hitting the CUDA index every time)
+- `onnxruntime-gpu` is skipped if `CUDAExecutionProvider` is already available
+- `image-reward 1.5` is skipped if it is already at that exact version
+- `llama-cpp-python` CUDA rebuild is skipped when the installed build already reports GPU offload support — the slow from-source compile only runs when actually needed
+
+**Parallel worker count for SamePerson halved**
+- InsightFace face-embedding worker count is now capped at half the previous value to reduce VRAM pressure when running alongside other models
+
 ## Version 2.4.0 - Modular Codebase
 
 **Code split into modules**

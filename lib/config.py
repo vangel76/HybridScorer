@@ -23,6 +23,7 @@ METHOD_LLMSEARCH = "LM Search"
 METHOD_SIMILARITY = "Similarity"
 METHOD_SAMEPERSON = "SamePerson"
 METHOD_TAGMATCH = "TagMatch"
+METHOD_OBJECTSEARCH = "ObjectSearch"
 DEFAULT_IR_NEGATIVE_PROMPT = ""
 DEFAULT_IR_PENALTY_WEIGHT = 1.0
 SIMILARITY_TOPN_DEFAULT = 5
@@ -97,6 +98,16 @@ TAGMATCH_AUTOCOMPLETE_MAX_SUGGESTIONS = 12
 TAGMATCH_DEFAULT_TAGS = (
     "bad_anatomy, bad_hands, bad_feet, bad_proportions, deformed, extra_arms, extra_faces, extra_mouth, missing_limb, multiple_legs, multiple_heads, oversized_limbs, wrong_foot, artistic_error, glitch, blob, disembodied_limb"
 )
+DINOV2_MODEL_ID = "facebook/dinov2-base"
+DINOV2_INPUT_SIZE = 224
+DINOV2_PATCH_DIM = 768
+DINOV2_PATCHES_PER_IMAGE = 256
+DINOV2_BASE_BATCH_SIZE = 24
+DINOV2_MAX_BATCH_SIZE = 96
+DINOV2_BATCH_AGGRESSION = 1.4
+DINOV2_MIN_FREE_VRAM_GB = 3.0
+OBJECTSEARCH_FAISS_TOP_K_PATCHES = 8
+
 FACE_MODEL_PACK = "buffalo_l"
 FACE_MODEL_LABEL = f"InsightFace {FACE_MODEL_PACK}"
 FACE_DET_SIZE = (640, 640)

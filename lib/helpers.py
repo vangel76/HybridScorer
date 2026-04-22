@@ -17,6 +17,7 @@ from .config import (
     METHOD_SIMILARITY,
     METHOD_SAMEPERSON,
     METHOD_TAGMATCH,
+    METHOD_OBJECTSEARCH,
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_GGUF,
@@ -178,11 +179,11 @@ def sanitize_export_name(name):
 
 
 def uses_similarity_topn(method):
-    return method in (METHOD_SIMILARITY, METHOD_SAMEPERSON)
+    return method in (METHOD_SIMILARITY, METHOD_SAMEPERSON, METHOD_OBJECTSEARCH)
 
 
 def uses_pos_similarity_scores(method):
-    return method in (METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_SIMILARITY, METHOD_SAMEPERSON, METHOD_TAGMATCH)
+    return method in (METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_SIMILARITY, METHOD_SAMEPERSON, METHOD_TAGMATCH, METHOD_OBJECTSEARCH)
 
 
 def export_destination(folder, filename):
@@ -223,6 +224,13 @@ def threshold_labels(method):
             "Minimum artifact score to keep (higher = fewer kept)",
             "Negative score is unused for TagMatch",
             "Min artifact score",
+            "Negative score",
+        )
+    if method == METHOD_OBJECTSEARCH:
+        return (
+            "Minimum object match score to keep (higher = fewer kept)",
+            "Negative score is unused for object search",
+            "Min object match score",
             "Negative score",
         )
     return (
@@ -319,6 +327,8 @@ def percentile_slider_label(method):
         return "Show the N most similar"
     if method == METHOD_SAMEPERSON:
         return "Show the N closest face matches"
+    if method == METHOD_OBJECTSEARCH:
+        return "Show the N best object matches"
     return "Or keep top N%"
 
 

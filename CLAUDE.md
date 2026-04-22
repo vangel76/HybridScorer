@@ -53,7 +53,7 @@ static/
 
 UI behavior is callback-driven. Some behavior lives in injected JS, not Python. Always inspect both before changing UI logic.
 
-### Five scoring modes
+### Six scoring modes
 
 | Mode | Backend | Cache used |
 |---|---|---|
@@ -62,6 +62,7 @@ UI behavior is callback-driven. Some behavior lives in injected JS, not Python. 
 | **Similarity** | reuses PromptMatch embeddings | same as PromptMatch |
 | **SamePerson** | InsightFace buffalo_l (ONNX) | per-folder face embeddings |
 | **LLM Search** | PromptMatch shortlist → vision-language rerank | PromptMatch embeddings + LLM captions |
+| **ObjectSearch** | DINOv2 ViT-B/14 patch features + FAISS (CPU) / GPU matmul | per-folder patch embeddings (256 patches/image, in-memory) |
 
 ### LLM Search flow
 1. PromptMatch builds a shortlist from the text query
@@ -69,8 +70,17 @@ UI behavior is callback-driven. Some behavior lives in injected JS, not Python. 
 3. Non-shortlisted images get a deterministic reject-floor score
 4. HF JoyCaption uses batched inference (`score_candidates_batch`, `LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE=4`); GGUF is sequential
 
+### ObjectSearch flow
+1. User sets a query image (upload, paste, or gallery preview) in accordion 3
+2. `ensure_objectsearch_feature_cache` extracts DINOv2 patch tokens for the whole folder, builds a `faiss.IndexFlatIP` CPU index and (if CUDA available) a GPU tensor copy of all patches
+3. `encode_single_objectsearch_query` extracts patch tokens from the query image
+4. `score_objectsearch_cached_features` runs GPU `torch.mm` (or FAISS CPU fallback), aggregates best-match-per-query-patch per gallery image, returns mean score
+5. Scores feed into the standard threshold/split/export flow — uses `uses_similarity_topn` (top-N slider) same as Similarity and SamePerson
+- State keys: `os_cached_*`, `dinov2_backend`, `objectsearch_query_fname/source`
+- `release_inactive_gpu_models` clears `dinov2_backend`, `os_cached_faiss_index`, and `os_cached_patch_gpu_tensor`
+
 ### VRAM management
-`release_inactive_gpu_models(target_method)` is called at the top of `score_folder`, `find_similar_images`, and `find_same_person_images` — before any model loads. It frees models not needed for the incoming method. The PromptMatch CLIP `state["backend"]` is never released because it is always needed for shortlist embeddings.
+`release_inactive_gpu_models(target_method)` is called at the top of `score_folder`, `find_similar_images`, `find_same_person_images`, and `find_objectsearch_images` — before any model loads. It frees models not needed for the incoming method. The PromptMatch CLIP `state["backend"]` is never released because it is always needed for shortlist embeddings.
 
 ### Cache and proxy system
 - Cache mode defaults: Windows → project-local (`models/`, `cache/`); Linux → system (`~/.cache/...`)
