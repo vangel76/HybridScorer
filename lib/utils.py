@@ -589,7 +589,7 @@ def face_embedding_worker_count(total_images):
     if total_gb >= 32 and free_gb >= 20:
         vram_cap = max(vram_cap, min(FACE_EMBEDDING_ABSOLUTE_MAX_WORKERS, 14))
 
-    return max(1, min(hard_cap, vram_cap))
+    return max(1, min(hard_cap, vram_cap) // 2)
 
 
 def promptmatch_host_worker_count(total_items):
