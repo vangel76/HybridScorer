@@ -182,25 +182,45 @@ if errorlevel 1 exit /b 1
 python -m pip install --upgrade pip setuptools wheel
 if errorlevel 1 exit /b 1
 
-echo.
-echo Installing CUDA-enabled PyTorch from:
-echo   %PYTORCH_CUDA_INDEX_URL%
-echo Pinned package versions:
-echo   torch==%PYTORCH_TORCH_VERSION%
-echo   torchvision==%PYTORCH_TORCHVISION_VERSION%
-echo If you override PYTORCH_CUDA_INDEX_URL, make sure these pinned versions exist on that index.
-python -m pip install torch==%PYTORCH_TORCH_VERSION% torchvision==%PYTORCH_TORCHVISION_VERSION% --index-url %PYTORCH_CUDA_INDEX_URL%
-if errorlevel 1 exit /b 1
+python -c "import torch, torchvision; assert torch.__version__ == '%PYTORCH_TORCH_VERSION%'; assert torchvision.__version__ == '%PYTORCH_TORCHVISION_VERSION%'" >nul 2>nul
+if not errorlevel 1 (
+    echo PyTorch %PYTORCH_TORCH_VERSION% + torchvision %PYTORCH_TORCHVISION_VERSION% already installed, skipping.
+) else (
+    echo.
+    echo Installing CUDA-enabled PyTorch from:
+    echo   %PYTORCH_CUDA_INDEX_URL%
+    echo Pinned package versions:
+    echo   torch==%PYTORCH_TORCH_VERSION%
+    echo   torchvision==%PYTORCH_TORCHVISION_VERSION%
+    python -m pip install torch==%PYTORCH_TORCH_VERSION% torchvision==%PYTORCH_TORCHVISION_VERSION% --index-url %PYTORCH_CUDA_INDEX_URL%
+    if errorlevel 1 exit /b 1
+)
 
 python -m pip install -r "%CD%\requirements.txt"
 if errorlevel 1 exit /b 1
 
-python -m pip uninstall -y onnxruntime onnxruntime-gpu >nul 2>nul
-python -m pip install onnxruntime-gpu
-if errorlevel 1 exit /b 1
+python -c "import onnxruntime as ort; assert 'CUDAExecutionProvider' in ort.get_available_providers()" >nul 2>nul
+if not errorlevel 1 (
+    echo onnxruntime-gpu ^(CUDA^) already installed, skipping.
+) else (
+    python -m pip uninstall -y onnxruntime onnxruntime-gpu >nul 2>nul
+    python -m pip install onnxruntime-gpu
+    if errorlevel 1 exit /b 1
+)
 
-python -m pip install --no-deps image-reward==1.5
-if errorlevel 1 exit /b 1
+python -c "from importlib.metadata import version; assert version('image-reward') == '1.5'" >nul 2>nul
+if not errorlevel 1 (
+    echo image-reward 1.5 already installed, skipping.
+) else (
+    python -m pip install --no-deps image-reward==1.5
+    if errorlevel 1 exit /b 1
+)
+
+python -c "import llama_cpp; assert hasattr(llama_cpp, 'llama_supports_gpu_offload') and llama_cpp.llama_supports_gpu_offload()" >nul 2>nul
+if not errorlevel 1 (
+    echo llama-cpp-python with CUDA already installed, skipping rebuild.
+    goto after_llama_install
+)
 
 echo.
 echo Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python
@@ -251,6 +271,7 @@ set "CMAKE_ARGS="
 set "FORCE_CMAKE="
 set "CC="
 set "CXX="
+:after_llama_install
 
 python -c "import sys, torch; ok=torch.cuda.is_available(); print(f'CUDA OK: {torch.cuda.get_device_name(0)}' if ok else 'CUDA missing'); sys.exit(0 if ok else 1)"
 if errorlevel 1 (
