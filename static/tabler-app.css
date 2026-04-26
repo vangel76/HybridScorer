@@ -1,6 +1,20 @@
 html, body { height: 100%; overflow: hidden; }
-.hy-page { height: 100vh; background: #0b0d12; }
-.hy-header { min-height: 44px; border-bottom: 1px solid #202633; }
+[data-bs-theme="dark"] {
+  --tblr-body-bg: #131313;
+  --tblr-bg-surface: #1b1b1b;
+  --tblr-bg-surface-secondary: #202020;
+  --tblr-bg-surface-tertiary: #252525;
+  --tblr-card-bg: #1b1b1b;
+  --tblr-border-color: #2d2d2d;
+  --tblr-border-color-translucent: rgba(255,255,255,0.08);
+  --bs-body-bg: #131313;
+  --bs-card-bg: #1b1b1b;
+  --bs-border-color: #2d2d2d;
+  --bs-tertiary-bg: #202020;
+  --bs-secondary-bg: #1b1b1b;
+}
+.hy-page { height: 100vh; background: #111111; }
+.hy-header { min-height: 44px; border-bottom: 1px solid #242424; }
 .hy-brand { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .16em; text-transform: uppercase; color: #aadd66; }
 .hy-shell { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 10px; height: calc(100vh - 52px); padding: 8px; }
 .hy-sidebar { display: flex; flex-direction: column; min-height: 0; }
@@ -12,8 +26,8 @@ html, body { height: 100%; overflow: hidden; }
 .hy-galleries .card { min-height: 0; overflow: hidden; }
 .hy-gallery { height: 100%; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--thumb-size, 180px), 1fr)); grid-auto-rows: min-content; align-content: start; gap: 8px; padding: 8px; transition: outline .1s; }
 .hy-gallery.drag-over { outline: 2px dashed rgba(74, 170, 100, .55); background: rgba(74, 170, 100, .05); }
-.hy-thumb { position: relative; margin: 0; border: 1px solid #2b3445; background: #111722; border-radius: 8px; overflow: hidden; cursor: pointer; }
-.hy-thumb img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; background: radial-gradient(circle at 50% 20%, #1f3148, #0d111a); }
+.hy-thumb { position: relative; margin: 0; border: 1px solid #303030; background: #161616; border-radius: 8px; overflow: hidden; cursor: pointer; }
+.hy-thumb img { width: 100%; aspect-ratio: 1; object-fit: contain; display: block; background: radial-gradient(circle at 50% 20%, #202020, #101010); }
 .hy-thumb figcaption { font-size: 11px; line-height: 1.25; padding: 4px 6px; color: #cbd5e1; word-break: break-word; }
 .hy-thumb.image-error img { opacity: .18; }
 .hy-thumb.image-error::after { content: "image load failed"; position: absolute; inset: 0 0 34px 0; display: grid; place-items: center; color: #ff8787; font-size: 12px; background: rgba(20, 8, 10, .45); }
@@ -26,20 +40,19 @@ html, body { height: 100%; overflow: hidden; }
 .hy-zoom-content img { max-width: 100%; max-height: 86%; object-fit: contain; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,.7); }
 .hy-zoom-caption { color: #cbd5e1; font-size: 13px; text-align: center; word-break: break-all; max-width: 100%; }
 .hy-pm-field { position: relative; }
-.hy-seg-pills-overlay { position: absolute; inset: 0; display: none; flex-wrap: wrap; align-content: flex-start; gap: 4px; padding: 6px 8px; background: #111722; border-radius: 4px; overflow: hidden; z-index: 2; pointer-events: none; border: 1px solid #2b3445; }
+.hy-seg-pills-overlay { position: absolute; inset: 0; display: none; flex-wrap: wrap; align-content: flex-start; gap: 4px; padding: 6px 8px; background: #161616; border-radius: 4px; overflow: hidden; z-index: 2; pointer-events: none; border: 1px solid #303030; }
 .hy-seg-pills-overlay.active { display: flex; }
 .hy-pm-field textarea.pills-active { color: transparent; caret-color: transparent; }
 .hy-seg-pill { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .hy-thumb.overridden figcaption::before { content: "PIN "; color: #f59f00; font-weight: 700; }
-.hy-thresholds { flex-shrink: 0; z-index: 3; border-top: 1px solid #2b3445; }
-.hy-histogram-wrap { position: relative; }
+.hy-thresholds { flex-shrink: 0; z-index: 3; border-top: 1px solid #2a2a2a; }
+.hy-histogram-wrap { position: relative; min-height: 80px; background: #0f0f0f; border-radius: 6px; }
 .hy-histogram { width: 100%; border-radius: 6px; cursor: crosshair; display: block; }
-.hy-histogram-wrap { position: relative; min-height: 80px; background: #0d1018; border-radius: 6px; }
 .hy-hist-hover-line { position: absolute; display: none; width: 0; border-left: 2px solid rgba(190, 255, 115, .95); pointer-events: none; z-index: 2; filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
 .hy-hist-hover-line-neg { border-left-color: rgba(255, 135, 100, .95); }
 .hy-hist-threshold-line { position: absolute; display: none; width: 0; border-left: 2px dashed rgba(255, 255, 255, .9); pointer-events: none; z-index: 3; filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
 .hy-hist-threshold-line-neg { border-left-color: rgba(255, 175, 145, .95); }
-.hy-query-drop { height: 190px; border: 1px dashed #4dabf7; border-radius: 10px; display: grid; place-items: center; background: #0f1724; overflow: hidden; }
+.hy-query-drop { height: 190px; border: 1px dashed #888888; border-radius: 10px; display: grid; place-items: center; background: #141414; overflow: hidden; }
 .hy-query-drop img { max-width: 100%; max-height: 100%; object-fit: contain; display: none; }
 .hy-query-drop.has-image img { display: block; }
 .hy-query-drop.has-image .hy-query-placeholder { display: none; }
@@ -52,10 +65,11 @@ html, body { height: 100%; overflow: hidden; }
 .hy-move-btn { width: 2.8rem; height: 2.8rem; padding: 0; font-size: 1.5rem; line-height: 1; flex-shrink: 0; }
 #main_threshold { transform: scaleX(-1); }
 .hy-suggestions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.hy-suggestions button { border: 1px solid #31506f; background: #102033; color: #9fd5ff; border-radius: 4px; font-size: 11px; padding: 2px 6px; }
+.hy-suggestions button { border: 1px solid #464646; background: #1c1c1c; color: #c0c0c0; border-radius: 4px; font-size: 11px; padding: 2px 6px; }
 .hy-job { margin: 0; padding: 8px 12px; }
 .hy-job-row { display: flex; align-items: center; gap: 8px; }
 .hy-busy button, .hy-busy input, .hy-busy select, .hy-busy textarea { opacity: .72; }
+.form-control::selection, .form-select::selection { background-color: #cccccc; color: #111111; }
 .hy-changelog { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 @media (max-width: 900px) {
   html, body { overflow: auto; }

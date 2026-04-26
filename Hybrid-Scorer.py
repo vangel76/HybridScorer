@@ -6,6 +6,7 @@ FastAPI + Tabler UI entrypoint. Core scoring/model/cache logic lives in lib/.
 
 import asyncio
 import html as _html
+import logging
 import os
 import sys
 import webbrowser
@@ -230,6 +231,13 @@ if __name__ == "__main__":
         url = f"http://localhost:{port}"
         await asyncio.sleep(0.1)
         webbrowser.open(url)
+
+    class _MediaFilter(logging.Filter):
+        def filter(self, record):
+            msg = record.getMessage()
+            return '"/media/' not in msg
+
+    logging.getLogger("uvicorn.access").addFilter(_MediaFilter())
 
     uvicorn.run(
         fastapi_app,

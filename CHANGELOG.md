@@ -1,5 +1,28 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.7.0 - UI Polish & Bug Fixes
+
+**Sidebar Overhaul**
+- Accordion sections now expand and collapse independently — opening one no longer collapses the others
+- Histogram and threshold sliders are permanently pinned to the bottom of the sidebar and never scroll away
+- Accordion section headers are more compact (20% shorter) to leave more room for content
+- Percentile slider removed to save space
+
+**Histogram Always Visible**
+- The histogram area now shows a dark placeholder before any scoring runs, so the layout does not shift when scores arrive
+
+**Gallery Controls Repositioned**
+- Arrow buttons swapped: → (reject) lives in the left gallery header, ← (keep) lives in the right gallery header — so the button always points away from where the image already is
+- Tooltip on Fit Threshold corrected: it moves the threshold so marked images cross to the opposite gallery, it does not move only images to the right
+
+**Bug Fixes**
+- Shift-click to mark images in the right gallery now selects the correct image — an index mismatch caused by unnormalized thresholds in the selection handler is fixed
+- `/media/` thumbnail fetch lines are no longer printed to the console — only meaningful server events appear in the log
+
+**Appearance**
+- UI backgrounds and borders shifted from blue-grey tones to neutral grey, keeping the same brightness
+- Text selection highlight in input fields is now clearly visible (light grey with black text)
+
 ## Version 2.6.9 - Gallery Overhaul
 
 **Smarter Gallery Layout**
