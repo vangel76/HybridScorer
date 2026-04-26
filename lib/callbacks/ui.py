@@ -2,7 +2,7 @@ import os
 import json
 import shutil
 
-import gradio as gr
+from .. import ui_compat as gr
 
 from ..config import (
     METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_LLMSEARCH, NEGATIVE_THRESHOLD,

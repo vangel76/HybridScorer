@@ -4,7 +4,7 @@ import tempfile
 from hashlib import sha256
 
 from PIL import Image
-import gradio as gr
+from . import ui_compat as gr
 
 from .utils import (
     normalize_folder_identity,

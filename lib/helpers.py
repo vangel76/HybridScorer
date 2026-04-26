@@ -6,7 +6,7 @@ import os
 import re
 import string
 
-import gradio as gr
+from . import ui_compat as gr
 import torch
 from PIL import Image
 
@@ -56,6 +56,8 @@ from .utils import (
 
 
 def label_for_backend(backend):
+    if backend is None:
+        return MODEL_LABELS[0]
     for label, name, kwargs in MODEL_CHOICES:
         if name != backend.backend:
             continue
@@ -436,7 +438,7 @@ def expand_slider_bounds(lo, hi, *values):
         lo = min(float(lo), *safe_values)
         hi = max(float(hi), *safe_values)
     # Floor lo / ceil hi so actual score values never fall outside the slider bounds.
-    # round() can push lo above the true minimum, causing Gradio out-of-bounds errors.
+    # round() can push lo above the true minimum, causing slider out-of-bounds errors.
     return math.floor(lo * 1000) / 1000, math.ceil(hi * 1000) / 1000
 
 

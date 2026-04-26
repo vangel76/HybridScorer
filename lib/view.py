@@ -1,7 +1,7 @@
 import os
 import json
 
-import gradio as gr
+from . import ui_compat as gr
 from PIL import Image, ImageDraw
 
 from .config import (

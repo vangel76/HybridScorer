@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/vendor/tabler/tabler.min.css">
+  <link rel="stylesheet" href="/static/tabler-app.css">
+</head>
+<body>
+  <div class="page hy-page">
+    <header class="navbar navbar-expand-md d-print-none hy-header">
+      <div class="container-fluid">
+        <h1 class="navbar-brand hy-brand">{{ app_name }}</h1>
+        <div class="navbar-nav flex-row order-md-last">
+          <button class="btn btn-ghost-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#changelog-modal">{{ version }}</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="page-wrapper">
+      <div class="container-fluid hy-shell">
+        <aside class="hy-sidebar">
+          <div class="accordion" id="hy-sidebar-accordion">
+            <div class="accordion-item">
+              <h2 class="accordion-header"><button class="accordion-button" data-bs-toggle="collapse" data-bs-target="#setup-pane">1. Setup</button></h2>
+              <div id="setup-pane" class="accordion-collapse collapse show" data-bs-parent="#hy-sidebar-accordion">
+                <div class="accordion-body">
+                  <label class="form-label">Method</label>
+                  <select id="method" class="form-select"></select>
+                  <div id="method-note" class="form-hint mt-2"></div>
+                  <label class="form-label mt-3">Image folder</label>
+                  <input id="folder" class="form-control" type="text">
+                  <button id="load-folder" class="btn btn-outline-primary w-100 mt-2">Load folder</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header"><button class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#scoring-pane">2. Scoring & Settings</button></h2>
+              <div id="scoring-pane" class="accordion-collapse collapse" data-bs-parent="#hy-sidebar-accordion">
+                <div class="accordion-body">
+                  <div id="group-promptmatch">
+                    <label class="form-label">PromptMatch model</label>
+                    <select id="model_label" class="form-select"></select>
+                    <label class="form-label mt-2">Positive prompt</label>
+                    <textarea id="pos_prompt" class="form-control" rows="2"></textarea>
+                    <label class="form-label mt-2">Negative prompt</label>
+                    <textarea id="neg_prompt" class="form-control" rows="1"></textarea>
+                    <label class="form-check mt-2"><input id="pm_segment_mode" class="form-check-input" type="checkbox"><span class="form-check-label">Per-segment scoring</span></label>
+                  </div>
+                  <div id="group-imagereward">
+                    <label class="form-label">ImageReward positive prompt</label>
+                    <textarea id="ir_prompt" class="form-control" rows="3"></textarea>
+                    <label class="form-label mt-2">Penalty prompt</label>
+                    <textarea id="ir_negative_prompt" class="form-control" rows="2"></textarea>
+                    <label class="form-label mt-2">Penalty weight</label>
+                    <input id="ir_penalty_weight" class="form-range" min="0" max="4" step="0.1" type="range">
+                  </div>
+                  <div id="group-llmsearch">
+                    <label class="form-label">PromptMatch shortlist model</label>
+                    <select id="llm_model_label" class="form-select"></select>
+                    <label class="form-label mt-2">Vision LM backend</label>
+                    <select id="llm_backend_id" class="form-select"></select>
+                    <label class="form-label mt-2">LM search prompt</label>
+                    <textarea id="llm_prompt" class="form-control" rows="2"></textarea>
+                    <label class="form-label mt-2">Shortlist size</label>
+                    <input id="llm_shortlist_size" class="form-range" min="8" max="512" step="1" type="range">
+                  </div>
+                  <div id="group-tagmatch">
+                    <label class="form-label">Tags to detect</label>
+                    <textarea id="tagmatch_tags" class="form-control" rows="3"></textarea>
+                    <div id="tag-suggestions" class="hy-suggestions"></div>
+                  </div>
+                  <label id="keep-pm-row" class="form-check mt-3"><input id="keep_pm_thresholds" class="form-check-input" type="checkbox"><span class="form-check-label">Keep PromptMatch thresholds</span></label>
+                  <label id="keep-ir-row" class="form-check mt-2"><input id="keep_ir_thresholds" class="form-check-input" type="checkbox"><span class="form-check-label">Keep ImageReward threshold</span></label>
+                  <button id="run-score" class="btn btn-primary w-100 mt-3">Run scoring</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header"><button class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#search-pane">3. Search + Prompt</button></h2>
+              <div id="search-pane" class="accordion-collapse collapse" data-bs-parent="#hy-sidebar-accordion">
+                <div class="accordion-body">
+                  <div id="query-drop" class="hy-query-drop">
+                    <img id="query-image" alt="">
+                    <div class="hy-query-placeholder">Drop, paste, or upload query image</div>
+                  </div>
+                  <input id="query-file" class="form-control mt-2" type="file" accept="image/*">
+                  <button id="clear-query" class="btn btn-outline-secondary w-100 mt-2">Clear external override</button>
+                  <div class="btn-list mt-3">
+                    <button id="find-same" class="btn btn-outline-info w-100">Find same person</button>
+                    <button id="find-similar" class="btn btn-outline-info w-100">Find similar images</button>
+                    <button id="find-object" class="btn btn-outline-info w-100">Find object images</button>
+                  </div>
+                  <hr>
+                  <label class="form-label">Prompt generator</label>
+                  <select id="prompt_generator" class="form-select"></select>
+                  <button id="generate-prompt" class="btn btn-outline-primary w-100 mt-2">Prompt from image</button>
+                  <label class="form-label mt-2">Generated prompt</label>
+                  <textarea id="generated_prompt" class="form-control" rows="4"></textarea>
+                  <label class="form-label mt-2">Prompt detail</label>
+                  <input id="generated_prompt_detail" class="form-range" min="1" max="3" step="1" type="range">
+                  <button id="insert-prompt" class="btn btn-outline-success w-100 mt-2">Insert into active prompt</button>
+                  <div id="prompt-status" class="form-hint mt-2"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header"><button class="accordion-button collapsed" data-bs-toggle="collapse" data-bs-target="#export-pane">4. Export</button></h2>
+              <div id="export-pane" class="accordion-collapse collapse" data-bs-parent="#hy-sidebar-accordion">
+                <div class="accordion-body">
+                  <label class="form-check"><input id="export_left_enabled" class="form-check-input" type="checkbox"><span class="form-check-label">Export left bucket</span></label>
+                  <input id="export_left_name" class="form-control mt-1" type="text">
+                  <label class="form-check mt-2"><input id="export_right_enabled" class="form-check-input" type="checkbox"><span class="form-check-label">Export right bucket</span></label>
+                  <input id="export_right_name" class="form-control mt-1" type="text">
+                  <label class="form-check mt-2"><input id="export_move_enabled" class="form-check-input" type="checkbox"><span class="form-check-label">Move instead of copy</span></label>
+                  <button id="export" class="btn btn-primary w-100 mt-3">Export folders</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card hy-thresholds mt-2">
+            <div class="card-body">
+              <div id="histogram-wrap" class="hy-histogram-wrap">
+                <img id="histogram" class="hy-histogram" alt="">
+                <div id="hist-threshold-main" class="hy-hist-threshold-line"></div>
+                <div id="hist-threshold-neg" class="hy-hist-threshold-line hy-hist-threshold-line-neg"></div>
+                <div id="hist-hover-main" class="hy-hist-hover-line"></div>
+                <div id="hist-hover-neg" class="hy-hist-hover-line hy-hist-hover-line-neg"></div>
+              </div>
+              <label id="main-label" class="form-label mt-2">Threshold</label>
+              <input id="main_threshold" class="form-range" type="range" step="0.001">
+              <label id="aux-label" class="form-label">Aux threshold</label>
+              <input id="aux_threshold" class="form-range" type="range" step="0.001">
+              <label id="percentile-label" class="form-label">Percentile</label>
+              <input id="percentile" class="form-range" min="0" max="100" step="1" type="range">
+            </div>
+          </div>
+        </aside>
+
+        <main class="hy-main">
+          <div class="hy-toolbar">
+            <div id="status" class="text-secondary"></div>
+            <div class="btn-list">
+              <button id="move-left" class="btn btn-outline-secondary">Move left</button>
+              <button id="pin" class="btn btn-outline-secondary">Pin selected</button>
+              <button id="fit-threshold" class="btn btn-outline-warning">Fit thresh</button>
+              <button id="move-right" class="btn btn-outline-secondary">Move right</button>
+              <button id="clear-marked" class="btn btn-outline-secondary">Clear marked</button>
+              <button id="clear-all" class="btn btn-outline-danger">Clear all</button>
+            </div>
+          </div>
+          <div id="job-status" class="alert alert-info hy-job d-none">
+            <div class="hy-job-row">
+              <span class="spinner-border spinner-border-sm"></span>
+              <span id="job-status-text">Working...</span>
+            </div>
+            <div class="progress progress-sm mt-2">
+              <div id="job-progress-bar" class="progress-bar progress-bar-indeterminate"></div>
+            </div>
+          </div>
+          <div class="hy-galleries">
+            <section class="card">
+              <div class="card-header"><h3 id="left-title" class="card-title">0 images</h3></div>
+              <div id="left-gallery" class="hy-gallery"></div>
+            </section>
+            <section class="card">
+              <div class="card-header"><h3 id="right-title" class="card-title">0 images</h3></div>
+              <div id="right-gallery" class="hy-gallery"></div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal modal-blur fade" id="changelog-modal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">Changelog</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <pre id="changelog" class="modal-body hy-changelog"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script id="initial-state" type="application/json">{{ initial_state | tojson }}</script>
+  <script src="/static/vendor/tabler/tabler.min.js"></script>
+  <script src="/static/tabler-app.js"></script>
+</body>
+</html>

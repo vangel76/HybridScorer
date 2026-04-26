@@ -477,7 +477,7 @@ def ensure_promptmatch_backend_loaded(state, device, model_label, progress):
     if cfg is None:
         raise RuntimeError(f"Unknown PromptMatch model: {model_label}")
     _, backend_name, kwargs = cfg
-    if label_for_backend(state["backend"]) != model_label:
+    if state.get("backend") is None or label_for_backend(state["backend"]) != model_label:
         if backend_name == "openai":
             source = describe_openai_clip_source(kwargs.get("clip_model"))
         elif backend_name == "openclip":

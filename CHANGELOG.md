@@ -1,5 +1,14 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.6.0 - FastAPI + Tabler UI
+
+**Framework migration**
+- Replaced the Gradio runtime with a local FastAPI server and server-rendered Tabler interface
+- Long-running actions now run as local jobs and stream progress over WebSockets
+- Gallery images and generated histograms are served through registered `/media/{id}` URLs instead of exposing arbitrary file paths
+- Existing scoring modes, cache behavior, manual overrides, prompt generation, and export flow are kept behind the new UI adapter
+- Tabler CSS/JS is vendored locally under `static/vendor/tabler/`; no CDN is used at runtime
+
 ## Version 2.5.0 - ObjectSearch & Faster Setup
 
 **New ObjectSearch Mode**

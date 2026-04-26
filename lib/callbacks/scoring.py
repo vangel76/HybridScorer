@@ -1,6 +1,6 @@
 import os
 
-import gradio as gr
+from .. import ui_compat as gr
 import torch
 import torch.nn.functional as F
 import numpy as np

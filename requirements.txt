@@ -1,4 +1,9 @@
-gradio
+fastapi
+uvicorn[standard]
+websockets
+wsproto
+jinja2
+python-multipart
 pillow
 tqdm
 fairscale==0.4.13

@@ -1115,7 +1115,7 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32, mode=None):
 
 
 def iter_imagereward_scores(image_paths, model, device, prompt, source_paths=None):
-    # Yield partial results so Gradio can update progress while large folders are scored.
+    # Yield partial results so the UI job stream can update progress while large folders are scored.
     scores = {}
     total = len(image_paths)
     done = 0

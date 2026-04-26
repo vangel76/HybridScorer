@@ -12,7 +12,7 @@ Default: `http://localhost:7862`
 
 ## Architecture
 
-**Modular Gradio app.** `Hybrid-Scorer.py` (~838 lines) is pure Gradio wiring; all logic in `lib/`.
+**FastAPI + Tabler app.** `Hybrid-Scorer.py` starts the local FastAPI server; state, DTOs, jobs, and route adapters live in `lib/web_context.py`; scoring/model/cache logic stays in `lib/`.
 
 ```
 lib/
@@ -25,15 +25,19 @@ lib/
   state_helpers.py # state-management helpers
   loaders.py       # ensure_*_model, ensure_*_backend, feature caches
   view.py          # gallery, histogram, current_view, render_view_with_controls
+  web_context.py   # FastAPI-facing context, DTO rendering, WebSocket jobs, media registry
+  ui_compat.py     # small gr.update/gr.skip compatibility shim, no Gradio runtime
   callbacks/
     scoring.py     # score_folder, find_similar_images, find_same_person_images
     prompts.py     # generate_prompt_from_preview, run_*_prompt_variant
     ui.py          # handle_thumb_action, export_files, threshold callbacks
 static/
-  style.css / app.js
+  tabler-app.css / tabler-app.js / vendor/tabler/
+templates/
+  index.html / setup_required.html
 ```
 
-`create_app()` owns shared `state`, binds callbacks via `functools.partial`, builds UI, injects JS/CSS. `.select()` handlers using `gr.SelectData` must be thin wrapper closures — `partial` hides the annotation from Gradio. Always inspect both Python and injected JS before changing UI logic.
+`HybridScorerContext` owns shared `state`, starts serialized jobs for long GPU work, streams progress over WebSockets, and renders JSON view/control state. Always inspect both `lib/web_context.py` and `static/tabler-app.js` before changing UI logic.
 
 ### Scoring modes
 
@@ -54,21 +58,19 @@ static/
 
 **Cache:** Windows → project-local (`models/`, `cache/`); Linux → system (`~/.cache/`). Override: `HYBRIDSCORER_CACHE_MODE=project|system`. Linux proxy thumbnails → `/dev/shm` (tmpfs) with fallback. `get_cache_config()` is `@lru_cache(maxsize=1)`.
 
-**Sidebar:** 4 mutually-exclusive accordions (`#hy-acc-setup/scoring/search-image/export`); only Setup open on load. Permanent thresholds panel (`#hy-thresholds-panel`) pinned via `position:sticky; bottom:0`. Accordion JS (`hookSidebarAccordionBehavior`) targets Gradio 6.x `button.label-wrap` with `open` class — do not revert to `<details>/<summary>`.
+**Sidebar:** 4 mutually-exclusive Tabler accordion sections; only Setup open on load. Permanent thresholds panel is sticky at the bottom of the sidebar.
 
-**Changelog overlay:** `#hy-version-btn` opens `#hy-changelog-overlay`; `CHANGELOG.md` read at startup → `APP_CHANGELOG_HTML`; shown/hidden via `.open` class; `hookChangelogOverlay()` is idempotent.
-
-**Hidden JS bridge:** `hy-thumb-action`, `hy-shortcut-action`, `hy-mark-state`, `hy-model-status`, `hy-hist-width` (hidden Gradio components). The three 50% midpoint buttons (`main_mid_btn`, `aux_mid_btn`, `percentile_mid_btn`) are `visible=False` — do not remove, they're in callback output lists.
+**Changelog overlay:** version button opens the Tabler modal; `CHANGELOG.md` is read at startup and embedded in initial state.
 
 ## Editing Rules
-- Be conservative with refactors; don't change callback return tuple sizes without checking all output arities.
-- Search both Python and injected JS before changing UI behavior.
+- Be conservative with refactors; don't change route/DTO wire shape without updating frontend and tests.
+- Search both Python route/context code and frontend JS before changing UI behavior.
 - Preserve manual override, threshold, export, and cache behavior unless explicitly asked.
 - `docs/architecture.md` → source of truth for structure; `docs/behavior-notes.md` → UX invariants. Update both when relevant.
 
 ## High-Risk Areas
-- Gradio callback return signatures (must match output count exactly)
-- Hidden `hy-*` JS bridge wiring
+- FastAPI route contracts and DTO shape
+- WebSocket job final-state/progress delivery
 - Shared `state` dict keys
 - Filename-based manual override logic (survives rescoring)
 - Proxy/cache synchronization

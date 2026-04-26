@@ -84,7 +84,7 @@ run-Hybrid-Scorer-windows.bat
 ./run-Hybrid-Scorer.sh
 ```
 
-The Gradio UI appears at local URL:
+The FastAPI + Tabler UI appears at local URL:
 
 - `http://localhost:7862`
 
@@ -227,7 +227,8 @@ You also need a CUDA-enabled PyTorch install that matches your system and GPU.
 
 - main app entry: `Hybrid-Scorer.py`
 - launcher scripts use `venv312`
-- the app is intentionally a large single-file Gradio app
+- the app uses FastAPI for local HTTP/WebSocket routes and a server-rendered Tabler UI
+- model, scoring, cache, state, prompt, and export logic live under `lib/`
 - architecture and behavior details live in:
   - [docs/architecture.md](docs/architecture.md)
   - [docs/behavior-notes.md](docs/behavior-notes.md)

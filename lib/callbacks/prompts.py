@@ -2,7 +2,7 @@ import os
 import json
 import base64
 
-import gradio as gr
+from .. import ui_compat as gr
 import torch
 import numpy as np
 from PIL import Image

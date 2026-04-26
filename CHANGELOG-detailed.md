@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.6.0] - 2026-04-26
+
+### FastAPI + Tabler migration
+- Replaced `gr.Blocks(...).launch(...)` with FastAPI + `uvicorn` startup while preserving the default `7862` port and `HYBRIDSELECTOR_PORT` / `GRADIO_SERVER_PORT` compatibility.
+- Added `lib/web_context.py` to own app state, model context, DTO rendering, media registration, WebSocket job progress, and route-facing adapters.
+- Added a lightweight `lib/ui_compat.py` shim so existing scoring/prompt/UI helper code can continue returning update objects without importing Gradio at runtime.
+- Added server-rendered Jinja templates and vanilla Tabler frontend assets in `templates/` and `static/tabler-app.*`.
+- Added local vendored Tabler assets under `static/vendor/tabler/`.
+- Added FastAPI routes for state, controls, scoring jobs, folder loading, preview searches, threshold updates, selection actions, query images, prompt generation/insertion, export, media serving, and WebSocket job streams.
+- Updated runtime dependencies from Gradio to FastAPI, Uvicorn, Jinja2, and python-multipart.
+
 ## [2.4.0] - 2026-04-21
 
 ### Codebase modularisation

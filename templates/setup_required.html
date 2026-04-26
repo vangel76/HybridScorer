@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/vendor/tabler/tabler.min.css">
+</head>
+<body>
+  <main class="container py-5">
+    <div class="alert alert-danger">
+      <h1>Setup Update Required</h1>
+      <p>Current environment does not match packages this version expects.</p>
+      <p>Run <code>{{ setup_hint }}</code>, restart launcher, reload page.</p>
+      <ul>
+        {% for issue in issues %}
+        <li><code>{{ issue }}</code></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </main>
+</body>
+</html>
