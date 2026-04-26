@@ -5,7 +5,7 @@
     "method", "folder", "model_label", "pos_prompt", "neg_prompt", "pm_segment_mode",
     "ir_prompt", "ir_negative_prompt", "ir_penalty_weight", "llm_model_label",
     "llm_prompt", "llm_backend_id", "llm_shortlist_size", "tagmatch_tags",
-    "main_threshold", "aux_threshold", "percentile", "keep_pm_thresholds",
+    "main_threshold", "aux_threshold", "keep_pm_thresholds",
     "keep_ir_thresholds", "prompt_generator", "generated_prompt",
     "generated_prompt_detail", "export_left_enabled", "export_right_enabled",
     "export_move_enabled", "export_left_name", "export_right_name"
@@ -282,7 +282,6 @@
     show("keep-ir-row", c.visible?.keep_ir_thresholds);
     setSlider("main_threshold", c.sliders?.main);
     setSlider("aux_threshold", c.sliders?.aux);
-    setSlider("percentile", c.sliders?.percentile);
     $("main-label").textContent = c.sliders?.main?.label || "Threshold";
     $("aux-label").textContent = c.sliders?.aux?.label || "Aux threshold";
     $("method-note").textContent = c.method_note || "";
@@ -294,7 +293,6 @@
     renderGallery("right-gallery", state.view?.right?.items || []);
     const hist = $("histogram");
     hist.src = state.view?.histogram_url || "";
-    hist.style.display = state.view?.histogram_url ? "block" : "none";
     hist.onload = updateThresholdLines;
     clearHistogramHover();
     updateThresholdLines();
@@ -419,7 +417,6 @@
   $("aux_threshold").addEventListener("input", updateThresholdLines);
   $("main_threshold").addEventListener("change", async () => { state = await post("/api/thresholds", { ...collect(), action: "split" }); render(); });
   $("aux_threshold").addEventListener("change", async () => { state = await post("/api/thresholds", { ...collect(), action: "split" }); render(); });
-  $("percentile").addEventListener("change", async () => { state = await post("/api/thresholds", { ...collect(), action: "percentile" }); render(); });
   $("histogram").addEventListener("click", async (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = Math.round((event.clientX - rect.left) * (event.currentTarget.naturalWidth / rect.width));

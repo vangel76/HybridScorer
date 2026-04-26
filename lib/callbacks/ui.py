@@ -12,7 +12,7 @@ from ..helpers import (
     threshold_for_percentile, promptmatch_slider_range, imagereward_slider_range,
     llmsearch_slider_range, clamp_threshold, expand_slider_bounds,
     slider_step_floor, slider_step_ceil_exclusive, sanitize_export_name,
-    export_destination,
+    export_destination, normalize_threshold_inputs,
 )
 from ..state_helpers import is_browse_mode, active_query_image_widget_update
 from .. import view as _vw
@@ -112,7 +112,10 @@ def handle_thumb_action(state, action, main_threshold, aux_threshold):
             drop_fnames = [str(name) for name in payload.get("fnames", []) if str(name)]
         except Exception:
             return thumb_noop()
-        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], main_threshold, aux_threshold)
+        norm_main, norm_aux = normalize_threshold_inputs(
+            state["method"], main_threshold, aux_threshold, state.get("llmsearch_backend")
+        )
+        left_items, right_items = build_split(state["method"], state["scores"], state["overrides"], norm_main, norm_aux)
         items = left_items if side == "left" else right_items
         if 0 <= index < len(items) and target_side in ("left", "right") and target_side != side:
             fallback_fname = os.path.basename(items[index][0])
@@ -131,6 +134,9 @@ def handle_thumb_action(state, action, main_threshold, aux_threshold):
         return with_slider_skips(_vw.render_view_with_controls(state, main_threshold, aux_threshold))
     parts = str(action).split(":")
     verb = parts[0] if parts else ""
+    main_threshold, aux_threshold = normalize_threshold_inputs(
+        state["method"], main_threshold, aux_threshold, state.get("llmsearch_backend")
+    )
     if is_browse_mode(state):
         left_items = list(state.get("browse_items", []))
         right_items = []

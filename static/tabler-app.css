@@ -3,7 +3,9 @@ html, body { height: 100%; overflow: hidden; }
 .hy-header { min-height: 44px; border-bottom: 1px solid #202633; }
 .hy-brand { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .16em; text-transform: uppercase; color: #aadd66; }
 .hy-shell { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 10px; height: calc(100vh - 52px); padding: 8px; }
-.hy-sidebar { overflow-y: auto; min-height: 0; }
+.hy-sidebar { display: flex; flex-direction: column; min-height: 0; }
+.hy-sidebar > .accordion { overflow-y: auto; flex: 1; min-height: 0; }
+.hy-sidebar .accordion-button { padding-top: 0.4rem; padding-bottom: 0.4rem; font-size: 1.2rem; }
 .hy-main { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .hy-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; }
 .hy-galleries { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0; flex: 1; }
@@ -29,9 +31,10 @@ html, body { height: 100%; overflow: hidden; }
 .hy-pm-field textarea.pills-active { color: transparent; caret-color: transparent; }
 .hy-seg-pill { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .hy-thumb.overridden figcaption::before { content: "PIN "; color: #f59f00; font-weight: 700; }
-.hy-thresholds { position: sticky; bottom: 0; z-index: 3; border-top: 1px solid #2b3445; }
+.hy-thresholds { flex-shrink: 0; z-index: 3; border-top: 1px solid #2b3445; }
 .hy-histogram-wrap { position: relative; }
-.hy-histogram { width: 100%; min-height: 50px; border-radius: 6px; cursor: crosshair; display: none; }
+.hy-histogram { width: 100%; border-radius: 6px; cursor: crosshair; display: block; }
+.hy-histogram-wrap { position: relative; min-height: 80px; background: #0d1018; border-radius: 6px; }
 .hy-hist-hover-line { position: absolute; display: none; width: 0; border-left: 2px solid rgba(190, 255, 115, .95); pointer-events: none; z-index: 2; filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
 .hy-hist-hover-line-neg { border-left-color: rgba(255, 135, 100, .95); }
 .hy-hist-threshold-line { position: absolute; display: none; width: 0; border-left: 2px dashed rgba(255, 255, 255, .9); pointer-events: none; z-index: 3; filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
