@@ -1,5 +1,35 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.6.9 - Gallery Overhaul
+
+**Smarter Gallery Layout**
+- Thumbnails are now square (aspect-ratio 1:1) for a cleaner grid look
+- Thumb-size slider in the top bar lets you resize all thumbnails from 180 to 512 px on the fly
+- Left gallery header is tinted green, right gallery header is tinted red — makes bucket identity obvious at a glance
+
+**Better Image Sorting Controls**
+- Drag a thumbnail from one gallery to the other to pin it there — same result as clicking "Move here"
+- Each gallery card now has its own "Move here" button right in the header
+- Drop anywhere into a gallery, not just on another thumbnail
+
+**Zoom Without Layout Shift**
+- Clicking a thumbnail now opens a full-size overlay on the right panel only — no more layout reflow pushing other thumbnails around
+- Sidebar stays fully accessible while zoomed
+- Press Escape or click outside to close
+
+**Tag and Prompt Score Pills**
+- In PromptMatch per-segment mode, hovering a thumbnail shows each comma-separated tag as a colored pill directly on the prompt textbox
+- In TagMatch mode, hovering shows each tag's match strength as a pill on the tag input
+- Colors go from near-transparent pale yellow (weak match) to bright green (strong match), normalized per image
+
+**Cleaner Histogram**
+- Positive scores now show with green on the left — high-scoring images are on the left side of the chart, matching the left (keep) gallery
+- Click position and threshold slider both follow the same left=good convention
+- Main threshold slider is visually flipped to match
+
+**Auto-open Browser**
+- App now opens your browser automatically as soon as the server is ready — no need to copy the URL
+
 ## Version 2.6.0 - FastAPI + Tabler UI
 
 **Framework migration**

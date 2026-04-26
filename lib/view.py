@@ -248,18 +248,22 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         img = Image.new("RGB", (W, H), "#0d0d11")
         draw = ImageDraw.Draw(img)
 
-        def draw_chart(y0, counts, lo, hi, threshold, bar_rgb, line_rgb, label, left_tint=None, right_tint=None):
+        def draw_chart(y0, counts, lo, hi, threshold, bar_rgb, line_rgb, label, left_tint=None, right_tint=None, flip=False):
             cW = W - PAD_L - PAD_R
             max_c = max(counts) if counts else 1
             bw = cW / len(counts)
             draw.rectangle([PAD_L, y0, W - PAD_R, y0 + CH], fill="#0f0f16")
-            tx = PAD_L + int(((threshold - lo) / (hi - lo)) * cW)
+            if flip:
+                tx = W - PAD_R - int(((threshold - lo) / (hi - lo)) * cW)
+            else:
+                tx = PAD_L + int(((threshold - lo) / (hi - lo)) * cW)
             tx = max(PAD_L, min(W - PAD_R, tx))
             if left_tint and tx > PAD_L:
                 draw.rectangle([PAD_L, y0, tx, y0 + CH], fill=left_tint)
             if right_tint and tx < (W - PAD_R):
                 draw.rectangle([tx, y0, W - PAD_R, y0 + CH], fill=right_tint)
-            for i, count in enumerate(counts):
+            draw_counts = list(reversed(counts)) if flip else counts
+            for i, count in enumerate(draw_counts):
                 if count == 0:
                     continue
                 bh = max(1, int((count / max_c) * (CH - 2)))
@@ -268,7 +272,8 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
                 draw.rectangle([x0, y0 + CH - bh, x1, y0 + CH], fill=bar_rgb)
             for yy in range(y0, y0 + CH, 6):
                 draw.line([(tx, yy), (tx, min(yy + 3, y0 + CH))], fill=line_rgb, width=2)
-            draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, y0 + CH + 4, lo, hi)
+            axis_lo, axis_hi = (hi, lo) if flip else (lo, hi)
+            draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, y0 + CH + 4, axis_lo, axis_hi)
             draw.text((PAD_L, y0 - 14), f"{label} threshold: {threshold:.3f}", fill="#99bb88")
 
         draw_chart(
@@ -280,8 +285,9 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
             "#3a7a3a",
             "#aadd66",
             main_hist_label,
-            left_tint="#241416",
-            right_tint="#142418",
+            left_tint="#142418",
+            right_tint="#241416",
+            flip=True,
         )
         if has_neg:
             draw_chart(
@@ -309,6 +315,7 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
             "has_neg": has_neg,
             "pos_lo": pos_lo,
             "pos_hi": pos_hi,
+            "pos_flipped": True,
             "neg_lo": neg_lo,
             "neg_hi": neg_hi,
         }
@@ -337,15 +344,15 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
     img = Image.new("RGB", (W, H), "#0d0d11")
     draw = ImageDraw.Draw(img)
     draw.rectangle([PAD_L, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#0f0f16")
-    tx = PAD_L + int(((main_threshold - lo) / (hi - lo)) * cW)
+    tx = W - PAD_R - int(((main_threshold - lo) / (hi - lo)) * cW)
     tx = max(PAD_L, min(W - PAD_R, tx))
     if tx > PAD_L:
-        draw.rectangle([PAD_L, PAD_TOP, tx, PAD_TOP + H - PAD_BOT], fill="#241416")
+        draw.rectangle([PAD_L, PAD_TOP, tx, PAD_TOP + H - PAD_BOT], fill="#142418")
     if tx < (W - PAD_R):
-        draw.rectangle([tx, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#142418")
+        draw.rectangle([tx, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#241416")
     max_c = max(counts) if counts else 1
     bw = cW / bins
-    for i, count in enumerate(counts):
+    for i, count in enumerate(list(reversed(counts))):
         if count == 0:
             continue
         bh = max(1, int((count / max_c) * (H - PAD_BOT - PAD_TOP - 2)))
@@ -354,7 +361,7 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         draw.rectangle([x0, PAD_TOP + (H - PAD_BOT - bh), x1, PAD_TOP + H - PAD_BOT], fill="#3a7a3a")
     for yy in range(PAD_TOP, PAD_TOP + H - PAD_BOT, 6):
         draw.line([(tx, yy), (tx, min(yy + 3, PAD_TOP + H - PAD_BOT))], fill="#aadd66", width=2)
-    draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, PAD_TOP + H - PAD_BOT + 4, lo, hi)
+    draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, PAD_TOP + H - PAD_BOT + 4, hi, lo)
     draw.text((PAD_L, PAD_TOP - 14), f"{main_hist_label}: {main_threshold:.3f}", fill="#99bb88")
     state["hist_geom"] = {
         "method": method,
@@ -367,6 +374,7 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         "cW": cW,
         "lo": lo,
         "hi": hi,
+        "flipped": True,
     }
     return img
 

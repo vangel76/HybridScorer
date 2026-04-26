@@ -1,6 +1,5 @@
 (() => {
   let state = JSON.parse(document.getElementById("initial-state").textContent);
-  let zoomedThumbKey = "";
   const $ = (id) => document.getElementById(id);
   const inputIds = [
     "method", "folder", "model_label", "pos_prompt", "neg_prompt", "pm_segment_mode",
@@ -65,8 +64,7 @@
     root.innerHTML = "";
     for (const item of items || []) {
       const fig = document.createElement("figure");
-      const thumbKey = `${item.side}:${item.filename}`;
-      fig.className = `hy-thumb${item.marked ? " marked" : ""}${item.preview ? " preview" : ""}${item.overridden ? " overridden" : ""}${zoomedThumbKey === thumbKey ? " zoomed" : ""}`;
+      fig.className = `hy-thumb${item.marked ? " marked" : ""}${item.preview ? " preview" : ""}${item.overridden ? " overridden" : ""}`;
       fig.draggable = true;
       fig.dataset.side = item.side;
       fig.dataset.index = item.index;
@@ -74,15 +72,14 @@
       fig.title = hoverText(item);
       fig.innerHTML = `<img src="${item.url || ""}" loading="lazy" alt=""><figcaption>${escapeHtml(item.caption || item.filename)}</figcaption>`;
       fig.querySelector("img").addEventListener("error", () => fig.classList.add("image-error"));
-      fig.addEventListener("mouseenter", () => showHistogramHover(item.filename));
-      fig.addEventListener("mouseleave", clearHistogramHover);
+      fig.addEventListener("mouseenter", () => { showHistogramHover(item.filename); renderSegmentPills(item.filename); renderTagPills(item.filename); });
+      fig.addEventListener("mouseleave", () => { clearHistogramHover(); clearSegmentPills(); clearTagPills(); });
       fig.addEventListener("click", (event) => {
         if (event.shiftKey) {
           selection("mark", item.side, item.index);
           return;
         }
-        toggleInlineZoom(item);
-        render();
+        openZoom(item);
         selection("preview", item.side, item.index);
       });
       fig.addEventListener("dragstart", (event) => event.dataTransfer.setData("application/json", JSON.stringify(item)));
@@ -109,9 +106,98 @@
     return parts.filter(Boolean).join("\n");
   };
   const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
-  const toggleInlineZoom = (item) => {
-    const key = `${item.side}:${item.filename}`;
-    zoomedThumbKey = zoomedThumbKey === key ? "" : key;
+  const openZoom = (item) => {
+    $("hy-zoom-img").src = item.url || "";
+    $("hy-zoom-caption").textContent = item.caption || item.filename;
+    $("hy-zoom-overlay").classList.remove("d-none");
+  };
+  const closeZoom = () => {
+    $("hy-zoom-overlay").classList.add("d-none");
+    $("hy-zoom-img").src = "";
+  };
+  const scoreToColor = (norm) => {
+    // pale transparent yellow (0) → bright opaque green (1)
+    const h = Math.round(58 + 62 * norm);
+    const s = Math.round(70 + 15 * norm);
+    const l = Math.round(65 - 22 * norm);
+    const a = (0.18 + 0.82 * norm).toFixed(2);
+    return `hsla(${h}, ${s}%, ${l}%, ${a})`;
+  };
+  const renderSegmentPills = (filename) => {
+    const root = $("pm-segment-pills");
+    const ta = $("pos_prompt");
+    if (!root || !ta) return;
+    const seg = state.view?.segment_score_lookup?.[filename];
+    if (!seg || !$("pm_segment_mode")?.checked) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
+    const tags = ta.value.split(",").map((t) => t.trim()).filter(Boolean);
+    if (!tags.length) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
+    const scores = tags.map((tag) => seg[tag] ?? seg[tag.toLowerCase()] ?? null);
+    const valid = scores.filter((s) => s !== null);
+    const lo = valid.length ? Math.min(...valid) : 0;
+    const hi = valid.length ? Math.max(...valid) : 1;
+    const range = hi - lo || 1;
+    root.innerHTML = "";
+    for (let i = 0; i < tags.length; i++) {
+      const span = document.createElement("span");
+      span.className = "hy-seg-pill";
+      span.textContent = tags[i];
+      if (scores[i] !== null) {
+        const norm = (scores[i] - lo) / range;
+        span.style.background = scoreToColor(norm);
+        span.style.color = norm > 0.55 ? "#061208" : "#8ca0a8";
+        span.title = `${(scores[i] * 100).toFixed(1)}%`;
+      } else {
+        span.style.background = "rgba(80,90,110,0.3)";
+        span.style.color = "#6a7888";
+      }
+      root.appendChild(span);
+    }
+    root.classList.add("active");
+    ta.classList.add("pills-active");
+  };
+  const clearSegmentPills = () => {
+    const root = $("pm-segment-pills");
+    const ta = $("pos_prompt");
+    if (root) root.classList.remove("active");
+    if (ta) ta.classList.remove("pills-active");
+  };
+  const renderTagPills = (filename) => {
+    const root = $("tm-segment-pills");
+    const ta = $("tagmatch_tags");
+    if (!root || !ta) return;
+    const lookup = state.view?.tag_score_lookup?.[filename];
+    if (!lookup) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
+    const tags = ta.value.split(",").map((t) => t.trim()).filter(Boolean);
+    if (!tags.length) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
+    const scores = tags.map((tag) => lookup[tag] ?? lookup[tag.toLowerCase()] ?? null);
+    const valid = scores.filter((s) => s !== null);
+    const lo = valid.length ? Math.min(...valid) : 0;
+    const hi = valid.length ? Math.max(...valid) : 1;
+    const range = hi - lo || 1;
+    root.innerHTML = "";
+    for (let i = 0; i < tags.length; i++) {
+      const span = document.createElement("span");
+      span.className = "hy-seg-pill";
+      span.textContent = tags[i];
+      if (scores[i] !== null) {
+        const norm = (scores[i] - lo) / range;
+        span.style.background = scoreToColor(norm);
+        span.style.color = norm > 0.55 ? "#061208" : "#8ca0a8";
+        span.title = `${(scores[i] * 100).toFixed(1)}%`;
+      } else {
+        span.style.background = "rgba(80,90,110,0.3)";
+        span.style.color = "#6a7888";
+      }
+      root.appendChild(span);
+    }
+    root.classList.add("active");
+    ta.classList.add("pills-active");
+  };
+  const clearTagPills = () => {
+    const root = $("tm-segment-pills");
+    const ta = $("tagmatch_tags");
+    if (root) root.classList.remove("active");
+    if (ta) ta.classList.remove("pills-active");
   };
   const positionHistLine = (line, x, y, h) => {
     const img = $("histogram");
@@ -124,11 +210,12 @@
     line.style.height = `${h * scaleY}px`;
     line.style.display = "block";
   };
-  const placeValueLine = (lineId, value, lo, hi, y, h) => {
+  const placeValueLine = (lineId, value, lo, hi, y, h, flip = false) => {
     const geom = state.view?.hist_geom;
     if (!geom || value === undefined || value === null || hi === lo) return;
     const cW = (geom.W || 0) - (geom.PAD_L || 0) - (geom.PAD_R || 0);
-    const x = (geom.PAD_L || 0) + ((Number(value) - lo) / (hi - lo)) * cW;
+    const frac = (Number(value) - lo) / (hi - lo);
+    const x = (geom.PAD_L || 0) + (flip ? (1 - frac) : frac) * cW;
     positionHistLine($(lineId), Math.max(geom.PAD_L, Math.min(geom.W - geom.PAD_R, x)), y, h);
   };
   const updateThresholdLines = () => {
@@ -136,13 +223,13 @@
     const geom = state.view?.hist_geom;
     if (!geom || !$("histogram").complete) return;
     if (geom.pos_lo !== undefined) {
-      placeValueLine("hist-threshold-main", valueOf("main_threshold"), geom.pos_lo, geom.pos_hi, geom.PAD_TOP || 0, geom.CH || geom.H || 0);
+      placeValueLine("hist-threshold-main", valueOf("main_threshold"), geom.pos_lo, geom.pos_hi, geom.PAD_TOP || 0, geom.CH || geom.H || 0, geom.pos_flipped);
       if (geom.has_neg) {
         const y = (geom.PAD_TOP || 0) + (geom.CH || 0) + (geom.GAP || 0);
         placeValueLine("hist-threshold-neg", valueOf("aux_threshold"), geom.neg_lo, geom.neg_hi, y, geom.CH || 0);
       }
     } else if (geom.lo !== undefined) {
-      placeValueLine("hist-threshold-main", valueOf("main_threshold"), geom.lo, geom.hi, geom.PAD_TOP || 0, (geom.H || 0) - (geom.PAD_TOP || 0) - (geom.PAD_BOT || 0));
+      placeValueLine("hist-threshold-main", valueOf("main_threshold"), geom.lo, geom.hi, geom.PAD_TOP || 0, (geom.H || 0) - (geom.PAD_TOP || 0) - (geom.PAD_BOT || 0), geom.flipped);
     }
   };
   const clearThresholdLines = () => {
@@ -158,10 +245,12 @@
     if (!geom || !score) return;
     const cW = (geom.W || 0) - (geom.PAD_L || 0) - (geom.PAD_R || 0);
     if (geom.pos_lo !== undefined && score.main !== undefined && geom.pos_hi !== geom.pos_lo) {
-      const x = (geom.PAD_L || 0) + ((score.main - geom.pos_lo) / (geom.pos_hi - geom.pos_lo)) * cW;
+      const frac = (score.main - geom.pos_lo) / (geom.pos_hi - geom.pos_lo);
+      const x = (geom.PAD_L || 0) + (geom.pos_flipped ? (1 - frac) : frac) * cW;
       positionHistLine($("hist-hover-main"), Math.max(geom.PAD_L, Math.min(geom.W - geom.PAD_R, x)), geom.PAD_TOP || 0, geom.CH || geom.H || 0);
     } else if (geom.lo !== undefined && score.main !== undefined && geom.hi !== geom.lo) {
-      const x = (geom.PAD_L || 0) + ((score.main - geom.lo) / (geom.hi - geom.lo)) * (geom.cW || cW);
+      const frac = (score.main - geom.lo) / (geom.hi - geom.lo);
+      const x = (geom.PAD_L || 0) + (geom.flipped ? (1 - frac) : frac) * (geom.cW || cW);
       positionHistLine($("hist-hover-main"), Math.max(geom.PAD_L, Math.min(geom.W - geom.PAD_R, x)), geom.PAD_TOP || 0, (geom.H || 0) - (geom.PAD_TOP || 0) - (geom.PAD_BOT || 0));
     }
     if (score.neg !== null && score.neg !== undefined && geom.has_neg && geom.neg_hi !== geom.neg_lo) {
@@ -315,10 +404,10 @@
 
   $("method").addEventListener("change", refreshControls);
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      zoomedThumbKey = "";
-      render();
-    }
+    if (event.key === "Escape") closeZoom();
+  });
+  $("hy-zoom-overlay").addEventListener("click", (event) => {
+    if (event.target === $("hy-zoom-overlay") || event.target.classList.contains("hy-zoom-backdrop")) closeZoom();
   });
   $("tagmatch_tags").addEventListener("input", renderTagSuggestions);
   $("load-folder").addEventListener("click", () => runJob("/api/folder/load"));
@@ -338,8 +427,32 @@
     state = await post("/api/thresholds", { ...collect(), action: "hist", x, y });
     render();
   });
+  $("thumb-size").addEventListener("input", () => {
+    const v = $("thumb-size").value;
+    document.documentElement.style.setProperty("--thumb-size", `${v}px`);
+    $("thumb-size-val").textContent = `${v}px`;
+  });
   $("move-left").addEventListener("click", () => selection("move-left", "", -1));
   $("move-right").addEventListener("click", () => selection("move-right", "", -1));
+  for (const [galleryId, targetSide] of [["left-gallery", "left"], ["right-gallery", "right"]]) {
+    const el = $(galleryId);
+    el.addEventListener("dragover", (event) => {
+      if (!event.dataTransfer.types.includes("application/json")) return;
+      event.preventDefault();
+      el.classList.add("drag-over");
+    });
+    el.addEventListener("dragleave", (event) => {
+      if (!el.contains(event.relatedTarget)) el.classList.remove("drag-over");
+    });
+    el.addEventListener("drop", async (event) => {
+      el.classList.remove("drag-over");
+      if (event.target.closest(".hy-thumb")) return;
+      event.preventDefault();
+      const src = JSON.parse(event.dataTransfer.getData("application/json") || "{}");
+      if (!src.filename || src.side === targetSide) return;
+      await selection("drop", targetSide, src.index, { source_side: src.side, target_side: targetSide, fnames: [src.filename] });
+    });
+  }
   $("pin").addEventListener("click", () => selection("pin", "", -1));
   $("fit-threshold").addEventListener("click", () => selection("fit-threshold", "", -1));
   $("clear-marked").addEventListener("click", () => selection("clear-marked", "", -1));

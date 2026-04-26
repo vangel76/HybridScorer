@@ -12,8 +12,13 @@
     <header class="navbar navbar-expand-md d-print-none hy-header">
       <div class="container-fluid">
         <h1 class="navbar-brand hy-brand">{{ app_name }}</h1>
-        <div class="navbar-nav flex-row order-md-last">
-          <button class="btn btn-ghost-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#changelog-modal">{{ version }}</button>
+        <div class="navbar-nav flex-row align-items-center gap-3 order-md-last">
+          <div class="d-flex align-items-center gap-2">
+            <span class="text-secondary" style="font-size:11px;white-space:nowrap">Thumb</span>
+            <input id="thumb-size" type="range" min="100" max="512" value="180" style="width:90px;cursor:pointer">
+            <span id="thumb-size-val" class="text-secondary" style="font-size:11px;min-width:34px">180px</span>
+          </div>
+          <button class="btn btn-ghost-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#changelog-modal" title="Show changelog">{{ version }}</button>
         </div>
       </div>
     </header>
@@ -31,7 +36,7 @@
                   <div id="method-note" class="form-hint mt-2"></div>
                   <label class="form-label mt-3">Image folder</label>
                   <input id="folder" class="form-control" type="text">
-                  <button id="load-folder" class="btn btn-outline-primary w-100 mt-2">Load folder</button>
+                  <button id="load-folder" class="btn btn-outline-primary w-100 mt-2" title="Load images from the folder path above">Load folder</button>
                 </div>
               </div>
             </div>
@@ -44,7 +49,10 @@
                     <label class="form-label">PromptMatch model</label>
                     <select id="model_label" class="form-select"></select>
                     <label class="form-label mt-2">Positive prompt</label>
-                    <textarea id="pos_prompt" class="form-control" rows="2"></textarea>
+                    <div class="hy-pm-field">
+                      <textarea id="pos_prompt" class="form-control" rows="2"></textarea>
+                      <div id="pm-segment-pills" class="hy-seg-pills-overlay"></div>
+                    </div>
                     <label class="form-label mt-2">Negative prompt</label>
                     <textarea id="neg_prompt" class="form-control" rows="1"></textarea>
                     <label class="form-check mt-2"><input id="pm_segment_mode" class="form-check-input" type="checkbox"><span class="form-check-label">Per-segment scoring</span></label>
@@ -69,12 +77,15 @@
                   </div>
                   <div id="group-tagmatch">
                     <label class="form-label">Tags to detect</label>
-                    <textarea id="tagmatch_tags" class="form-control" rows="3"></textarea>
+                    <div class="hy-pm-field">
+                      <textarea id="tagmatch_tags" class="form-control" rows="3"></textarea>
+                      <div id="tm-segment-pills" class="hy-seg-pills-overlay"></div>
+                    </div>
                     <div id="tag-suggestions" class="hy-suggestions"></div>
                   </div>
                   <label id="keep-pm-row" class="form-check mt-3"><input id="keep_pm_thresholds" class="form-check-input" type="checkbox"><span class="form-check-label">Keep PromptMatch thresholds</span></label>
                   <label id="keep-ir-row" class="form-check mt-2"><input id="keep_ir_thresholds" class="form-check-input" type="checkbox"><span class="form-check-label">Keep ImageReward threshold</span></label>
-                  <button id="run-score" class="btn btn-primary w-100 mt-3">Run scoring</button>
+                  <button id="run-score" class="btn btn-primary w-100 mt-3" title="Score all loaded images with the current method and settings">Run scoring</button>
                 </div>
               </div>
             </div>
@@ -88,21 +99,21 @@
                     <div class="hy-query-placeholder">Drop, paste, or upload query image</div>
                   </div>
                   <input id="query-file" class="form-control mt-2" type="file" accept="image/*">
-                  <button id="clear-query" class="btn btn-outline-secondary w-100 mt-2">Clear external override</button>
+                  <button id="clear-query" class="btn btn-outline-secondary w-100 mt-2" title="Remove the query image and return to normal scoring view">Clear external override</button>
                   <div class="btn-list mt-3">
-                    <button id="find-same" class="btn btn-outline-info w-100">Find same person</button>
-                    <button id="find-similar" class="btn btn-outline-info w-100">Find similar images</button>
-                    <button id="find-object" class="btn btn-outline-info w-100">Find object images</button>
+                    <button id="find-same" class="btn btn-outline-info w-100" title="Find all images containing the same person as the query image (uses face embeddings)">Find same person</button>
+                    <button id="find-similar" class="btn btn-outline-info w-100" title="Find images visually similar to the query image (reuses PromptMatch embeddings)">Find similar images</button>
+                    <button id="find-object" class="btn btn-outline-info w-100" title="Find images containing the same object as the query image (DINOv2 patch features)">Find object images</button>
                   </div>
                   <hr>
                   <label class="form-label">Prompt generator</label>
                   <select id="prompt_generator" class="form-select"></select>
-                  <button id="generate-prompt" class="btn btn-outline-primary w-100 mt-2">Prompt from image</button>
+                  <button id="generate-prompt" class="btn btn-outline-primary w-100 mt-2" title="Generate a text prompt from the preview or query image using the selected generator model">Prompt from image</button>
                   <label class="form-label mt-2">Generated prompt</label>
                   <textarea id="generated_prompt" class="form-control" rows="4"></textarea>
                   <label class="form-label mt-2">Prompt detail</label>
                   <input id="generated_prompt_detail" class="form-range" min="1" max="3" step="1" type="range">
-                  <button id="insert-prompt" class="btn btn-outline-success w-100 mt-2">Insert into active prompt</button>
+                  <button id="insert-prompt" class="btn btn-outline-success w-100 mt-2" title="Copy the generated prompt into the positive prompt field of the currently active scoring method">Insert into active prompt</button>
                   <div id="prompt-status" class="form-hint mt-2"></div>
                 </div>
               </div>
@@ -117,7 +128,7 @@
                   <label class="form-check mt-2"><input id="export_right_enabled" class="form-check-input" type="checkbox"><span class="form-check-label">Export right bucket</span></label>
                   <input id="export_right_name" class="form-control mt-1" type="text">
                   <label class="form-check mt-2"><input id="export_move_enabled" class="form-check-input" type="checkbox"><span class="form-check-label">Move instead of copy</span></label>
-                  <button id="export" class="btn btn-primary w-100 mt-3">Export folders</button>
+                  <button id="export" class="btn btn-primary w-100 mt-3" title="Copy or move images from each enabled bucket into the named output subfolders">Export folders</button>
                 </div>
               </div>
             </div>
@@ -146,12 +157,10 @@
           <div class="hy-toolbar">
             <div id="status" class="text-secondary"></div>
             <div class="btn-list">
-              <button id="move-left" class="btn btn-outline-secondary">Move left</button>
-              <button id="pin" class="btn btn-outline-secondary">Pin selected</button>
-              <button id="fit-threshold" class="btn btn-outline-warning">Fit thresh</button>
-              <button id="move-right" class="btn btn-outline-secondary">Move right</button>
-              <button id="clear-marked" class="btn btn-outline-secondary">Clear marked</button>
-              <button id="clear-all" class="btn btn-outline-danger">Clear all</button>
+              <button id="pin" class="btn btn-outline-secondary" title="Pin marked images to their current side — they stay there even after rescoring">Pin selected</button>
+              <button id="fit-threshold" class="btn btn-outline-warning" title="Adjust threshold so all currently marked images end up on the right (reject) side">Fit thresh</button>
+              <button id="clear-marked" class="btn btn-outline-secondary" title="Unmark all highlighted images without changing their side">Clear marked</button>
+              <button id="clear-all" class="btn btn-outline-danger" title="Remove all manual pins and marks — images go back to score-based placement">Clear all</button>
             </div>
           </div>
           <div id="job-status" class="alert alert-info hy-job d-none">
@@ -165,13 +174,26 @@
           </div>
           <div class="hy-galleries">
             <section class="card">
-              <div class="card-header"><h3 id="left-title" class="card-title">0 images</h3></div>
+              <div class="card-header d-flex align-items-center hy-gallery-left-header">
+                <h3 id="left-title" class="card-title">0 images</h3>
+                <button id="move-left" class="btn btn-sm btn-outline-secondary hy-move-btn ms-auto" title="Move marked images to this (left / keep) bucket and pin them here">←</button>
+              </div>
               <div id="left-gallery" class="hy-gallery"></div>
             </section>
             <section class="card">
-              <div class="card-header"><h3 id="right-title" class="card-title">0 images</h3></div>
+              <div class="card-header d-flex align-items-center hy-gallery-right-header">
+                <button id="move-right" class="btn btn-sm btn-outline-secondary hy-move-btn" title="Move marked images to this (right / reject) bucket and pin them here">→</button>
+                <h3 id="right-title" class="card-title ms-auto">0 images</h3>
+              </div>
               <div id="right-gallery" class="hy-gallery"></div>
             </section>
+          </div>
+          <div id="hy-zoom-overlay" class="hy-zoom-overlay d-none" role="dialog">
+            <div class="hy-zoom-backdrop"></div>
+            <div class="hy-zoom-content">
+              <img id="hy-zoom-img" src="" alt="">
+              <div id="hy-zoom-caption" class="hy-zoom-caption"></div>
+            </div>
           </div>
         </main>
       </div>

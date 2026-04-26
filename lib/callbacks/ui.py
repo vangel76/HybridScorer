@@ -390,7 +390,10 @@ def on_hist_click(state, sel: gr.SelectData, main_threshold, aux_threshold):
             y0neg = PAD_TOP + CH + GAP
             if y0pos <= cy <= y0pos + CH:
                 lo, hi = geom["pos_lo"], geom["pos_hi"]
-                val = lo + ((cx - PAD_L) / cW) * (hi - lo)
+                if geom.get("pos_flipped"):
+                    val = hi - ((cx - PAD_L) / cW) * (hi - lo)
+                else:
+                    val = lo + ((cx - PAD_L) / cW) * (hi - lo)
                 main_threshold = round(max(lo, min(hi, val)), 3)
             elif geom["has_neg"] and y0neg <= cy <= y0neg + CH:
                 lo, hi = geom["neg_lo"], geom["neg_hi"]
@@ -406,7 +409,10 @@ def on_hist_click(state, sel: gr.SelectData, main_threshold, aux_threshold):
             cW = geom["cW"]
             lo, hi = geom["lo"], geom["hi"]
             if PAD_TOP <= cy <= PAD_TOP + H - PAD_BOT:
-                val = lo + ((cx - PAD_L) / cW) * (hi - lo)
+                if geom.get("flipped"):
+                    val = hi - ((cx - PAD_L) / cW) * (hi - lo)
+                else:
+                    val = lo + ((cx - PAD_L) / cW) * (hi - lo)
                 main_threshold = round(max(lo, min(hi, val)), 3)
             else:
                 return (*_vw.render_view_with_controls(state, main_threshold, aux_threshold), gr.update(), gr.update())

@@ -8,6 +8,7 @@ import asyncio
 import html as _html
 import os
 import sys
+import webbrowser
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -223,6 +224,13 @@ if __name__ == "__main__":
         fastapi_app = create_fastapi_app()
 
     port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
+
+    @fastapi_app.on_event("startup")
+    async def _open_browser():
+        url = f"http://localhost:{port}"
+        await asyncio.sleep(0.1)
+        webbrowser.open(url)
+
     uvicorn.run(
         fastapi_app,
         host="0.0.0.0",
