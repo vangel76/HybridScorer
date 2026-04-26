@@ -18,3 +18,7 @@ Thumbs.db
 models/
 cache/
 0.3.7
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
