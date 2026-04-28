@@ -424,6 +424,9 @@
     state = await post("/api/thresholds", { ...collect(), action: "hist", x, y });
     render();
   });
+  $("llm_shortlist_size").addEventListener("input", () => {
+    $("llm_shortlist_size_val").textContent = $("llm_shortlist_size").value;
+  });
   $("thumb-size").addEventListener("input", () => {
     const v = $("thumb-size").value;
     document.documentElement.style.setProperty("--thumb-size", `${v}px`);
@@ -482,6 +485,7 @@
     });
   }
   render();
+  $("llm_shortlist_size_val").textContent = $("llm_shortlist_size").value;
   function renderTagSuggestions() {
     const root = $("tag-suggestions");
     if (!root) return;

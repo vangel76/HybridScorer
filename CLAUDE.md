@@ -58,7 +58,7 @@ templates/
 
 **Cache:** Windows → project-local (`models/`, `cache/`); Linux → system (`~/.cache/`). Override: `HYBRIDSCORER_CACHE_MODE=project|system`. Linux proxy thumbnails → `/dev/shm` (tmpfs) with fallback. `get_cache_config()` is `@lru_cache(maxsize=1)`.
 
-**Gallery UI:** Square thumbnails (`aspect-ratio:1`). Thumb-size slider in header (180–512 px, drives `--thumb-size` CSS var → `minmax(var(--thumb-size),1fr)` grid). Left gallery header green-tinted, right red-tinted. "Move here" buttons in each gallery card-header. Drag-drop between galleries pins image to target side (same as move-left/move-right). Gallery containers are drop zones; thumb-level drop still handled per-figure.
+**Gallery UI:** Square thumbnails (`aspect-ratio:1`), zero gap/padding, no border, no border-radius, no figcaption — pure image grid. Thumb-size slider in header (180–512 px, drives `--thumb-size` CSS var → `minmax(var(--thumb-size),1fr)` grid). Left gallery header green-tinted, right red-tinted. "Move here" buttons in each gallery card-header. Drag-drop between galleries pins image to target side (same as move-left/move-right). Gallery containers are drop zones; thumb-level drop still handled per-figure.
 
 **Zoom overlay:** click thumb → `#hy-zoom-overlay` (position:absolute inside `.hy-main`). Backdrop or Escape closes. Does not cover sidebar.
 

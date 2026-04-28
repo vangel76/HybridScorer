@@ -226,18 +226,16 @@ if __name__ == "__main__":
 
     port = resolve_server_port(7862, "HYBRIDSELECTOR_PORT")
 
+    class _MediaFilter(logging.Filter):
+        def filter(self, record):
+            return '/media/' not in record.getMessage()
+
     @fastapi_app.on_event("startup")
     async def _open_browser():
+        logging.getLogger("uvicorn.access").addFilter(_MediaFilter())
         url = f"http://localhost:{port}"
         await asyncio.sleep(0.1)
         webbrowser.open(url)
-
-    class _MediaFilter(logging.Filter):
-        def filter(self, record):
-            msg = record.getMessage()
-            return '"/media/' not in msg
-
-    logging.getLogger("uvicorn.access").addFilter(_MediaFilter())
 
     uvicorn.run(
         fastapi_app,

@@ -1,5 +1,23 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.7.2 - Gallery & LLM Search Polish
+
+**Gallery**
+- Selection outlines (marked / preview) now display correctly on the seamless grid — outline renders inside the thumbnail so adjacent images no longer cover it
+- Pinned image badge moved from the hidden caption row to a visible overlay in the top-left corner of the thumbnail
+
+**LLM Search**
+- Shortlist Size slider now shows the current value next to the label
+
+## Version 2.7.1 - Pure Image Grid
+
+**Gallery**
+- Thumbnails now show as a seamless image grid — no gaps, no borders, no rounded corners, no filename captions
+- Pure image view maximises visual area and makes score comparisons easier at a glance
+
+**Console**
+- `/media/` thumbnail fetch lines are now reliably suppressed — fixed a pattern mismatch that caused the filter to never match
+
 ## Version 2.7.0 - UI Polish & Bug Fixes
 
 **Sidebar Overhaul**
