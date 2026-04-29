@@ -6,8 +6,6 @@ SKIP = SkipValue()
 
 
 class Update(dict):
-    """Small replacement for gr.update used by legacy callback helpers."""
-
     def __init__(self, **kwargs):
         super().__init__(kwargs)
         self.__dict__.update(kwargs)

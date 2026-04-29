@@ -16,7 +16,6 @@ from .utils import (
 
 
 class ModelBackend:
-    # Small adapter that hides the differences between OpenAI CLIP, OpenCLIP, and SigLIP.
     def __init__(self, device, backend="openclip", clip_model="ViT-L/14",
                  openclip_model="ViT-bigG-14", openclip_pretrained="laion2b_s39b_b160k",
                  siglip_model="google/siglip-so400m-patch14-384",
@@ -106,20 +105,15 @@ class ModelBackend:
         if torch.is_tensor(output):
             return output
 
-        for attr_name in (f"{kind}_embeds", "text_embeds", "image_embeds", "pooler_output", "last_hidden_state"):
-            value = getattr(output, attr_name, None)
+        _keys = (f"{kind}_embeds", "text_embeds", "image_embeds", "pooler_output", "last_hidden_state")
+
+        getter = output.get if isinstance(output, dict) else lambda k: getattr(output, k, None)
+        for key in _keys:
+            value = getter(key)
             if torch.is_tensor(value):
-                if attr_name == "last_hidden_state" and value.ndim >= 3:
+                if key == "last_hidden_state" and value.ndim >= 3:
                     return value[:, 0, :]
                 return value
-
-        if isinstance(output, dict):
-            for key in (f"{kind}_embeds", "text_embeds", "image_embeds", "pooler_output", "last_hidden_state"):
-                value = output.get(key)
-                if torch.is_tensor(value):
-                    if key == "last_hidden_state" and value.ndim >= 3:
-                        return value[:, 0, :]
-                    return value
 
         if isinstance(output, (list, tuple)):
             for value in output:
@@ -130,7 +124,6 @@ class ModelBackend:
 
     def _encode_text_plain(self, prompt):
         prompt = normalize_prompt_text(prompt)
-        # Average a few prompt phrasings to make matching a little less brittle.
         phrases = [f"a photo of a {prompt}", f"a photo of {prompt}", prompt]
         with torch.no_grad():
             if self.backend == "openai":
@@ -196,54 +189,36 @@ class ModelBackend:
 
     def encode_images_batch(self, pil_images, return_timings=False):
         timings = {}
+        model_dtype = next(self._model.parameters()).dtype
         with torch.no_grad():
+            preprocess_started = time.perf_counter()
+            preprocess_workers = promptmatch_host_worker_count(len(pil_images))
             if self.backend in ("openai", "openclip"):
-                preprocess_started = time.perf_counter()
-                preprocess_workers = promptmatch_host_worker_count(len(pil_images))
-                if preprocess_workers <= 1:
-                    processed = [self._preprocess(img) for img in pil_images]
-                else:
-                    with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
-                        processed = list(executor.map(self._preprocess, pil_images))
-                timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
-                transfer_started = time.perf_counter()
-                tensors = torch.stack(processed).to(self.device)
-                tensors = tensors.to(next(self._model.parameters()).dtype)
-                timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
-                gpu_started = time.perf_counter()
-                feat = self._model.encode_image(tensors)
-            elif self.backend == "siglip":
-                preprocess_started = time.perf_counter()
-                preprocess_workers = promptmatch_host_worker_count(len(pil_images))
-
-                def _process_one(img):
-                    batch = self._processor(images=img, return_tensors="pt")
-                    return batch["pixel_values"].squeeze(0)
-
-                if preprocess_workers <= 1:
-                    processed = [_process_one(img) for img in pil_images]
-                else:
-                    with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
-                        processed = list(executor.map(_process_one, pil_images))
-                timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
-                transfer_started = time.perf_counter()
-                pixel_values = torch.stack(processed).to(self.device)
-                pixel_values = pixel_values.to(next(self._model.parameters()).dtype)
-                timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
-                gpu_started = time.perf_counter()
-                feat = self._model.get_image_features(pixel_values=pixel_values)
-                feat = self._extract_feature_tensor(feat, kind="image")
+                _fn = self._preprocess
             else:
-                preprocess_started = time.perf_counter()
-                inputs = self._processor(images=pil_images, return_tensors="pt").to(self.device)
-                inputs["pixel_values"] = inputs["pixel_values"].to(next(self._model.parameters()).dtype)
-                timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
-                gpu_started = time.perf_counter()
-                feat = self._model.get_image_features(**inputs)
+                def _fn(img):
+                    return self._processor(images=img, return_tensors="pt")["pixel_values"].squeeze(0)
+            if preprocess_workers <= 1:
+                processed = [_fn(img) for img in pil_images]
+            else:
+                with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
+                    processed = list(executor.map(_fn, pil_images))
+            timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
+
+            transfer_started = time.perf_counter()
+            tensors = torch.stack(processed).to(self.device).to(model_dtype)
+            timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
+
+            gpu_started = time.perf_counter()
+            if self.backend in ("openai", "openclip"):
+                feat = self._model.encode_image(tensors)
+            else:
+                feat = self._model.get_image_features(pixel_values=tensors)
                 feat = self._extract_feature_tensor(feat, kind="image")
             if self.device == "cuda":
                 torch.cuda.synchronize()
             timings["gpu_encode"] = promptmatch_timing_ms(gpu_started)
+
             normalize_started = time.perf_counter()
             normalized = F.normalize(feat.float(), dim=-1)
             timings["normalize"] = promptmatch_timing_ms(normalize_started)

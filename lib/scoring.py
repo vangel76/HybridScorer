@@ -17,8 +17,40 @@ from .utils import (
 )
 
 
+def _make_result_entry(original_path, pos_score, neg_score, failed=False):
+    return {
+        "pos": float(pos_score) if not failed else 0.0,
+        "neg": (float(neg_score) if neg_score is not None else None) if not failed else None,
+        "path": original_path,
+        "failed": failed,
+    }
+
+
+def _submit_promptmatch_prefetch(executor, image_paths, start_index, batch_size, total, proxy_resolver):
+    if start_index >= total:
+        return None, None, None
+    size = min(batch_size, total - start_index)
+    batch = image_paths[start_index:start_index + size]
+    future = executor.submit(prepare_promptmatch_loaded_batch, batch, proxy_resolver)
+    return future, start_index, size
+
+
+def _annotate_prefetch_timing(prefetched, prefetch_result_started):
+    loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch = prefetched
+    timing_prefetch = dict(timing_prefetch or {})
+    timing_prefetch["prefetch_ready_wait"] = promptmatch_timing_ms(prefetch_result_started)
+    return (loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch)
+
+
+def _reset_oom_prefetch(prefetch_executor, prefetched_future):
+    if prefetched_future is not None:
+        prefetched_future.cancel()
+    prefetch_executor.shutdown(wait=False, cancel_futures=True)
+    torch.cuda.empty_cache()
+    return ThreadPoolExecutor(max_workers=1), None, None, None
+
+
 def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_resolver=None):
-    # PromptMatch scoring path: embed images in batches, then compare against text embeddings.
     results = {}
     total = len(image_paths)
     done = 0
@@ -26,13 +58,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
     print(f"[PromptMatch] Using batch size {batch_size}")
 
     def _mark_failed(original_path):
-        results[os.path.basename(original_path)] = {"pos": 0.0, "neg": None, "path": original_path, "failed": True}
-
-    def _submit_prefetch(executor, start_index, size):
-        if start_index >= total:
-            return None
-        batch = image_paths[start_index:start_index + size]
-        return executor.submit(prepare_promptmatch_loaded_batch, batch, proxy_resolver)
+        results[os.path.basename(original_path)] = _make_result_entry(original_path, 0.0, None, failed=True)
 
     prefetch_executor = ThreadPoolExecutor(max_workers=1)
     prefetched = None
@@ -60,10 +86,9 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
                 _mark_failed(original_path)
 
             next_start = done + len(batch)
-            next_size = min(batch_size, total - next_start) if next_start < total else 0
-            prefetched_start = next_start if next_size else None
-            prefetched_size = next_size if next_size else None
-            prefetched_future = _submit_prefetch(prefetch_executor, next_start, next_size) if next_size else None
+            prefetched_future, prefetched_start, prefetched_size = _submit_promptmatch_prefetch(
+                prefetch_executor, image_paths, next_start, batch_size, total, proxy_resolver
+            )
 
             if pil_imgs:
                 try:
@@ -73,12 +98,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
                     pos_sims = (feat @ pos_emb.T).squeeze(1).tolist()
                     neg_sims = (feat @ neg_emb.T).squeeze(1).tolist() if neg_emb is not None else [None] * len(loaded)
                     for (original_path, _), pos_score, neg_score in zip(loaded, pos_sims, neg_sims):
-                        results[os.path.basename(original_path)] = {
-                            "pos": float(pos_score),
-                            "neg": float(neg_score) if neg_score is not None else None,
-                            "path": original_path,
-                            "failed": False,
-                        }
+                        results[os.path.basename(original_path)] = _make_result_entry(original_path, pos_score, neg_score)
                     score_ms = promptmatch_timing_ms(score_started)
                     total_encode_ms = promptmatch_timing_ms(encode_started)
                     vram_info = current_free_vram_gb()
@@ -103,15 +123,8 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
                     if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
                         batch_size = max(1, current_size // 2)
                         print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
-                        if prefetched_future is not None:
-                            prefetched_future.cancel()
-                            prefetched_future = None
-                        prefetched = None
-                        prefetched_start = None
+                        prefetch_executor, prefetched_future, prefetched, prefetched_start = _reset_oom_prefetch(prefetch_executor, prefetched_future)
                         prefetched_size = None
-                        prefetch_executor.shutdown(wait=False, cancel_futures=True)
-                        prefetch_executor = ThreadPoolExecutor(max_workers=1)
-                        torch.cuda.empty_cache()
                         if progress_cb:
                             progress_cb(done, total, batch_size, True)
                         continue
@@ -120,7 +133,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
                     failed = 0
                     for original_path, _ in loaded:
                         try:
-                            single_loaded, single_imgs, single_failed, _single_load_timings = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
+                            single_loaded, single_imgs, single_failed, _ = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
                             for failed_path in single_failed:
                                 _mark_failed(failed_path)
                             if not single_imgs:
@@ -129,12 +142,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
                             single_feat = backend.encode_images_batch(single_imgs)
                             pos_score = float((single_feat @ pos_emb.T).squeeze().item())
                             neg_score = float((single_feat @ neg_emb.T).squeeze().item()) if neg_emb is not None else None
-                            results[os.path.basename(original_path)] = {
-                                "pos": pos_score,
-                                "neg": neg_score,
-                                "path": original_path,
-                                "failed": False,
-                            }
+                            results[os.path.basename(original_path)] = _make_result_entry(original_path, pos_score, neg_score)
                             recovered += 1
                         except Exception as single_exc:
                             print(f"  [WARN] single-image error for {original_path}: {single_exc}")
@@ -150,12 +158,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
 
             if prefetched_future is not None:
                 prefetch_result_started = time.perf_counter()
-                prefetched = prefetched_future.result()
-                if prefetched and len(prefetched) >= 4:
-                    loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch = prefetched
-                    timing_prefetch = dict(timing_prefetch or {})
-                    timing_prefetch["prefetch_ready_wait"] = promptmatch_timing_ms(prefetch_result_started)
-                    prefetched = (loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch)
+                prefetched = _annotate_prefetch_timing(prefetched_future.result(), prefetch_result_started)
                 prefetched_future = None
             else:
                 prefetched = None
@@ -169,7 +172,7 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
 
 
 def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_resolver=None):
-    # Cacheable PromptMatch path: encode image features once, then reuse them for prompt changes.
+    # Cacheable path: encode image features once, then reuse for prompt changes.
     feature_paths = []
     feature_rows = []
     failed_paths = []
@@ -183,12 +186,6 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
         if original_path not in failed_seen:
             failed_seen.add(original_path)
             failed_paths.append(original_path)
-
-    def _submit_prefetch(executor, start_index, size):
-        if start_index >= total:
-            return None
-        batch = image_paths[start_index:start_index + size]
-        return executor.submit(prepare_promptmatch_loaded_batch, batch, proxy_resolver)
 
     prefetch_executor = ThreadPoolExecutor(max_workers=1)
     prefetched = None
@@ -216,10 +213,9 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
                 _mark_failed(original_path)
 
             next_start = done + len(batch)
-            next_size = min(batch_size, total - next_start) if next_start < total else 0
-            prefetched_start = next_start if next_size else None
-            prefetched_size = next_size if next_size else None
-            prefetched_future = _submit_prefetch(prefetch_executor, next_start, next_size) if next_size else None
+            prefetched_future, prefetched_start, prefetched_size = _submit_promptmatch_prefetch(
+                prefetch_executor, image_paths, next_start, batch_size, total, proxy_resolver
+            )
 
             if pil_imgs:
                 try:
@@ -254,15 +250,8 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
                     if backend.device == "cuda" and is_cuda_oom_error(exc) and current_size > 1:
                         batch_size = max(1, current_size // 2)
                         print(f"[PromptMatch] CUDA OOM, retrying with batch size {batch_size}")
-                        if prefetched_future is not None:
-                            prefetched_future.cancel()
-                            prefetched_future = None
-                        prefetched = None
-                        prefetched_start = None
+                        prefetch_executor, prefetched_future, prefetched, prefetched_start = _reset_oom_prefetch(prefetch_executor, prefetched_future)
                         prefetched_size = None
-                        prefetch_executor.shutdown(wait=False, cancel_futures=True)
-                        prefetch_executor = ThreadPoolExecutor(max_workers=1)
-                        torch.cuda.empty_cache()
                         if progress_cb:
                             progress_cb(done, total, batch_size, True)
                         continue
@@ -270,23 +259,18 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
                     recovered = 0
                     failed = 0
                     for original_path, _ in loaded:
-                        before_count = len(feature_paths)
-                        before_failed = len(failed_paths)
                         try:
-                            single_loaded, single_imgs, single_failed, _single_load_timings = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
+                            single_loaded, single_imgs, single_failed, _ = prepare_promptmatch_loaded_batch([original_path], proxy_resolver)
                             for failed_path in single_failed:
                                 _mark_failed(failed_path)
                             if not single_imgs:
                                 failed += 1
                                 continue
                             single_feat = backend.encode_images_batch(single_imgs).detach().cpu()
-                            for (_, _), row in zip(single_loaded, single_feat):
+                            for row in single_feat:
                                 feature_paths.append(original_path)
                                 feature_rows.append(row)
-                            if len(feature_paths) > before_count:
-                                recovered += 1
-                            elif len(failed_paths) > before_failed:
-                                failed += 1
+                            recovered += 1
                         except Exception as single_exc:
                             print(f"  [WARN] single-image error for {original_path}: {single_exc}")
                             _mark_failed(original_path)
@@ -301,12 +285,7 @@ def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_
 
             if prefetched_future is not None:
                 prefetch_result_started = time.perf_counter()
-                prefetched = prefetched_future.result()
-                if prefetched and len(prefetched) >= 4:
-                    loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch = prefetched
-                    timing_prefetch = dict(timing_prefetch or {})
-                    timing_prefetch["prefetch_ready_wait"] = promptmatch_timing_ms(prefetch_result_started)
-                    prefetched = (loaded_prefetch, pil_prefetch, failed_prefetch, timing_prefetch)
+                prefetched = _annotate_prefetch_timing(prefetched_future.result(), prefetch_result_started)
                 prefetched_future = None
             else:
                 prefetched = None
@@ -330,19 +309,9 @@ def score_promptmatch_cached_features(feature_paths, image_features, failed_path
         pos_sims = (image_features @ pos_emb_cpu.T).squeeze(1).tolist()
         neg_sims = (image_features @ neg_emb_cpu.T).squeeze(1).tolist() if neg_emb_cpu is not None else [None] * len(feature_paths)
         for original_path, pos_score, neg_score in zip(feature_paths, pos_sims, neg_sims):
-            results[os.path.basename(original_path)] = {
-                "pos": float(pos_score),
-                "neg": float(neg_score) if neg_score is not None else None,
-                "path": original_path,
-                "failed": False,
-            }
+            results[os.path.basename(original_path)] = _make_result_entry(original_path, pos_score, neg_score)
 
     for original_path in failed_paths:
-        results[os.path.basename(original_path)] = {
-            "pos": 0.0,
-            "neg": None,
-            "path": original_path,
-            "failed": True,
-        }
+        results[os.path.basename(original_path)] = _make_result_entry(original_path, 0.0, None, failed=True)
 
     return results

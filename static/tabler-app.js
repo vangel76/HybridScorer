@@ -82,12 +82,18 @@
         openZoom(item);
         selection("preview", item.side, item.index);
       });
-      fig.addEventListener("dragstart", (event) => event.dataTransfer.setData("application/json", JSON.stringify(item)));
+      fig.addEventListener("dragstart", (event) => {
+        const galleryEl = $(item.side === "left" ? "left-gallery" : "right-gallery");
+        const fnames = fig.classList.contains("marked")
+          ? Array.from(galleryEl.querySelectorAll(".hy-thumb.marked")).map(f => f.dataset.filename)
+          : [item.filename];
+        event.dataTransfer.setData("application/json", JSON.stringify({ ...item, fnames }));
+      });
       fig.addEventListener("dragover", (event) => event.preventDefault());
       fig.addEventListener("drop", async (event) => {
         event.preventDefault();
         const src = JSON.parse(event.dataTransfer.getData("application/json") || "{}");
-        await selection("drop", item.side, src.index, { source_side: src.side, target_side: item.side, fnames: [src.filename] });
+        await selection("drop", item.side, src.index, { source_side: src.side, target_side: item.side, fnames: src.fnames || [src.filename] });
       });
       root.appendChild(fig);
     }
@@ -409,6 +415,7 @@
   });
   $("tagmatch_tags").addEventListener("input", renderTagSuggestions);
   $("load-folder").addEventListener("click", () => runJob("/api/folder/load"));
+  $("load-folder-recursive").addEventListener("click", () => runJob("/api/folder/load-recursive"));
   $("run-score").addEventListener("click", () => runJob("/api/score"));
   $("find-similar").addEventListener("click", () => runJob("/api/search/similar"));
   $("find-same").addEventListener("click", () => runJob("/api/search/same-person"));
@@ -450,7 +457,7 @@
       event.preventDefault();
       const src = JSON.parse(event.dataTransfer.getData("application/json") || "{}");
       if (!src.filename || src.side === targetSide) return;
-      await selection("drop", targetSide, src.index, { source_side: src.side, target_side: targetSide, fnames: [src.filename] });
+      await selection("drop", targetSide, src.index, { source_side: src.side, target_side: targetSide, fnames: src.fnames || [src.filename] });
     });
   }
   $("pin").addEventListener("click", () => selection("pin", "", -1));

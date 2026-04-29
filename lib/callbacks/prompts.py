@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 
 from ..config import (
+    METHOD_PROMPTMATCH, METHOD_LLMSEARCH,
     PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_GGUF, PROMPT_GENERATOR_HUIHUI_GEMMA4,
     PROMPT_GENERATOR_WD_TAGS, FLORENCE_MAX_NEW_TOKENS,
@@ -519,7 +520,6 @@ def generate_prompt_from_preview(state, device, generator_name, current_generate
 
 
 def insert_generated_prompt(state, method, prompt_text):
-    from ..config import METHOD_PROMPTMATCH, METHOD_LLMSEARCH
     prompt_text = (prompt_text or "").strip()
     if not prompt_text:
         state["generated_prompt_status"] = "Generated prompt is empty. Edit or generate a prompt first."

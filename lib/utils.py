@@ -119,7 +119,6 @@ def parse_requirement_entry(raw_line):
 
 def load_startup_requirements():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # utils.py lives inside lib/, go one level up to project root
     script_dir = os.path.dirname(script_dir)
     requirement_sources = [
         os.path.join(script_dir, "requirements.txt"),
@@ -622,7 +621,7 @@ def load_promptmatch_rgb_images(valid_items):
         with Image.open(scoring_path) as src_img:
             rgb = src_img.convert("RGB")
             rgb.load()
-        return item, rgb, None
+        return item, rgb
 
     loaded_items = []
     pil_imgs = []
@@ -633,9 +632,7 @@ def load_promptmatch_rgb_images(valid_items):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results = list(executor.map(_load_one, valid_items))
 
-    for item, image, exc in results:
-        if exc is not None:
-            raise exc
+    for item, image in results:
         loaded_items.append(item)
         pil_imgs.append(image)
     return loaded_items, pil_imgs
@@ -655,30 +652,25 @@ def current_free_vram_gb():
     return free_bytes / (1024 ** 3), total_bytes / (1024 ** 3)
 
 
-def promptmatch_log_batch_timing(prefix, batch_start, batch_end, total, timings):
+def _log_batch_timing(tag, prefix, batch_start, batch_end, total, timings):
     parts = []
     for key, value in timings.items():
         if value is None:
             continue
-        if key in {"free_vram_gb"}:
+        if key == "free_vram_gb":
             parts.append(f"{key}={value:.1f}GB")
         else:
             parts.append(f"{key}={value:.1f}ms")
     if parts:
-        print(f"[PromptMatch] {prefix} {batch_start}-{batch_end}/{total}  " + "  ".join(parts))
+        print(f"[{tag}] {prefix} {batch_start}-{batch_end}/{total}  " + "  ".join(parts))
+
+
+def promptmatch_log_batch_timing(prefix, batch_start, batch_end, total, timings):
+    _log_batch_timing("PromptMatch", prefix, batch_start, batch_end, total, timings)
 
 
 def imagereward_log_batch_timing(prefix, batch_start, batch_end, total, timings):
-    parts = []
-    for key, value in timings.items():
-        if value is None:
-            continue
-        if key in {"free_vram_gb"}:
-            parts.append(f"{key}={value:.1f}GB")
-        else:
-            parts.append(f"{key}={value:.1f}ms")
-    if parts:
-        print(f"[ImageReward] {prefix} {batch_start}-{batch_end}/{total}  " + "  ".join(parts))
+    _log_batch_timing("ImageReward", prefix, batch_start, batch_end, total, timings)
 
 
 def prepare_promptmatch_loaded_batch(batch, proxy_resolver=None):
@@ -804,10 +796,6 @@ def prompt_backend_warning_text(generator_name):
 
 def llmsearch_backend_choices():
     return list(PROMPT_GENERATOR_CHOICES)
-
-
-def llmsearch_backend_label(generator_name):
-    return generator_name
 
 
 def describe_llmsearch_backend_source(generator_name):

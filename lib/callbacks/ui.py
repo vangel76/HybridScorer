@@ -12,9 +12,10 @@ from ..helpers import (
     threshold_for_percentile, promptmatch_slider_range, imagereward_slider_range,
     llmsearch_slider_range, clamp_threshold, expand_slider_bounds,
     slider_step_floor, slider_step_ceil_exclusive, sanitize_export_name,
-    export_destination, normalize_threshold_inputs,
+    export_destination, normalize_threshold_inputs, threshold_labels,
+    uses_pos_similarity_scores,
 )
-from ..state_helpers import is_browse_mode, active_query_image_widget_update
+from ..state_helpers import is_browse_mode, active_query_image_widget_update, clear_preview_search_context
 from .. import view as _vw
 from .scoring import middle_threshold_values, recompute_imagereward_scores
 from .prompts import select_cached_generated_prompt
@@ -53,7 +54,6 @@ def update_imagereward_penalty_weight(state, penalty_weight, main_threshold, aux
     lo, hi, _ = imagereward_slider_range(state["scores"])
     clamped = clamp_threshold(main_threshold, lo, hi)
     safe_lo, safe_hi = expand_slider_bounds(lo, hi, main_threshold, clamped)
-    from ..helpers import threshold_labels
     main_label = threshold_labels(METHOD_IMAGEREWARD)[0]
     return (
         *_vw.render_view_with_controls(state, clamped, aux_threshold),
@@ -383,7 +383,6 @@ def on_hist_click(state, sel: gr.SelectData, main_threshold, aux_threshold):
         return (*_vw.render_view_with_controls(state, main_threshold, aux_threshold), gr.update(), gr.update())
     try:
         cx, cy = sel.index
-        from ..helpers import uses_pos_similarity_scores
         if uses_pos_similarity_scores(geom["method"]):
             W = geom["W"]
             PAD_L = geom["PAD_L"]
@@ -481,6 +480,5 @@ def export_files(state, main_threshold, aux_threshold, export_left_enabled, expo
             state.get("similarity_query_fname") in moved_set
             or state.get("sameperson_query_fname") in moved_set
         ):
-            from ..state_helpers import clear_preview_search_context
             clear_preview_search_context(state)
     return _vw.render_view_with_controls(state, main_threshold, aux_threshold)

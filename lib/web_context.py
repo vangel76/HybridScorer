@@ -260,42 +260,34 @@ class HybridScorerContext:
             payload["error"] = job.error or "Job failed"
         return payload
 
+    _SCORE_KEYS = (
+        "left_head", "left_gallery", "right_head", "right_gallery", "status_md",
+        "hist_plot", "sel_info", "mark_state", "external_query_image",
+        "clear_external_query_btn", "main_slider", "aux_slider",
+        "percentile_slider", "percentile_mid_btn", "model_status_state",
+        "left_export_cb", "left_export_name_tb", "export_acc",
+        "move_controls_col", "gallery_header_spacer_col", "right_header_col",
+        "right_gallery_col",
+    )
+    _VIEW_KEYS = (
+        "left_head", "left_gallery", "right_head", "right_gallery", "status_md",
+        "hist_plot", "sel_info", "mark_state", "external_query_image",
+        "clear_external_query_btn", "left_export_cb", "left_export_name_tb",
+        "export_acc", "move_controls_col", "gallery_header_spacer_col",
+        "right_header_col", "right_gallery_col", "main_slider", "aux_slider",
+    )
+
     def _apply_known_result(self, action, result):
         if action == "preview-search":
-            self._apply_output_keys(result, (
-                "promptgen_status_md",
-                "left_head", "left_gallery", "right_head", "right_gallery", "status_md",
-                "hist_plot", "sel_info", "mark_state", "external_query_image",
-                "clear_external_query_btn", "main_slider", "aux_slider",
-                "percentile_slider", "percentile_mid_btn", "model_status_state",
-                "left_export_cb", "left_export_name_tb", "export_acc",
-                "move_controls_col", "gallery_header_spacer_col", "right_header_col",
-                "right_gallery_col",
-            ))
+            self._apply_output_keys(result, ("promptgen_status_md",) + self._SCORE_KEYS)
         elif action in {"score", "shortcut"}:
-            self._apply_output_keys(result, (
-                "left_head", "left_gallery", "right_head", "right_gallery", "status_md",
-                "hist_plot", "sel_info", "mark_state", "external_query_image",
-                "clear_external_query_btn", "main_slider", "aux_slider",
-                "percentile_slider", "percentile_mid_btn", "model_status_state",
-                "left_export_cb", "left_export_name_tb", "export_acc",
-                "move_controls_col", "gallery_header_spacer_col", "right_header_col",
-                "right_gallery_col",
-            ))
+            self._apply_output_keys(result, self._SCORE_KEYS)
         elif action in {"folder-load", "selection", "export", "threshold"}:
-            self._apply_output_keys(result, (
-                "left_head", "left_gallery", "right_head", "right_gallery", "status_md",
-                "hist_plot", "sel_info", "mark_state", "external_query_image",
-                "clear_external_query_btn", "left_export_cb", "left_export_name_tb",
-                "export_acc", "move_controls_col", "gallery_header_spacer_col",
-                "right_header_col", "right_gallery_col", "main_slider", "aux_slider",
-            ))
+            self._apply_output_keys(result, self._VIEW_KEYS)
         elif action == "prompt-generate":
             self._apply_output_keys(result, ("promptgen_status_md", "generated_prompt_tb", "generated_prompt_detail_slider"))
         elif action == "prompt-insert":
             self._apply_output_keys(result, ("promptgen_status_md", "pos_prompt_tb", "ir_prompt_tb", "llm_prompt_tb"))
-        elif action in {"query-image", "prompt-detail"}:
-            return None
 
     def _apply_output_keys(self, result, keys):
         if not isinstance(result, (list, tuple)):
@@ -334,7 +326,7 @@ class HybridScorerContext:
                 except Exception:
                     pass
 
-    def load_folder_job(self, payload):
+    def load_folder_job(self, payload, recursive=False):
         self.update_inputs(payload)
         return self.create_job("folder-load", lambda progress: _sc.load_folder_for_browse(
             self.state,
@@ -342,6 +334,7 @@ class HybridScorerContext:
             self.inputs["main_threshold"],
             self.inputs["aux_threshold"],
             progress=progress,
+            recursive=recursive,
         ))
 
     def score_job(self, payload):
@@ -401,25 +394,20 @@ class HybridScorerContext:
 
     def threshold_action(self, payload):
         self.update_inputs(payload)
-        action = (payload or {}).get("action", "split")
+        p = payload or {}
+        action = p.get("action", "split")
         with self.lock:
             if action == "percentile":
-                self.inputs["percentile"] = float((payload or {}).get("percentile", self.inputs["percentile"]))
+                self.inputs["percentile"] = float(p.get("percentile", self.inputs["percentile"]))
                 result = _ui.set_from_percentile(
                     self.state,
                     self.inputs["percentile"],
                     self.inputs["main_threshold"],
                     self.inputs["aux_threshold"],
                 )
-                self._apply_output_keys(result, (
-                    "left_head", "left_gallery", "right_head", "right_gallery", "status_md",
-                    "hist_plot", "sel_info", "mark_state", "external_query_image",
-                    "clear_external_query_btn", "left_export_cb", "left_export_name_tb",
-                    "export_acc", "move_controls_col", "gallery_header_spacer_col",
-                    "right_header_col", "right_gallery_col", "main_slider",
-                ))
+                self._apply_output_keys(result, self._VIEW_KEYS[:-1])
             elif action == "hist":
-                index = [(payload or {}).get("x", 0), (payload or {}).get("y", 0)]
+                index = [p.get("x", 0), p.get("y", 0)]
                 result = _ui.on_hist_click(
                     self.state,
                     gr.SelectData(index=index),
@@ -434,54 +422,44 @@ class HybridScorerContext:
 
     def selection_action(self, payload):
         self.update_inputs(payload)
-        action = (payload or {}).get("action", "")
-        side = (payload or {}).get("side", "")
-        index = int((payload or {}).get("index", -1))
+        p = payload or {}
+        action = p.get("action", "")
+        side = p.get("side", "")
+        index = int(p.get("index", -1))
+        mt = self.inputs["main_threshold"]
+        at = self.inputs["aux_threshold"]
         with self.lock:
-            if action == "preview":
+            if action in {"preview", "mark"}:
                 result = _ui.handle_thumb_action(
                     self.state,
-                    f"preview:{side}:{index}:{time.time_ns()}",
-                    self.inputs["main_threshold"],
-                    self.inputs["aux_threshold"],
-                )
-            elif action == "mark":
-                result = _ui.handle_thumb_action(
-                    self.state,
-                    f"mark:{side}:{index}:{time.time_ns()}",
-                    self.inputs["main_threshold"],
-                    self.inputs["aux_threshold"],
+                    f"{action}:{side}:{index}:{time.time_ns()}",
+                    mt, at,
                 )
             elif action == "drop":
                 drop_payload = json.dumps({
-                    "source_side": (payload or {}).get("source_side", side),
+                    "source_side": p.get("source_side", side),
                     "source_index": index,
-                    "target_side": (payload or {}).get("target_side", ""),
-                    "fnames": (payload or {}).get("fnames", []),
+                    "target_side": p.get("target_side", ""),
+                    "fnames": p.get("fnames", []),
                 })
-                result = _ui.handle_thumb_action(
-                    self.state,
-                    f"dropjson:{drop_payload}",
-                    self.inputs["main_threshold"],
-                    self.inputs["aux_threshold"],
-                )
+                result = _ui.handle_thumb_action(self.state, f"dropjson:{drop_payload}", mt, at)
             elif action == "move-right":
-                result = _ui.move_right(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _ui.move_right(self.state, mt, at)
             elif action == "move-left":
-                result = _ui.move_left(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _ui.move_left(self.state, mt, at)
             elif action == "pin":
-                result = _ui.pin_selected(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _ui.pin_selected(self.state, mt, at)
             elif action == "fit-threshold":
-                result = _ui.fit_threshold_to_targets(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _ui.fit_threshold_to_targets(self.state, mt, at)
             elif action == "clear-marked":
-                result = _ui.clear_status(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _ui.clear_status(self.state, mt, at)
             elif action == "clear-all":
-                result = _ui.clear_all_status(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _ui.clear_all_status(self.state, mt, at)
             elif action == "zoom":
-                self.inputs["zoom"] = int((payload or {}).get("zoom", self.inputs["zoom"]))
-                result = _ui.update_zoom(self.state, self.inputs["zoom"], self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                self.inputs["zoom"] = int(p.get("zoom", self.inputs["zoom"]))
+                result = _ui.update_zoom(self.state, self.inputs["zoom"], mt, at)
             else:
-                result = _vw.render_view_with_controls(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])
+                result = _vw.render_view_with_controls(self.state, mt, at)
             self._apply_known_result("selection", result)
             return self.to_payload()
 
@@ -558,11 +536,12 @@ class HybridScorerContext:
         left_gallery = _plain_update(view[1]).get("value", view[1] if isinstance(view[1], list) else [])
         right_gallery = _plain_update(view[3]).get("value", view[3] if isinstance(view[3], list) else [])
         hist_url = self.media.register_pil(view[5])
-        mark = {}
         try:
             mark = json.loads(view[7] or "{}")
         except Exception:
             mark = {}
+        query_update = _plain_update(view[8])
+        query_path = query_update.get("value")
         controls = self.control_state()
         return {
             "app": {
@@ -591,23 +570,21 @@ class HybridScorerContext:
                 "tag_score_lookup": mark.get("tag_score_lookup", {}),
                 "segment_score_lookup": mark.get("segment_score_lookup", {}),
                 "neg_segment_score_lookup": mark.get("neg_segment_score_lookup", {}),
-                "query_image_url": self._query_image_url(),
+                "query_image_url": self.media.register_path(query_path) if query_path else None,
                 "query_status": self.state.get("generated_prompt_status"),
             },
             "controls": controls,
         }
 
     def _gallery_items(self, items, side):
+        try:
+            media_lookup = json.loads(_vw.marked_state_json(self.state)).get("media_lookup", {})
+        except Exception:
+            media_lookup = {}
         out = []
         for index, item in enumerate(items or []):
             path, caption = item
             fname = os.path.basename(path)
-            original = None
-            media_lookup = {}
-            try:
-                media_lookup = json.loads(_vw.marked_state_json(self.state)).get("media_lookup", {})
-            except Exception:
-                media_lookup = {}
             original = media_lookup.get(path) or media_lookup.get(fname) or fname
             out.append({
                 "side": side,
@@ -620,11 +597,6 @@ class HybridScorerContext:
                 "overridden": original in self.state.get("overrides", {}),
             })
         return out
-
-    def _query_image_url(self):
-        query_update = _plain_update(_vw.current_view(self.state, self.inputs["main_threshold"], self.inputs["aux_threshold"])[8])
-        path = query_update.get("value")
-        return self.media.register_path(path) if path else None
 
     def control_state(self):
         controls_tuple = _vw.configure_controls(self.state, self.inputs["method"])

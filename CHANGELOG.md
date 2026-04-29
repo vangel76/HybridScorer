@@ -1,5 +1,20 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.8.0 - Subfolder Loading, Multi-Drag & TagMatch Speed
+
+**Folder Loading**
+- Load folder button is now split into two: **Load folder** (current folder only) and **+subfolders** (recursive scan including all nested subfolders)
+- Scoring and all search modes (Similarity, SamePerson, ObjectSearch) automatically use the recursive image list when a folder was loaded with +subfolders — no re-scan needed
+
+**Multi-Selection Drag & Drop**
+- Dragging a marked (shift-clicked) thumbnail now carries all selected thumbnails from that side at once
+- Drop onto any thumbnail or into the target gallery to move the whole selection in one action
+- Dragging an unmarked thumbnail still moves just that single image as before
+
+**TagMatch Speed**
+- Image loading and preprocessing for TagMatch inference now run in a background thread overlapped with ONNX GPU inference — next batch is prepared while the current batch runs on the GPU
+- Typical throughput improvement: 1.5–2× on large folders
+
 ## Version 2.7.2 - Gallery & LLM Search Polish
 
 **Gallery**

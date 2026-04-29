@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from .. import ui_compat as gr
 import torch
@@ -34,7 +35,7 @@ from ..utils import (
     llmsearch_backend_choices,
 )
 from ..helpers import (
-    label_for_backend, scan_image_paths, method_labels, threshold_labels,
+    label_for_backend, scan_image_paths, scan_image_paths_recursive, method_labels, threshold_labels,
     promptmatch_slider_range, imagereward_slider_range, llmsearch_slider_range,
     llmsearch_uses_numeric_scores, clamp_threshold, expand_slider_bounds,
     normalize_threshold_inputs, percentile_slider_update, percentile_reset_button_update,
@@ -58,6 +59,19 @@ from .. import view as _vw
 from . import prompts as _pr
 
 
+def _prep_tagmatch_batch(paths, proxy_map):
+    tensors, valid, failed = [], [], []
+    for p in paths:
+        disp = proxy_map.get(p, p)
+        try:
+            with Image.open(disp) as src:
+                tensors.append(_lo.tagmatch_prepare_image(src))
+            valid.append(p)
+        except Exception:
+            failed.append(p)
+    return valid, (np.stack(tensors, axis=0) if tensors else None), failed
+
+
 def score_tagmatch_folder(state, device, image_paths, query_tags_str, progress):
     backend = _lo.ensure_tagmatch_model(state, device)
     session = backend["session"]
@@ -73,37 +87,36 @@ def score_tagmatch_folder(state, device, image_paths, query_tags_str, progress):
 
     if not can_reuse:
         batch_size = get_auto_batch_size(device, mode="tagmatch")
-        print(f"[TagMatch] Running inference on {len(image_paths)} images "
-              f"(batch size {batch_size})")
+        print(f"[TagMatch] Running inference on {len(image_paths)} images (batch {batch_size})")
         tag_vectors = {}
         total = len(image_paths)
-        for batch_start in range(0, total, batch_size):
-            batch_paths = image_paths[batch_start:batch_start + batch_size]
-            batch_tensors = []
-            batch_valid_paths = []
-            for p in batch_paths:
-                disp = state.get("proxy_map", {}).get(p, p)
-                try:
-                    with Image.open(disp) as src:
-                        arr = _lo.tagmatch_prepare_image(src)
-                    batch_tensors.append(arr)
-                    batch_valid_paths.append(p)
-                except Exception:
+        proxy_map = state.get("proxy_map") or {}
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_prep_tagmatch_batch, image_paths[0:batch_size], proxy_map)
+            for batch_start in range(0, total, batch_size):
+                next_start = batch_start + batch_size
+                next_future = (
+                    executor.submit(_prep_tagmatch_batch, image_paths[next_start:next_start + batch_size], proxy_map)
+                    if next_start < total else None
+                )
+                valid_paths, batch_np, failed_paths = future.result()
+                for p in failed_paths:
                     tag_vectors[p] = {}
-            if batch_tensors:
-                try:
-                    batch_np = np.stack(batch_tensors, axis=0)
-                    raw_out = session.run(None, {input_name: batch_np})[0]
-                    for i, p in enumerate(batch_valid_paths):
-                        row = raw_out[i]
-                        keep = np.where(row >= TAGMATCH_WD_MIN_CACHE_PROB)[0]
-                        tag_vectors[p] = {tags[j]: float(row[j]) for j in keep}
-                except Exception as _e:
-                    print(f"[TagMatch] Batch inference error: {_e}")
-                    for p in batch_valid_paths:
-                        tag_vectors[p] = {}
-            done = min(batch_start + batch_size, total)
-            progress(done / max(total, 1), desc=f"TagMatch inference {done}/{total}")
+                if batch_np is not None:
+                    try:
+                        raw_out = session.run(None, {input_name: batch_np})[0]
+                        for i, p in enumerate(valid_paths):
+                            row = raw_out[i]
+                            keep = np.where(row >= TAGMATCH_WD_MIN_CACHE_PROB)[0]
+                            tag_vectors[p] = {tags[j]: float(row[j]) for j in keep}
+                    except Exception as _e:
+                        print(f"[TagMatch] Batch inference error: {_e}")
+                        for p in valid_paths:
+                            tag_vectors[p] = {}
+                done = min(next_start, total)
+                progress(done / max(total, 1), desc=f"TagMatch inference {done}/{total}")
+                future = next_future
 
         state["tagmatch_cached_signature"] = image_signature
         state["tagmatch_cached_feature_paths"] = list(image_paths)
@@ -144,20 +157,17 @@ class VisionLLMRerankBackend:
         return True
 
     def load(self, progress):
-        if self.backend_id == PROMPT_GENERATOR_FLORENCE:
-            progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
-            _lo.ensure_florence_model(self._state, self._device)
-        elif self.backend_id == PROMPT_GENERATOR_JOYCAPTION:
-            progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
-            _lo.ensure_joycaption_model(self._state, self._device)
-        elif self.backend_id == PROMPT_GENERATOR_JOYCAPTION_GGUF:
-            progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
-            _lo.ensure_joycaption_gguf_model(self._state, self._device)
-        elif self.backend_id == PROMPT_GENERATOR_HUIHUI_GEMMA4:
-            progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
-            _lo.ensure_huihui_gemma4_model(self._state, self._device)
-        else:
+        loaders = {
+            PROMPT_GENERATOR_FLORENCE: _lo.ensure_florence_model,
+            PROMPT_GENERATOR_JOYCAPTION: _lo.ensure_joycaption_model,
+            PROMPT_GENERATOR_JOYCAPTION_GGUF: _lo.ensure_joycaption_gguf_model,
+            PROMPT_GENERATOR_HUIHUI_GEMMA4: _lo.ensure_huihui_gemma4_model,
+        }
+        loader = loaders.get(self.backend_id)
+        if loader is None:
             raise RuntimeError(f"Unknown LLM rerank backend: {self.backend_id}")
+        progress(0, desc=f"Loading LLM rerank backend from {self.describe_source()}: {self.backend_id}")
+        loader(self._state, self._device)
 
     def release(self):
         return None
@@ -234,9 +244,6 @@ class VisionLLMRerankBackend:
         return float(extract_llmsearch_numeric_score(raw_score_text)), raw_score_text
 
     def score_candidates_batch(self, images, query_text):
-        """Score a batch of PIL images with the HF JoyCaption backend.
-        Returns a list of (score_float, raw_text) pairs, one per image.
-        Falls back to sequential for non-HF backends."""
         if self.backend_id != PROMPT_GENERATOR_JOYCAPTION:
             return [self.score_candidate(img, query_text) for img in images]
         model, processor = _lo.ensure_joycaption_model(self._state, self._device)
@@ -527,17 +534,18 @@ def recompute_imagereward_scores(state, penalty_weight):
     return changed
 
 
-def load_folder_for_browse(state, folder, main_threshold, aux_threshold, progress=gr.Progress()):
+def load_folder_for_browse(state, folder, main_threshold, aux_threshold, progress=gr.Progress(), recursive=False):
     folder = (folder or "").strip()
     if not folder or not os.path.isdir(folder):
         set_browse_folder_state(state, folder, [], f"Invalid folder: {folder!r}")
         return (*_vw.render_view_with_controls(state, main_threshold, aux_threshold),)
 
-    image_paths = scan_image_paths(folder)
+    image_paths = scan_image_paths_recursive(folder) if recursive else scan_image_paths(folder)
     if not image_paths:
         set_browse_folder_state(state, folder, [], f"No images found in {folder}")
         return (*_vw.render_view_with_controls(state, main_threshold, aux_threshold),)
 
+    state["folder_recursive"] = recursive
     sync_promptmatch_proxy_cache(state, folder)
     image_signature = get_image_paths_signature(image_paths)
     cache_dir = state.get("proxy_cache_dir")
@@ -673,7 +681,8 @@ def prepare_scored_run_context(state, method, folder, main_threshold, aux_thresh
     if not folder or not os.path.isdir(folder):
         return None, _vw.empty_result(state, f"Invalid folder: {folder!r}", method)
 
-    image_paths = scan_image_paths(folder)
+    _scan = scan_image_paths_recursive if state.get("folder_recursive") else scan_image_paths
+    image_paths = _scan(folder)
     if not image_paths:
         return None, _vw.empty_result(state, f"No images found in {folder}", method)
 
@@ -728,7 +737,8 @@ def normalize_preview_search_request(state, folder, preview_missing_message, pre
     if not folder or not os.path.isdir(folder):
         return None, f"Invalid folder: {folder!r}"
 
-    image_paths = scan_image_paths(folder)
+    _scan = scan_image_paths_recursive if state.get("folder_recursive") else scan_image_paths
+    image_paths = _scan(folder)
     if not image_paths:
         return None, f"No images found in {folder}"
 

@@ -87,11 +87,9 @@ def selection_info(state):
     return f"Marked: **{left_count}** in SELECTED, **{right_count}** in REJECTED"
 
 
-def marked_state_json(state, visible_fnames=None):
+def _marked_state_dict(state, visible_fnames=None):
     score_lookup = {}
     media_lookup = {}
-    left_order = []
-    right_order = []
     visible_names = set(visible_fnames or [])
     for original_path, _ in state.get("browse_items", []):
         original_base = os.path.basename(original_path)
@@ -150,7 +148,7 @@ def marked_state_json(state, visible_fnames=None):
             neg_seg = item.get("neg_segment_scores")
             if neg_seg:
                 neg_segment_score_lookup[fname] = {k: round(v, 4) for k, v in neg_seg.items()}
-    return json.dumps({
+    return {
         "left": state.get("left_marked", []),
         "right": state.get("right_marked", []),
         "held": list(state.get("overrides", {}).keys()),
@@ -161,9 +159,13 @@ def marked_state_json(state, visible_fnames=None):
         "segment_score_lookup": segment_score_lookup,
         "neg_segment_score_lookup": neg_segment_score_lookup,
         "media_lookup": media_lookup,
-        "left_order": left_order,
-        "right_order": right_order,
-    })
+        "left_order": [],
+        "right_order": [],
+    }
+
+
+def marked_state_json(state, visible_fnames=None):
+    return json.dumps(_marked_state_dict(state, visible_fnames))
 
 
 def active_targets(state, main_threshold, aux_threshold, preview_override=None):
@@ -186,7 +188,6 @@ def active_targets(state, main_threshold, aux_threshold, preview_override=None):
 
 
 def render_histogram(state, method, scores, main_threshold, aux_threshold):
-    # Draw a lightweight PIL histogram image instead of depending on a plotting library.
     if not scores:
         state["hist_geom"] = None
         return None
@@ -380,7 +381,6 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
 
 
 def current_view(state, main_threshold, aux_threshold):
-    # Single place that rebuilds gallery contents, status text, histogram, and marked-state JSON.
     zoom_columns = int(state.get("zoom_columns", 5))
     if is_browse_mode(state):
         browse_items = list(state.get("browse_items", []))
@@ -398,11 +398,7 @@ def current_view(state, main_threshold, aux_threshold):
             status,
             None,
             "Unscored browse mode. Preview a gallery image or use the external query image to search or generate a prompt.",
-            json.dumps({
-                **json.loads(marked_state_json(state, left_names)),
-                "left_order": left_order,
-                "right_order": [],
-            }),
+            json.dumps({**_marked_state_dict(state, left_names), "left_order": left_order, "right_order": []}),
             active_query_image_widget_update(state),
             clear_external_query_button_update(state),
         )
@@ -444,11 +440,7 @@ def current_view(state, main_threshold, aux_threshold):
         status,
         render_histogram(state, state["method"], state["scores"], main_threshold, aux_threshold),
         selection_info(state),
-        json.dumps({
-            **json.loads(marked_state_json(state, visible_names)),
-            "left_order": left_order,
-            "right_order": right_order,
-        }),
+        json.dumps({**_marked_state_dict(state, visible_names), "left_order": left_order, "right_order": right_order}),
         active_query_image_widget_update(state),
         clear_external_query_button_update(state),
     )

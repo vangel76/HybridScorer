@@ -167,6 +167,17 @@ def scan_image_paths(folder):
     ]
 
 
+def scan_image_paths_recursive(folder):
+    if not folder or not os.path.isdir(folder):
+        return []
+    paths = []
+    for root, _dirs, files in os.walk(folder):
+        for f in sorted(files):
+            if f.lower().endswith(ALLOWED_EXTENSIONS):
+                paths.append(os.path.join(root, f))
+    return sorted(paths)
+
+
 def get_model_config(label):
     return next((cfg for cfg in MODEL_CHOICES if cfg[0] == label), None)
 
@@ -437,8 +448,7 @@ def expand_slider_bounds(lo, hi, *values):
     if safe_values:
         lo = min(float(lo), *safe_values)
         hi = max(float(hi), *safe_values)
-    # Floor lo / ceil hi so actual score values never fall outside the slider bounds.
-    # round() can push lo above the true minimum, causing slider out-of-bounds errors.
+    # round() can push lo above/hi below the true min/max, causing slider out-of-bounds errors.
     return math.floor(lo * 1000) / 1000, math.ceil(hi * 1000) / 1000
 
 
@@ -530,13 +540,16 @@ def florence_task_is_pure_text(task_prompt):
     }
 
 
-def florence_detail_config(detail_level):
+def _clamp_detail_level(detail_level):
     try:
         detail_level = int(detail_level)
     except Exception:
         detail_level = DEFAULT_GENERATED_PROMPT_DETAIL
+    return max(1, min(3, detail_level))
 
-    detail_level = max(1, min(3, detail_level))
+
+def florence_detail_config(detail_level):
+    detail_level = _clamp_detail_level(detail_level)
     mapping = {
         1: ("Core facts", "<CAPTION>"),
         2: ("Balanced", "<DETAILED_CAPTION>"),
@@ -546,12 +559,7 @@ def florence_detail_config(detail_level):
 
 
 def joycaption_detail_config(detail_level):
-    try:
-        detail_level = int(detail_level)
-    except Exception:
-        detail_level = DEFAULT_GENERATED_PROMPT_DETAIL
-
-    detail_level = max(1, min(3, detail_level))
+    detail_level = _clamp_detail_level(detail_level)
     mapping = {
         1: (
             "Core facts",
@@ -593,11 +601,7 @@ def joycaption_detail_config(detail_level):
 
 
 def wd_tags_detail_config(detail_level):
-    try:
-        detail_level = int(detail_level)
-    except Exception:
-        detail_level = DEFAULT_GENERATED_PROMPT_DETAIL
-    detail_level = max(1, min(3, detail_level))
+    detail_level = _clamp_detail_level(detail_level)
     # detail_prompt field holds the top-N count used by run_wd_tags_prompt_variant
     mapping = {
         1: ("Top 12 tags",  12),
@@ -634,11 +638,9 @@ def extract_joycaption_caption(text):
 
 
 def extract_huihui_gemma4_caption(text):
-    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = extract_joycaption_caption(text)
     if not text:
         return ""
-
-    text = re.sub(r"^(assistant|caption)\s*:\s*", "", text, flags=re.IGNORECASE)
 
     role_echo_match = re.search(r"\bsystem\b.*\buser\b.*\bmodel\b\s*(.+)$", text, flags=re.IGNORECASE)
     if role_echo_match:
@@ -773,7 +775,6 @@ def status_line(method, left_items, right_items, scores, overrides):
 
 
 def build_split(method, scores, overrides, main_threshold, aux_threshold):
-    # Build the two visible buckets while preserving any manual user overrides.
     left, right = [], []
     left_name, right_name, _, _ = method_labels(method)
     if not scores:

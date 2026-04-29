@@ -73,16 +73,15 @@ def save_external_query_image_bytes(state, image_or_bytes, label):
     signature = sha256(image_bytes).hexdigest()
     label = (label or "query-image.png").strip() or "query-image.png"
 
-    temp_handle = tempfile.NamedTemporaryFile(
-        prefix="hybridscorer-query-",
-        suffix=".png",
-        delete=False,
-    )
-    temp_path = temp_handle.name
-    temp_handle.close()
+    temp_path = None
     try:
-        with open(temp_path, "wb") as handle:
-            handle.write(image_bytes)
+        with tempfile.NamedTemporaryFile(
+            prefix="hybridscorer-query-",
+            suffix=".png",
+            delete=False,
+        ) as temp_handle:
+            temp_path = temp_handle.name
+            temp_handle.write(image_bytes)
     except Exception:
         remove_file_quietly(temp_path)
         raise
@@ -159,7 +158,7 @@ def clear_external_query_button_update(state):
     external_active = query_ctx.get("source_kind") == "external"
     return gr.update(
         interactive=external_active,
-        value="Clear external override" if external_active else "Clear external override",
+        value="Clear external override",
     )
 
 

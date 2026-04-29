@@ -50,6 +50,8 @@ templates/
 | LLM Search | PromptMatch shortlist → VLM rerank | embeddings + LLM captions |
 | ObjectSearch | DINOv2 ViT-B/14 patch + FAISS/GPU matmul | per-folder patch embeddings (256/image) |
 
+**TagMatch:** `_prep_tagmatch_batch(paths, proxy_map)` pure helper preps one batch (load + pad + resize + BGR convert). `score_tagmatch_folder` runs a `ThreadPoolExecutor(max_workers=1)` prefetch loop: submits batch N+1 prep while ONNX runs batch N — overlaps I/O+CPU with GPU inference.
+
 **LLM Search:** PromptMatch shortlists → Florence-2/JoyCaption HF/GGUF reranks; non-shortlisted get reject-floor score. HF uses `score_candidates_batch` (batch=4); GGUF sequential.
 
 **ObjectSearch:** query image set in accordion 3 → `ensure_objectsearch_feature_cache` builds `faiss.IndexFlatIP` + GPU tensor → `score_objectsearch_cached_features` runs `torch.mm` or FAISS fallback → mean best-match-per-patch score. State keys: `os_cached_*`, `dinov2_backend`, `objectsearch_query_fname/source`.
@@ -58,13 +60,15 @@ templates/
 
 **Cache:** Windows → project-local (`models/`, `cache/`); Linux → system (`~/.cache/`). Override: `HYBRIDSCORER_CACHE_MODE=project|system`. Linux proxy thumbnails → `/dev/shm` (tmpfs) with fallback. `get_cache_config()` is `@lru_cache(maxsize=1)`.
 
-**Gallery UI:** Square thumbnails (`aspect-ratio:1`), zero gap/padding, no border, no border-radius, no figcaption — pure image grid. Thumb-size slider in header (180–512 px, drives `--thumb-size` CSS var → `minmax(var(--thumb-size),1fr)` grid). Left gallery header green-tinted, right red-tinted. "Move here" buttons in each gallery card-header. Drag-drop between galleries pins image to target side (same as move-left/move-right). Gallery containers are drop zones; thumb-level drop still handled per-figure.
+**Gallery UI:** Square thumbnails (`aspect-ratio:1`), zero gap/padding, no border, no border-radius, no figcaption — pure image grid. Thumb-size slider in header (180–512 px, drives `--thumb-size` CSS var → `minmax(var(--thumb-size),1fr)` grid). Left gallery header green-tinted, right red-tinted. "Move here" buttons in each gallery card-header. Drag-drop between galleries pins image to target side (same as move-left/move-right). Gallery containers are drop zones; thumb-level drop still handled per-figure. **Multi-drag:** dragstart on a marked (shift-clicked) thumb packs all `.hy-thumb.marked` filenames from that gallery into `fnames[]` in the dataTransfer payload; unmarked drags send `fnames:[item.filename]`. Both drop targets (thumb and gallery container) use `src.fnames || [src.filename]`.
 
 **Zoom overlay:** click thumb → `#hy-zoom-overlay` (position:absolute inside `.hy-main`). Backdrop or Escape closes. Does not cover sidebar.
 
 **Segment/tag pills:** hover thumb → pos_prompt textarea and tagmatch_tags textarea get `#pm-segment-pills` / `#tm-segment-pills` overlays (position:absolute, pointer-events:none). Tag text transparent on textarea while overlay active. Colors: pale-transparent yellow (low) → bright green (high), min-max normalized per image. Data from `state.view.segment_score_lookup` (PromptMatch per-segment) and `state.view.tag_score_lookup` (TagMatch).
 
 **Histogram:** positive/main chart always drawn flipped (green=high on left). `hist_geom` stores real `pos_lo`/`pos_hi` values + `pos_flipped:True` flag. Single-hist path stores `flipped:True`. JS `placeValueLine` and `showHistogramHover` use `1-frac` when flag set. `on_hist_click` uses `hi - frac*(hi-lo)` when flipped. `main_threshold` slider has `transform:scaleX(-1)` in CSS. `_slider_state` reads `pos_lo`/`pos_hi` as slider min/max (real values, not swapped — flip is display-only).
+
+**Folder loading:** Two buttons side-by-side (`col-8` / `col-4`): "Load folder" → `POST /api/folder/load`; "+subfolders" → `POST /api/folder/load-recursive`. Both call `load_folder_job(recursive=True/False)` → `load_folder_for_browse(recursive=)`. Sets `state["folder_recursive"]` on success. `prepare_scored_run_context` and `normalize_preview_search_request` check `state.get("folder_recursive")` to pick `scan_image_paths_recursive` vs `scan_image_paths`. `scan_image_paths_recursive` uses `os.walk`.
 
 **Browser auto-open:** `@app.on_event("startup")` fires `webbrowser.open(f"http://localhost:{port}")` after 0.1 s.
 
@@ -98,6 +102,9 @@ templates/
 - PromptMatch per-segment + hover thumb → pills appear on pos_prompt overlay, colors normalized
 - TagMatch score + hover thumb → pills appear on tagmatch_tags overlay
 - Drag thumb left→right → image moves to right bucket; drag right→left → moves to left
+- Shift-click multiple thumbs → drag any marked one → all selected move together
+- Load folder with +subfolders → images from nested folders appear; scoring runs on full recursive list
+- +subfolders load → rescore → `folder_recursive` persists, no re-scan of only top-level folder
 - Click histogram → threshold line and slider update to match click position (flipped chart: left=high)
 - Drag main threshold slider → line moves correctly (slider visually flipped, line mirrors)
 - App start → browser opens automatically

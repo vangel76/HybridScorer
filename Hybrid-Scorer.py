@@ -114,6 +114,11 @@ def create_fastapi_app():
         job = context.load_folder_job(payload)
         return {"job_id": job.id, "job": context.job_payload(job)}
 
+    @app.post("/api/folder/load-recursive")
+    async def api_folder_load_recursive(payload: dict):
+        job = context.load_folder_job(payload, recursive=True)
+        return {"job_id": job.id, "job": context.job_payload(job)}
+
     @app.post("/api/score")
     async def api_score(payload: dict):
         job = context.score_job(payload)

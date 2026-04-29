@@ -67,6 +67,34 @@ from .scoring import encode_all_promptmatch_images
 from .state_helpers import can_reuse_proxy_map
 
 
+def _clear_torch_model(model):
+    if model is None:
+        return
+    try:
+        model.to("cpu")
+    except Exception:
+        pass
+
+
+def _cached_hf_backend(state, key):
+    cached = state["prompt_backend_cache"].get(key)
+    if cached and cached.get("model") is not None and cached.get("processor") is not None:
+        return cached["model"], cached["processor"]
+    return None
+
+
+def _load_tagmatch_tags(tags_path):
+    import csv as _csv
+    tags = []
+    with open(tags_path, newline="", encoding="utf-8") as _f:
+        reader = _csv.DictReader(_f)
+        for row in reader:
+            name = (row.get("name") or "").strip().lower()
+            if name:
+                tags.append(name)
+    return tags
+
+
 def ensure_imagereward_model(state):
     if state["ir_model"] is None:
         state["ir_model"] = get_imagereward_utils().load(
@@ -79,16 +107,8 @@ def ensure_imagereward_model(state):
 def release_inactive_gpu_models(state, target_method):
     released = []
 
-    def _clear_torch_model(model):
-        if model is None:
-            return
-        try:
-            model.to("cpu")
-        except Exception:
-            pass
-
     if target_method != METHOD_IMAGEREWARD and state.get("ir_model") is not None:
-        _clear_torch_model(state.get("ir_model"))
+        _clear_torch_model(state["ir_model"])
         state["ir_model"] = None
         released.append("ImageReward")
 
@@ -112,17 +132,14 @@ def release_inactive_gpu_models(state, target_method):
         released.append("DINOv2")
 
     if state.get("prompt_backend_cache"):
-        for backend_name, cached in list((state.get("prompt_backend_cache") or {}).items()):
+        for backend_name, cached in list(state["prompt_backend_cache"].items()):
             if isinstance(cached, dict):
                 _clear_torch_model(cached.get("model"))
             released.append(backend_name)
         state["prompt_backend_cache"] = {}
         # Drop loop variables so CPython's refcount immediately reaches zero for
         # llama_cpp Llama objects (which have no "model" key and are freed by __del__).
-        try:
-            del backend_name, cached
-        except NameError:
-            pass
+        del backend_name, cached
 
     if released:
         gc.collect()
@@ -132,9 +149,9 @@ def release_inactive_gpu_models(state, target_method):
 
 
 def ensure_florence_model(state, device):
-    cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_FLORENCE)
-    if cached and cached.get("model") is not None and cached.get("processor") is not None:
-        return cached["model"], cached["processor"]
+    hit = _cached_hf_backend(state, PROMPT_GENERATOR_FLORENCE)
+    if hit:
+        return hit
 
     try:
         from transformers import AutoProcessor, Florence2ForConditionalGeneration
@@ -169,9 +186,9 @@ def ensure_florence_model(state, device):
 
 
 def ensure_joycaption_model(state, device):
-    cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_JOYCAPTION)
-    if cached and cached.get("model") is not None and cached.get("processor") is not None:
-        return cached["model"], cached["processor"]
+    hit = _cached_hf_backend(state, PROMPT_GENERATOR_JOYCAPTION)
+    if hit:
+        return hit
 
     try:
         from transformers import AutoProcessor, LlavaForConditionalGeneration
@@ -207,9 +224,9 @@ def ensure_joycaption_model(state, device):
 
 
 def ensure_huihui_gemma4_model(state, device):
-    cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_HUIHUI_GEMMA4)
-    if cached and cached.get("model") is not None and cached.get("processor") is not None:
-        return cached["model"], cached["processor"]
+    hit = _cached_hf_backend(state, PROMPT_GENERATOR_HUIHUI_GEMMA4)
+    if hit:
+        return hit
 
     try:
         import transformers
@@ -391,8 +408,6 @@ def ensure_tagmatch_model(state, device):
     except ImportError as exc:
         raise RuntimeError("huggingface_hub is required for TagMatch model download.") from exc
 
-    import csv as _csv
-
     print(f"[TagMatch] Loading {TAGMATCH_WD_REPO_ID} / {TAGMATCH_WD_MODEL_FILE} …")
     model_path = hf_hub_download(
         repo_id=TAGMATCH_WD_REPO_ID,
@@ -414,12 +429,7 @@ def ensure_tagmatch_model(state, device):
     input_name = session.get_inputs()[0].name
     print(f"[TagMatch] ONNX input tensor name: {input_name!r}")
 
-    tags = []
-    with open(tags_path, newline="", encoding="utf-8") as _f:
-        reader = _csv.DictReader(_f)
-        for row in reader:
-            tags.append(row["name"].lower())
-
+    tags = _load_tagmatch_tags(tags_path)
     backend = {"session": session, "tags": tags, "input_name": input_name}
     state["tagmatch_backend"] = backend
     print(f"[TagMatch] Ready — {len(tags)} tags loaded.")
@@ -436,22 +446,13 @@ def load_tagmatch_vocabulary(state):
     except ImportError as exc:
         raise RuntimeError("huggingface_hub is required for TagMatch tag suggestions.") from exc
 
-    import csv as _csv
-
     tags_path = hf_hub_download(
         repo_id=TAGMATCH_WD_REPO_ID,
         filename=TAGMATCH_WD_TAGS_FILE,
         cache_dir=get_cache_config()["huggingface_dir"],
     )
 
-    tags = []
-    with open(tags_path, newline="", encoding="utf-8") as _f:
-        reader = _csv.DictReader(_f)
-        for row in reader:
-            name = (row.get("name") or "").strip().lower()
-            if name:
-                tags.append(name)
-
+    tags = _load_tagmatch_tags(tags_path)
     state["tagmatch_vocab_tags"] = tags
     state["tagmatch_vocab_json"] = json.dumps(tags)
     print(f"[TagMatch] Autocomplete vocabulary ready — {len(tags)} tags loaded.")
@@ -460,10 +461,8 @@ def load_tagmatch_vocabulary(state):
 
 def refresh_tagmatch_vocab_state(state, method):
     cached_json = state.get("tagmatch_vocab_json") or "[]"
-    if method != METHOD_TAGMATCH and cached_json != "[]":
-        return cached_json
     if method != METHOD_TAGMATCH:
-        return "[]"
+        return cached_json
     try:
         load_tagmatch_vocabulary(state)
     except Exception as exc:
@@ -737,7 +736,6 @@ def ensure_face_feature_cache(state, image_paths, progress):
 
     if face_embeddings:
         embedding_tensor = torch.stack(face_embeddings, dim=0)
-        embedding_tensor = F.normalize(embedding_tensor, dim=1)
     else:
         embedding_tensor = torch.empty((0, 0), dtype=torch.float32)
 
@@ -768,10 +766,9 @@ def encode_single_face_embedding(state, query_path, progress):
 
     embedding = getattr(primary_face, "normed_embedding", None)
     if embedding is None:
-        raw_embedding = getattr(primary_face, "embedding", None)
-        if raw_embedding is None:
+        embedding = getattr(primary_face, "embedding", None)
+        if embedding is None:
             raise RuntimeError(f"{os.path.basename(query_path)}: No face embedding returned.")
-        embedding = F.normalize(torch.as_tensor(raw_embedding, dtype=torch.float32), dim=0).cpu().numpy()
 
     return F.normalize(torch.as_tensor(embedding, dtype=torch.float32), dim=0).view(1, -1)
 
@@ -817,8 +814,6 @@ def _extract_dinov2_patches_batch(dinov2_backend, pil_images):
 
 
 def ensure_objectsearch_feature_cache(state, device, image_paths, progress=None):
-    from .utils import get_image_paths_signature, get_auto_batch_size, current_free_vram_gb
-
     image_signature = get_image_paths_signature(image_paths)
     can_reuse = (
         state.get("os_cached_signature") == image_signature
@@ -849,7 +844,8 @@ def ensure_objectsearch_feature_cache(state, device, image_paths, progress=None)
     batch_size = DINOV2_BASE_BATCH_SIZE
     if free_gb is not None and free_gb > DINOV2_MIN_FREE_VRAM_GB:
         extra = free_gb - DINOV2_MIN_FREE_VRAM_GB
-        batch_size = min(DINOV2_MAX_BATCH_SIZE, max(DINOV2_BASE_BATCH_SIZE, int(DINOV2_BASE_BATCH_SIZE * (1 + extra * DINOV2_BATCH_AGGRESSION / 8.0))))
+        scaled = int(DINOV2_BASE_BATCH_SIZE * (1 + extra * DINOV2_BATCH_AGGRESSION / 8.0))
+        batch_size = min(DINOV2_MAX_BATCH_SIZE, max(DINOV2_BASE_BATCH_SIZE, scaled))
 
     total = len(image_paths)
     feature_paths = []
@@ -864,36 +860,30 @@ def ensure_objectsearch_feature_cache(state, device, image_paths, progress=None)
     for batch_start in range(0, total, batch_size):
         batch_paths = image_paths[batch_start:batch_start + batch_size]
         pil_batch = []
-        batch_idx_map = []
+        valid_paths = []
         for path in batch_paths:
             try:
                 with Image.open(path) as src:
                     pil_batch.append(src.convert("RGB").copy())
-                batch_idx_map.append((path, True))
+                valid_paths.append(path)
             except Exception as exc:
                 failures[path] = str(exc) or "Could not open image."
-                batch_idx_map.append((path, False))
 
-        valid_pil = [img for img, (_, ok) in zip(pil_batch, batch_idx_map) if ok]
-        if valid_pil:
+        if pil_batch:
             try:
-                patches = _extract_dinov2_patches_batch(dinov2_backend, valid_pil)
+                patches = _extract_dinov2_patches_batch(dinov2_backend, pil_batch)
             except Exception as exc:
-                for path, ok in batch_idx_map:
-                    if ok and path not in failures:
+                for path in valid_paths:
+                    if path not in failures:
                         failures[path] = str(exc) or "DINOv2 extraction failed."
                 patches = None
 
             if patches is not None:
-                valid_idx = 0
-                for path, ok in batch_idx_map:
-                    if ok:
-                        image_idx = len(feature_paths)
-                        feature_paths.append(path)
-                        img_patches = patches[valid_idx]
-                        all_patches.append(img_patches)
-                        patch_image_idx.extend([image_idx] * img_patches.shape[0])
-                        valid_idx += 1
+                for path, img_patches in zip(valid_paths, patches):
+                    image_idx = len(feature_paths)
+                    feature_paths.append(path)
+                    all_patches.append(img_patches)
+                    patch_image_idx.extend([image_idx] * img_patches.shape[0])
 
         completed += len(batch_paths)
         if progress is not None:

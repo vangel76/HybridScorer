@@ -51,13 +51,7 @@ PROMPT_GENERATOR_CHOICES = (
     PROMPT_GENERATOR_JOYCAPTION_GGUF,
     PROMPT_GENERATOR_HUIHUI_GEMMA4,
 )
-PROMPT_GENERATOR_ALL_CHOICES = (
-    PROMPT_GENERATOR_FLORENCE,
-    PROMPT_GENERATOR_JOYCAPTION,
-    PROMPT_GENERATOR_JOYCAPTION_GGUF,
-    PROMPT_GENERATOR_HUIHUI_GEMMA4,
-    PROMPT_GENERATOR_WD_TAGS,
-)
+PROMPT_GENERATOR_ALL_CHOICES = (*PROMPT_GENERATOR_CHOICES, PROMPT_GENERATOR_WD_TAGS)
 DEFAULT_PROMPT_GENERATOR = PROMPT_GENERATOR_FLORENCE
 FLORENCE_MODEL_ID = "florence-community/Florence-2-base"
 FLORENCE_MAX_NEW_TOKENS = 256
@@ -214,9 +208,7 @@ def default_cache_mode():
 
 
 def _system_proxy_root():
-    # On Linux, prefer /dev/shm (RAM-backed tmpfs) for proxy storage so resized
-    # thumbnails never touch disk.  Fall back to the normal temp dir if /dev/shm
-    # is absent (some containers) or not writable.
+    # Prefer /dev/shm (RAM-backed tmpfs) so proxy thumbnails never touch disk.
     shm = "/dev/shm"
     if os.path.isdir(shm) and os.access(shm, os.W_OK):
         return shm
@@ -225,9 +217,7 @@ def _system_proxy_root():
 
 @lru_cache(maxsize=1)
 def get_cache_config():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    # config.py lives inside lib/, so go one level up to get the project root
-    script_dir = os.path.dirname(script_dir)
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     fallback_mode = default_cache_mode()
     raw_mode = (os.getenv(ENV_CACHE_MODE) or fallback_mode).strip().lower()
     mode = raw_mode if raw_mode in {CACHE_MODE_PROJECT, CACHE_MODE_SYSTEM} else fallback_mode

@@ -36,7 +36,10 @@
                   <div id="method-note" class="form-hint mt-2"></div>
                   <label class="form-label mt-3">Image folder</label>
                   <input id="folder" class="form-control" type="text">
-                  <button id="load-folder" class="btn btn-outline-primary w-100 mt-2" title="Load images from the folder path above">Load folder</button>
+                  <div class="row g-2 mt-2">
+                    <div class="col-8"><button id="load-folder" class="btn btn-outline-primary w-100" title="Load images from the folder path above">Load folder</button></div>
+                    <div class="col-4"><button id="load-folder-recursive" class="btn btn-outline-primary w-100" title="Load images from the folder and all subfolders">+subfolders</button></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -209,6 +212,6 @@
 
   <script id="initial-state" type="application/json">{{ initial_state | tojson }}</script>
   <script src="/static/vendor/tabler/tabler.min.js"></script>
-  <script src="/static/tabler-app.js"></script>
+  <script src="/static/tabler-app.js?v={{ version }}"></script>
 </body>
 </html>

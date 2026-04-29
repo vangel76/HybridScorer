@@ -116,4 +116,4 @@ def get_state_defaults(source_dir=None, prompt_backend=None):
 
 
 def init_state(source_dir=None, prompt_backend=None):
-    return dict(get_state_defaults(source_dir, prompt_backend))
+    return get_state_defaults(source_dir, prompt_backend)
