@@ -11,7 +11,7 @@ HybridScorer cuts large image sets down to size fast. Point it at a folder, let 
 Working modes in the current app:
 
 - `PromptMatch` — describe what you want in plain text and score the whole folder against it; a per-segment mode scores each comma-separated phrase independently and shows match strength per phrase on hover
-- `TagMatch` — hunt down AI anatomy errors: wrong hands, extra limbs, duplicate faces, bad proportions; ships with a ready-to-use artifact tag set, suggests valid booru-style tags live while you type, and shows per-tag confidence as color-coded pills when you hover a thumbnail
+- `TagMatch` — for NSFW searches and for hunting down AI anatomy errors: wrong hands, extra limbs, duplicate faces, bad proportions; ships with a ready-to-use artifact tag set, suggests valid booru-style tags live while you type, and shows per-tag confidence as color-coded pills when you hover a thumbnail
 - `ImageReward` — rank images by how well they match a prompt, weighted against unwanted content
 - `LM Search` — use a local vision-language model to deeply understand each image, not just match keywords
 - `Similarity` — pick one image you like and find everything in the folder that looks like it
@@ -30,7 +30,6 @@ Everything in the app is built around the same fast loop:
 
 ![HybridScorer UI](screenshots/HybridScorer.jpg)
 
-![Live threshold histogram](screenshots/New_Graphs.jpg)
 
 The image sorting updates live as you move the thresholds. The red/green split shows exactly which images cross the cut — hover over any thumbnail and its score appears as a marker on the graph. You can drag the slider or click anywhere directly on the histogram to set the cut point instantly. Or hit **Fit thresh** to let the app position it automatically based on your current manual picks.
 
