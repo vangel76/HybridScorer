@@ -12,7 +12,7 @@ from ..helpers import (
     threshold_for_percentile, promptmatch_slider_range, imagereward_slider_range,
     llmsearch_slider_range, clamp_threshold, expand_slider_bounds,
     slider_step_floor, slider_step_ceil_exclusive, sanitize_export_name,
-    export_destination, normalize_threshold_inputs, threshold_labels,
+    normalize_threshold_inputs, threshold_labels,
     uses_pos_similarity_scores,
 )
 from ..state_helpers import is_browse_mode, active_query_image_widget_update, clear_preview_search_context
@@ -451,7 +451,7 @@ def export_files(state, main_threshold, aux_threshold, export_left_enabled, expo
         os.makedirs(bucket_dir, exist_ok=True)
         for path, _ in items:
             original_name = os.path.basename(path)
-            dest_path = export_destination(bucket_dir, original_name)
+            dest_path = os.path.join(bucket_dir, original_name)
             if export_move_enabled:
                 shutil.copy2(path, dest_path)
                 os.remove(path)

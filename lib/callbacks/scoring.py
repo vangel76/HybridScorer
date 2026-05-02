@@ -12,8 +12,9 @@ from ..config import (
     METHOD_LLMSEARCH, METHOD_TAGMATCH, METHOD_OBJECTSEARCH,
     TAGMATCH_WD_MIN_CACHE_PROB,
     PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION,
-    PROMPT_GENERATOR_JOYCAPTION_GGUF, PROMPT_GENERATOR_HUIHUI_GEMMA4,
-    LLMSEARCH_SCORING_MODE_NUMERIC_V1,
+    PROMPT_GENERATOR_JOYCAPTION_NF4, PROMPT_GENERATOR_HUIHUI_GEMMA4,
+    PROMPT_GENERATOR_CHOICES,
+    LLMSEARCH_SCORING_MODE_NUMERIC_V1, LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT,
     LLMSEARCH_DEFAULT_PROMPT, LLMSEARCH_SHORTLIST_DEFAULT,
     LLMSEARCH_SHORTLIST_MIN, LLMSEARCH_SHORTLIST_MAX,
     LLMSEARCH_JOYCAPTION_HF_BATCH_SIZE,
@@ -31,8 +32,7 @@ from ..utils import (
     get_image_paths_signature, get_auto_batch_size, normalize_folder_identity,
     normalize_prompt_text, prepare_promptmatch_proxies,
     iter_imagereward_scores, get_imagereward_penalty_offset, compute_imagereward_final_score,
-    describe_imagereward_source, describe_llmsearch_backend_source,
-    llmsearch_backend_choices,
+    describe_imagereward_source, describe_prompt_generator_source,
 )
 from ..helpers import (
     label_for_backend, scan_image_paths, scan_image_paths_recursive, method_labels, threshold_labels,
@@ -43,7 +43,7 @@ from ..helpers import (
     promptmatch_model_dropdown_choices,
     normalize_generated_prompt, extract_joycaption_caption, extract_huihui_gemma4_caption,
     joycaption_max_new_tokens,
-    llmsearch_joycaption_system_prompt, build_llmsearch_joycaption_user_prompt,
+    build_llmsearch_joycaption_user_prompt,
     build_llmsearch_huihui_gemma4_user_prompt,
     normalize_llmsearch_candidate_text, extract_llmsearch_numeric_score,
 )
@@ -151,7 +151,7 @@ class VisionLLMRerankBackend:
         self.backend_id = backend_id
 
     def describe_source(self):
-        return describe_llmsearch_backend_source(self.backend_id)
+        return describe_prompt_generator_source(self.backend_id)
 
     def is_available(self):
         return True
@@ -160,7 +160,7 @@ class VisionLLMRerankBackend:
         loaders = {
             PROMPT_GENERATOR_FLORENCE: _lo.ensure_florence_model,
             PROMPT_GENERATOR_JOYCAPTION: _lo.ensure_joycaption_model,
-            PROMPT_GENERATOR_JOYCAPTION_GGUF: _lo.ensure_joycaption_gguf_model,
+            PROMPT_GENERATOR_JOYCAPTION_NF4: _lo.ensure_joycaption_nf4_model,
             PROMPT_GENERATOR_HUIHUI_GEMMA4: _lo.ensure_huihui_gemma4_model,
         }
         loader = loaders.get(self.backend_id)
@@ -175,7 +175,7 @@ class VisionLLMRerankBackend:
     def uses_direct_numeric_score(self):
         return self.backend_id in {
             PROMPT_GENERATOR_JOYCAPTION,
-            PROMPT_GENERATOR_JOYCAPTION_GGUF,
+            PROMPT_GENERATOR_JOYCAPTION_NF4,
             PROMPT_GENERATOR_HUIHUI_GEMMA4,
         }
 
@@ -188,7 +188,7 @@ class VisionLLMRerankBackend:
                 image,
                 build_llmsearch_huihui_gemma4_user_prompt(query_text),
                 2,
-                system_prompt=llmsearch_joycaption_system_prompt(),
+                system_prompt=LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT,
                 normalizer=lambda text: normalize_generated_prompt(extract_huihui_gemma4_caption(text)),
                 max_new_tokens_override=joycaption_max_new_tokens(2),
             )
@@ -200,7 +200,7 @@ class VisionLLMRerankBackend:
             image,
             user_prompt,
             2,
-            system_prompt=llmsearch_joycaption_system_prompt(),
+            system_prompt=LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT,
             normalizer=normalize_llmsearch_candidate_text,
         )
 
@@ -218,7 +218,7 @@ class VisionLLMRerankBackend:
                 image,
                 build_llmsearch_huihui_gemma4_user_prompt(query_text),
                 1,
-                system_prompt=llmsearch_joycaption_system_prompt(),
+                system_prompt=LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT,
                 normalizer=extract_huihui_gemma4_caption,
                 max_new_tokens_override=LLMSEARCH_HUIHUI_GEMMA4_MAX_NEW_TOKENS,
                 stop_sequences=[" ", "\n", "\t", ",", ".", "%", "</s>", "User:", "Assistant:"],
@@ -233,7 +233,7 @@ class VisionLLMRerankBackend:
                 image,
                 build_llmsearch_joycaption_user_prompt(query_text),
                 1,
-                system_prompt=llmsearch_joycaption_system_prompt(),
+                system_prompt=LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT,
                 normalizer=extract_joycaption_caption,
                 max_new_tokens_override=LLMSEARCH_JOYCAPTION_MAX_NEW_TOKENS,
                 stop_sequences=[" ", "\n", "\t", ",", ".", "%", "</s>", "User:", "Assistant:"],
@@ -244,12 +244,17 @@ class VisionLLMRerankBackend:
         return float(extract_llmsearch_numeric_score(raw_score_text)), raw_score_text
 
     def score_candidates_batch(self, images, query_text):
-        if self.backend_id != PROMPT_GENERATOR_JOYCAPTION:
+        if self.backend_id not in (PROMPT_GENERATOR_JOYCAPTION, PROMPT_GENERATOR_JOYCAPTION_NF4):
             return [self.score_candidate(img, query_text) for img in images]
-        model, processor = _lo.ensure_joycaption_model(self._state, self._device)
+        if self.backend_id == PROMPT_GENERATOR_JOYCAPTION_NF4:
+            model, processor = _lo.ensure_joycaption_nf4_model(self._state, self._device)
+            pv_dtype = torch.bfloat16
+        else:
+            model, processor = _lo.ensure_joycaption_model(self._state, self._device)
+            pv_dtype = next(model.parameters()).dtype
         user_prompt = build_llmsearch_joycaption_user_prompt(query_text)
         conversation = [
-            {"role": "system", "content": llmsearch_joycaption_system_prompt()},
+            {"role": "system", "content": LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
         convo_string = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
@@ -257,7 +262,7 @@ class VisionLLMRerankBackend:
         inputs = processor(text=[convo_string] * n, images=images, return_tensors="pt", padding=True)
         inputs = {k: v.to(self._device) if hasattr(v, "to") else v for k, v in inputs.items()}
         if "pixel_values" in inputs:
-            inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
+            inputs["pixel_values"] = inputs["pixel_values"].to(pv_dtype)
         do_sample = bool(LLMSEARCH_JOYCAPTION_TEMPERATURE and LLMSEARCH_JOYCAPTION_TEMPERATURE > 0.0)
         with torch.no_grad():
             generated_ids = model.generate(
@@ -805,7 +810,7 @@ def score_folder(state, device, method, folder, model_label, pos_prompt, neg_pro
 
     if method == METHOD_LLMSEARCH:
         llm_model_label = llm_model_label if llm_model_label in MODEL_LABELS else label_for_backend(state["backend"])
-        llm_backend_id = llm_backend_id if llm_backend_id in llmsearch_backend_choices() else DEFAULT_LLMSEARCH_BACKEND
+        llm_backend_id = llm_backend_id if llm_backend_id in PROMPT_GENERATOR_CHOICES else DEFAULT_LLMSEARCH_BACKEND
         llm_prompt = (llm_prompt or "").strip() or LLMSEARCH_DEFAULT_PROMPT
         try:
             shortlist_size = int(float(llm_shortlist_size))

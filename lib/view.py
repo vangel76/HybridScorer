@@ -67,16 +67,8 @@ def gallery_display_items(state, items):
 
 
 def ui_visibility_updates(state):
-    browse_mode = is_browse_mode(state)
-    return (
-        gr.update(visible=not browse_mode),
-        gr.update(visible=not browse_mode),
-        gr.update(visible=not browse_mode),
-        gr.update(visible=not browse_mode),
-        gr.update(visible=not browse_mode),
-        gr.update(visible=not browse_mode),
-        gr.update(visible=not browse_mode),
-    )
+    upd = gr.update(visible=not is_browse_mode(state))
+    return (upd,) * 7
 
 
 def selection_info(state):
@@ -490,22 +482,12 @@ def configure_controls(state, method):
             percentile_reset_button_update(method),
             gr.update(value="LM Search uses PromptMatch to shortlist likely matches, then reranks the top candidates with a local vision-language model."),
         )
-    if method == METHOD_SIMILARITY:
-        return (
-            gr.update(visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-            gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            percentile_slider_update(method),
-            percentile_reset_button_update(method),
-            gr.update(value="Similarity search ranks the current folder by image-image similarity using the active PromptMatch model."),
+    if method in (METHOD_SIMILARITY, METHOD_SAMEPERSON):
+        desc = (
+            "Similarity search ranks the current folder by image-image similarity using the active PromptMatch model."
+            if method == METHOD_SIMILARITY
+            else f"Same-person search ranks the current folder by face identity similarity using {FACE_MODEL_LABEL}."
         )
-    if method == METHOD_SAMEPERSON:
         return (
             gr.update(visible=True),
             gr.update(visible=False),
@@ -518,7 +500,7 @@ def configure_controls(state, method):
             gr.update(visible=False),
             percentile_slider_update(method),
             percentile_reset_button_update(method),
-            gr.update(value=f"Same-person search ranks the current folder by face identity similarity using {FACE_MODEL_LABEL}."),
+            gr.update(value=desc),
         )
     if method == METHOD_TAGMATCH:
         return (

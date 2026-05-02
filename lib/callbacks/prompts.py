@@ -10,7 +10,7 @@ from PIL import Image
 from ..config import (
     METHOD_PROMPTMATCH, METHOD_LLMSEARCH,
     PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION,
-    PROMPT_GENERATOR_JOYCAPTION_GGUF, PROMPT_GENERATOR_HUIHUI_GEMMA4,
+    PROMPT_GENERATOR_JOYCAPTION_NF4, PROMPT_GENERATOR_HUIHUI_GEMMA4,
     PROMPT_GENERATOR_WD_TAGS, FLORENCE_MAX_NEW_TOKENS,
 )
 from ..utils import (
@@ -22,7 +22,7 @@ from ..helpers import (
     extract_florence_caption, normalize_generated_prompt, florence_task_is_pure_text,
     extract_joycaption_caption, extract_huihui_gemma4_caption,
     joycaption_max_new_tokens,
-    image_to_data_url, joycaption_gguf_prepare_image, move_processor_batch_to_device,
+    move_processor_batch_to_device,
 )
 from ..state_helpers import (
     active_query_image_context,
@@ -200,8 +200,11 @@ def run_joycaption_prompt_variant(state, device, generator_name, image, user_pro
     top_k = top_k_override if top_k_override is not None else 0
     do_sample = bool(temperature and temperature > 0.0)
 
-    if generator_name == PROMPT_GENERATOR_JOYCAPTION:
-        model, processor = _lo.ensure_joycaption_model(state, device)
+    if generator_name in (PROMPT_GENERATOR_JOYCAPTION, PROMPT_GENERATOR_JOYCAPTION_NF4):
+        if generator_name == PROMPT_GENERATOR_JOYCAPTION_NF4:
+            model, processor = _lo.ensure_joycaption_nf4_model(state, device)
+        else:
+            model, processor = _lo.ensure_joycaption_model(state, device)
         conversation = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -214,7 +217,8 @@ def run_joycaption_prompt_variant(state, device, generator_name, image, user_pro
         inputs = processor(text=[convo_string], images=[image], return_tensors="pt")
         inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
         if "pixel_values" in inputs:
-            inputs["pixel_values"] = inputs["pixel_values"].to(next(model.parameters()).dtype)
+            pv_dtype = torch.bfloat16 if generator_name == PROMPT_GENERATOR_JOYCAPTION_NF4 else next(model.parameters()).dtype
+            inputs["pixel_values"] = inputs["pixel_values"].to(pv_dtype)
 
         with torch.no_grad():
             generated_ids = model.generate(
@@ -235,42 +239,7 @@ def run_joycaption_prompt_variant(state, device, generator_name, image, user_pro
         )
         return normalizer(text)
 
-    llm = _lo.ensure_joycaption_gguf_model(state, device)
-    image = joycaption_gguf_prepare_image(image)
-    data_url = image_to_data_url(image)
-    try:
-        from llama_cpp._utils import suppress_stdout_stderr
-    except ImportError:
-        suppress_stdout_stderr = None
-    completion_params = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            },
-        ],
-        "temperature": temperature,
-        "top_p": top_p,
-        "max_tokens": max_new_tokens,
-        "stop": stop_sequences or ["</s>", "User:", "Assistant:"],
-        "repeat_penalty": 1.1,
-    }
-    if top_k and top_k > 0:
-        completion_params["top_k"] = top_k
-    if suppress_stdout_stderr is None:
-        response = llm.create_chat_completion(**completion_params)
-    else:
-        with suppress_stdout_stderr(disable=False):
-            response = llm.create_chat_completion(**completion_params)
-    try:
-        text = response["choices"][0]["message"]["content"]
-    except Exception as exc:
-        raise RuntimeError(f"Unexpected JoyCaption GGUF response shape: {exc}") from exc
-    return normalizer(text)
+    raise RuntimeError(f"Unknown JoyCaption generator: {generator_name}")
 
 
 def run_wd_tags_prompt_variant(state, device, image, top_n):

@@ -20,7 +20,7 @@ from .config import (
     METHOD_OBJECTSEARCH,
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
-    PROMPT_GENERATOR_JOYCAPTION_GGUF,
+    PROMPT_GENERATOR_JOYCAPTION_NF4,
     PROMPT_GENERATOR_HUIHUI_GEMMA4,
     PROMPT_GENERATOR_WD_TAGS,
     PROMPT_GENERATOR_ALL_CHOICES,
@@ -199,59 +199,55 @@ def uses_pos_similarity_scores(method):
     return method in (METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_SIMILARITY, METHOD_SAMEPERSON, METHOD_TAGMATCH, METHOD_OBJECTSEARCH)
 
 
-def export_destination(folder, filename):
-    return os.path.join(folder, filename)
+
+_THRESHOLD_LABELS = {
+    METHOD_LLMSEARCH: (
+        "Minimum LLM rerank score to keep (higher = fewer kept)",
+        "Negative score is unused for LLM rerank search",
+        "Minimum LLM rerank score",
+        "Negative score",
+    ),
+    METHOD_SIMILARITY: (
+        "Minimum similarity to keep (higher = fewer kept)",
+        "Negative similarity is unused for image similarity search",
+        "Minimum similarity",
+        "Negative similarity",
+    ),
+    METHOD_SAMEPERSON: (
+        "Minimum face similarity to keep (higher = fewer kept)",
+        "Negative face similarity is unused for same-person search",
+        "Minimum face similarity",
+        "Negative face similarity",
+    ),
+    METHOD_PROMPTMATCH: (
+        "Minimum positive similarity to keep (higher = fewer kept)",
+        "Maximum negative similarity allowed (lower = fewer kept)",
+        "Min positive similarity",
+        "Max negative similarity",
+    ),
+    METHOD_TAGMATCH: (
+        "Minimum artifact score to keep (higher = fewer kept)",
+        "Negative score is unused for TagMatch",
+        "Min artifact score",
+        "Negative score",
+    ),
+    METHOD_OBJECTSEARCH: (
+        "Minimum object match score to keep (higher = fewer kept)",
+        "Negative score is unused for object search",
+        "Min object match score",
+        "Negative score",
+    ),
+}
+_THRESHOLD_LABELS_DEFAULT = (
+    "Minimum score to keep (higher = fewer kept)",
+    "Maximum negative similarity allowed (lower = fewer kept)",
+    "Minimum keep score",
+    "Max negative similarity",
+)
 
 
 def threshold_labels(method):
-    if method == METHOD_LLMSEARCH:
-        return (
-            "Minimum LLM rerank score to keep (higher = fewer kept)",
-            "Negative score is unused for LLM rerank search",
-            "Minimum LLM rerank score",
-            "Negative score",
-        )
-    if method == METHOD_SIMILARITY:
-        return (
-            "Minimum similarity to keep (higher = fewer kept)",
-            "Negative similarity is unused for image similarity search",
-            "Minimum similarity",
-            "Negative similarity",
-        )
-    if method == METHOD_SAMEPERSON:
-        return (
-            "Minimum face similarity to keep (higher = fewer kept)",
-            "Negative face similarity is unused for same-person search",
-            "Minimum face similarity",
-            "Negative face similarity",
-        )
-    if method == METHOD_PROMPTMATCH:
-        return (
-            "Minimum positive similarity to keep (higher = fewer kept)",
-            "Maximum negative similarity allowed (lower = fewer kept)",
-            "Min positive similarity",
-            "Max negative similarity",
-        )
-    if method == METHOD_TAGMATCH:
-        return (
-            "Minimum artifact score to keep (higher = fewer kept)",
-            "Negative score is unused for TagMatch",
-            "Min artifact score",
-            "Negative score",
-        )
-    if method == METHOD_OBJECTSEARCH:
-        return (
-            "Minimum object match score to keep (higher = fewer kept)",
-            "Negative score is unused for object search",
-            "Min object match score",
-            "Negative score",
-        )
-    return (
-        "Minimum score to keep (higher = fewer kept)",
-        "Maximum negative similarity allowed (lower = fewer kept)",
-        "Minimum keep score",
-        "Max negative similarity",
-    )
+    return _THRESHOLD_LABELS.get(method, _THRESHOLD_LABELS_DEFAULT)
 
 
 def promptmatch_slider_range(scores):
@@ -279,7 +275,7 @@ def imagereward_slider_range(scores):
 def llmsearch_uses_numeric_scores(backend_id):
     return backend_id in {
         PROMPT_GENERATOR_JOYCAPTION,
-        PROMPT_GENERATOR_JOYCAPTION_GGUF,
+        PROMPT_GENERATOR_JOYCAPTION_NF4,
         PROMPT_GENERATOR_HUIHUI_GEMMA4,
     }
 
@@ -682,9 +678,6 @@ def move_processor_batch_to_device(batch, target_device, float_dtype=None):
     return moved
 
 
-def llmsearch_joycaption_system_prompt():
-    return LLMSEARCH_JOYCAPTION_SYSTEM_PROMPT
-
 
 def build_llmsearch_joycaption_user_prompt(query_text):
     normalized_query = normalize_prompt_text(query_text or "")
@@ -748,12 +741,6 @@ def image_to_data_url(image, image_format="PNG"):
     image.save(buffer, format=image_format)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/{image_format.lower()};base64,{encoded}"
-
-
-def joycaption_gguf_prepare_image(image):
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    return image.resize((336, 336), Image.Resampling.BILINEAR)
 
 
 def status_line(method, left_items, right_items, scores, overrides):

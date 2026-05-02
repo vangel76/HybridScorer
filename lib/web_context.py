@@ -20,6 +20,8 @@ from .config import (
     DEFAULT_IR_NEGATIVE_PROMPT,
     DEFAULT_IR_PENALTY_WEIGHT,
     DEFAULT_LLMSEARCH_BACKEND,
+    PROMPT_GENERATOR_CHOICES,
+    PROMPT_GENERATOR_ALL_CHOICES,
     DEFAULT_PROMPT_GENERATOR,
     INPUT_FOLDER_NAME,
     IR_PROMPT,
@@ -44,10 +46,9 @@ from .helpers import (
     promptmatch_model_dropdown_choices,
     promptmatch_model_status_json,
 )
-from .state import init_state
+from .state import get_state_defaults
 from .utils import (
     configure_torch_cpu_threads,
-    llmsearch_backend_choices,
     require_cuda,
     runtime_requirement_issues,
 )
@@ -172,7 +173,7 @@ class HybridScorerContext:
         if not os.path.isdir(source_dir):
             source_dir = script_dir
         self.prompt_backend = None
-        self.state = init_state(source_dir, self.prompt_backend)
+        self.state = get_state_defaults(source_dir, self.prompt_backend)
         self.media = MediaRegistry()
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1)
@@ -627,14 +628,8 @@ class HybridScorerContext:
                 "methods": [METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_LLMSEARCH, METHOD_TAGMATCH],
                 "search_methods": [METHOD_SIMILARITY, METHOD_SAMEPERSON, METHOD_OBJECTSEARCH],
                 "promptmatch_models": promptmatch_model_dropdown_choices(),
-                "llm_backends": prompt_backend_dropdown_choices(llmsearch_backend_choices()),
-                "prompt_generators": prompt_backend_dropdown_choices((
-                    "Florence-2",
-                    "JoyCaption Beta One",
-                    "JoyCaption Beta One GGUF (Q4_K_M)",
-                    "Huihui Gemma 4 E4B",
-                    "WD Tags (ONNX)",
-                )),
+                "llm_backends": prompt_backend_dropdown_choices(PROMPT_GENERATOR_CHOICES),
+                "prompt_generators": prompt_backend_dropdown_choices(PROMPT_GENERATOR_ALL_CHOICES),
             },
             "model_status": json.loads(promptmatch_model_status_json()),
             "tagmatch_vocab": json.loads(self.state.get("tagmatch_vocab_json") or "[]"),

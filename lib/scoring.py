@@ -172,7 +172,6 @@ def score_all(image_paths, backend, pos_emb, neg_emb, progress_cb=None, proxy_re
 
 
 def encode_all_promptmatch_images(image_paths, backend, progress_cb=None, proxy_resolver=None):
-    # Cacheable path: encode image features once, then reuse for prompt changes.
     feature_paths = []
     feature_rows = []
     failed_paths = []

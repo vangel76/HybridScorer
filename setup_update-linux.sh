@@ -87,7 +87,7 @@ validate_existing_venv() {
     exit 1
   fi
 
-  if [ -f "$pyvenv_cfg" ] && ! grep -Fq "$VENV_DIR" "$pyvenv_cfg"; then
+  if ! grep -Fq "$VENV_DIR" "$pyvenv_cfg" 2>/dev/null; then
     echo "Existing venv312 appears to have been copied or moved from another path." >&2
     echo "Expected to find this project path in $pyvenv_cfg:" >&2
     echo "  $VENV_DIR" >&2
@@ -155,20 +155,6 @@ if py_check "from importlib.metadata import version; assert version('image-rewar
   echo "image-reward 1.5 already installed, skipping."
 else
   python -m pip install --no-deps image-reward==1.5
-fi
-
-# ── llama-cpp-python (CUDA build) ─────────────────────────────────────────────
-# llama_supports_gpu_offload() returns True only when built with GGML_CUDA=on.
-if py_check "
-import llama_cpp
-assert hasattr(llama_cpp, 'llama_supports_gpu_offload') and llama_cpp.llama_supports_gpu_offload()
-"; then
-  echo "llama-cpp-python with CUDA already installed, skipping rebuild."
-else
-  echo
-  echo "Building llama-cpp-python with CUDA support (this takes a few minutes)..."
-  CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
-    python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
 fi
 
 python - <<'PY'

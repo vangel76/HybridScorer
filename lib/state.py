@@ -113,7 +113,3 @@ def get_state_defaults(source_dir=None, prompt_backend=None):
         },
         "zoom_columns": 5,
     }
-
-
-def init_state(source_dir=None, prompt_backend=None):
-    return get_state_defaults(source_dir, prompt_backend)

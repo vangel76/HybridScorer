@@ -46,9 +46,7 @@ from .config import (
     EXPLICIT_PROMPT_WEIGHT_RE,
     FLORENCE_MODEL_ID,
     JOYCAPTION_MODEL_ID,
-    JOYCAPTION_GGUF_REPO_ID,
-    JOYCAPTION_GGUF_FILENAME,
-    JOYCAPTION_GGUF_MMPROJ_FILENAME,
+    JOYCAPTION_NF4_MODEL_ID,
     HUIHUI_GEMMA4_MODEL_ID,
     TAGMATCH_WD_REPO_ID,
     TAGMATCH_WD_MODEL_FILE,
@@ -56,7 +54,7 @@ from .config import (
     FACE_MODEL_PACK,
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
-    PROMPT_GENERATOR_JOYCAPTION_GGUF,
+    PROMPT_GENERATOR_JOYCAPTION_NF4,
     PROMPT_GENERATOR_HUIHUI_GEMMA4,
     PROMPT_GENERATOR_WD_TAGS,
     PROMPT_GENERATOR_CHOICES,
@@ -122,7 +120,6 @@ def load_startup_requirements():
     script_dir = os.path.dirname(script_dir)
     requirement_sources = [
         os.path.join(script_dir, "requirements.txt"),
-        os.path.join(script_dir, "requirements-gguf.txt"),
     ]
     parsed = []
     seen = set()
@@ -517,14 +514,6 @@ def describe_huggingface_transformers_source(repo_id):
     return "disk cache" if has_config and has_processor and has_weights else "network download"
 
 
-def describe_joycaption_gguf_source():
-    cached = (
-        huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_FILENAME)
-        and huggingface_file_cached(JOYCAPTION_GGUF_REPO_ID, JOYCAPTION_GGUF_MMPROJ_FILENAME)
-    )
-    return "disk cache" if cached else "network download"
-
-
 def describe_tagmatch_source():
     cached = (
         huggingface_file_cached(TAGMATCH_WD_REPO_ID, TAGMATCH_WD_MODEL_FILE)
@@ -771,8 +760,8 @@ def describe_prompt_generator_source(generator_name):
         return describe_florence_source()
     if generator_name == PROMPT_GENERATOR_JOYCAPTION:
         return describe_huggingface_transformers_source(JOYCAPTION_MODEL_ID)
-    if generator_name == PROMPT_GENERATOR_JOYCAPTION_GGUF:
-        return describe_joycaption_gguf_source()
+    if generator_name == PROMPT_GENERATOR_JOYCAPTION_NF4:
+        return describe_huggingface_transformers_source(JOYCAPTION_NF4_MODEL_ID)
     if generator_name == PROMPT_GENERATOR_HUIHUI_GEMMA4:
         return describe_huggingface_transformers_source(HUIHUI_GEMMA4_MODEL_ID)
     if generator_name == PROMPT_GENERATOR_WD_TAGS:
@@ -784,6 +773,7 @@ def prompt_generator_supports_torch_cleanup(generator_name):
     return generator_name in {
         PROMPT_GENERATOR_FLORENCE,
         PROMPT_GENERATOR_JOYCAPTION,
+        PROMPT_GENERATOR_JOYCAPTION_NF4,
         PROMPT_GENERATOR_HUIHUI_GEMMA4,
     }
 
@@ -793,13 +783,6 @@ def prompt_backend_warning_text(generator_name):
         return " This backend uses a less-filtered abliterated Gemma 4 model and may produce less-filtered text."
     return ""
 
-
-def llmsearch_backend_choices():
-    return list(PROMPT_GENERATOR_CHOICES)
-
-
-def describe_llmsearch_backend_source(generator_name):
-    return describe_prompt_generator_source(generator_name)
 
 
 def cuda_prefers_bfloat16():

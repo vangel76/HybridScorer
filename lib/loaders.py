@@ -27,16 +27,13 @@ from .config import (
     OBJECTSEARCH_FAISS_TOP_K_PATCHES,
     PROMPT_GENERATOR_FLORENCE,
     PROMPT_GENERATOR_JOYCAPTION,
+    PROMPT_GENERATOR_JOYCAPTION_NF4,
     PROMPT_GENERATOR_HUIHUI_GEMMA4,
-    PROMPT_GENERATOR_JOYCAPTION_GGUF,
     FLORENCE_MODEL_ID,
     JOYCAPTION_MODEL_ID,
+    JOYCAPTION_NF4_MODEL_ID,
     HUIHUI_GEMMA4_MODEL_ID,
     HUIHUI_GEMMA4_PROCESSOR_MODEL_ID,
-    JOYCAPTION_GGUF_REPO_ID,
-    JOYCAPTION_GGUF_FILENAME,
-    JOYCAPTION_GGUF_MMPROJ_FILENAME,
-    JOYCAPTION_GGUF_SETUP_HINT,
     TAGMATCH_WD_REPO_ID,
     TAGMATCH_WD_MODEL_FILE,
     TAGMATCH_WD_TAGS_FILE,
@@ -137,8 +134,6 @@ def release_inactive_gpu_models(state, target_method):
                 _clear_torch_model(cached.get("model"))
             released.append(backend_name)
         state["prompt_backend_cache"] = {}
-        # Drop loop variables so CPython's refcount immediately reaches zero for
-        # llama_cpp Llama objects (which have no "model" key and are freed by __del__).
         del backend_name, cached
 
     if released:
@@ -223,6 +218,51 @@ def ensure_joycaption_model(state, device):
     return model, processor
 
 
+def ensure_joycaption_nf4_model(state, device):
+    hit = _cached_hf_backend(state, PROMPT_GENERATOR_JOYCAPTION_NF4)
+    if hit:
+        return hit
+
+    try:
+        from transformers import AutoProcessor, LlavaForConditionalGeneration
+    except ImportError as exc:
+        raise RuntimeError(
+            "JoyCaption NF4 prompt generation needs a newer transformers build.\n"
+            "Run setup again after updating requirements."
+        ) from exc
+
+    try:
+        import bitsandbytes  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "JoyCaption NF4 requires bitsandbytes.\n"
+            "Install it: pip install bitsandbytes"
+        ) from exc
+
+    local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4) == "disk cache"
+    print(f"[JoyCaption NF4] Loading {JOYCAPTION_NF4_MODEL_ID} …")
+    processor = AutoProcessor.from_pretrained(
+        JOYCAPTION_NF4_MODEL_ID,
+        local_files_only=local_files_only,
+        trust_remote_code=True,
+        cache_dir=get_cache_config()["huggingface_dir"],
+    )
+    model = LlavaForConditionalGeneration.from_pretrained(
+        JOYCAPTION_NF4_MODEL_ID,
+        device_map={"": device},
+        local_files_only=local_files_only,
+        trust_remote_code=True,
+        cache_dir=get_cache_config()["huggingface_dir"],
+    )
+    model.eval()
+    state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION_NF4] = {
+        "model": model,
+        "processor": processor,
+    }
+    print("[JoyCaption NF4] Ready.")
+    return model, processor
+
+
 def ensure_huihui_gemma4_model(state, device):
     hit = _cached_hf_backend(state, PROMPT_GENERATOR_HUIHUI_GEMMA4)
     if hit:
@@ -298,80 +338,6 @@ def ensure_huihui_gemma4_model(state, device):
     }
     print("[Huihui Gemma 4] Ready.")
     return model, processor
-
-
-def ensure_joycaption_gguf_model(state, device):
-    cached = state["prompt_backend_cache"].get(PROMPT_GENERATOR_JOYCAPTION_GGUF)
-    if cached and cached.get("llm") is not None:
-        return cached["llm"]
-
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise RuntimeError(
-            "GGUF prompt generation needs huggingface_hub.\n"
-            "Run setup again after updating requirements."
-        ) from exc
-
-    try:
-        from llama_cpp import Llama
-        from llama_cpp.llama_chat_format import Llava15ChatHandler
-        from llama_cpp._utils import suppress_stdout_stderr
-        import llama_cpp.llama_cpp as llama_cpp_backend
-    except ImportError as exc:
-        raise RuntimeError(
-            "JoyCaption GGUF support is not installed.\n"
-            f"Run: {JOYCAPTION_GGUF_SETUP_HINT}"
-        ) from exc
-
-    if device == "cuda":
-        supports_gpu_offload = getattr(llama_cpp_backend, "llama_supports_gpu_offload", None)
-        if callable(supports_gpu_offload) and not supports_gpu_offload():
-            raise RuntimeError(
-                "JoyCaption GGUF is installed with a CPU-only llama-cpp-python build.\n"
-                "Reinstall the GGUF runtime with CUDA enabled by rerunning setup with:\n"
-                f"{JOYCAPTION_GGUF_SETUP_HINT}"
-            )
-
-    local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_GGUF) == "disk cache"
-    print(f"[JoyCaption GGUF] Loading {JOYCAPTION_GGUF_REPO_ID} / {JOYCAPTION_GGUF_FILENAME} …")
-    model_path = hf_hub_download(
-        repo_id=JOYCAPTION_GGUF_REPO_ID,
-        filename=JOYCAPTION_GGUF_FILENAME,
-        local_files_only=local_files_only,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    )
-    mmproj_path = hf_hub_download(
-        repo_id=JOYCAPTION_GGUF_REPO_ID,
-        filename=JOYCAPTION_GGUF_MMPROJ_FILENAME,
-        local_files_only=local_files_only,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    )
-    with suppress_stdout_stderr(disable=False):
-        chat_handler = Llava15ChatHandler(
-            clip_model_path=mmproj_path,
-            verbose=False,
-        )
-        llm = Llama(
-            model_path=model_path,
-            chat_handler=chat_handler,
-            chat_format="llava-1-5",
-            n_ctx=2048,
-            n_batch=2048,
-            n_ubatch=512,
-            n_threads=max(1, (os.cpu_count() or 1) - 1),
-            n_threads_batch=max(1, (os.cpu_count() or 1) - 1),
-            n_gpu_layers=-1 if device == "cuda" else 0,
-            flash_attn=(device == "cuda"),
-            verbose=False,
-        )
-    state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION_GGUF] = {
-        "llm": llm,
-        "model_path": model_path,
-        "mmproj_path": mmproj_path,
-    }
-    print("[JoyCaption GGUF] Ready.")
-    return llm
 
 
 def tagmatch_prepare_image(image):

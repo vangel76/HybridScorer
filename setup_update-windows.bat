@@ -22,50 +22,16 @@ if "%PYTHON312_INSTALL_ARGS%"=="" set "PYTHON312_INSTALL_ARGS=/quiet InstallAllU
 where py >nul 2>nul
 if errorlevel 1 (
     echo Python launcher "py" was not found.
-    where winget >nul 2>nul
-    if errorlevel 1 (
-        echo winget was not found.
-        echo Falling back to the official python.org installer...
-        call :install_python312_from_python_org
-        if errorlevel 1 exit /b 1
-        goto python_launcher_ready
-    )
-
-    echo Attempting to install Python 3.12 with winget...
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --override "%PYTHON312_INSTALL_ARGS%"
-    if errorlevel 1 (
-        echo Automatic Python install failed.
-        echo Falling back to the official python.org installer...
-        call :install_python312_from_python_org
-        if errorlevel 1 exit /b 1
-        goto :python312_ready_check
-    )
+    call :install_python312
+    if errorlevel 1 exit /b 1
 )
-:python_launcher_ready
 
 py -3.12 -c "import sys; print(sys.version)" >nul 2>nul
 if errorlevel 1 (
     echo Python 3.12 is not currently available from the py launcher.
-    where winget >nul 2>nul
-    if errorlevel 1 (
-        echo winget was not found.
-        echo Falling back to the official python.org installer...
-        call :install_python312_from_python_org
-        if errorlevel 1 exit /b 1
-        goto :python312_ready_check
-    )
-
-    echo Attempting to install Python 3.12 with winget...
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --override "%PYTHON312_INSTALL_ARGS%"
-    if errorlevel 1 (
-        echo Automatic Python 3.12 install failed.
-        echo Falling back to the official python.org installer...
-        call :install_python312_from_python_org
-        if errorlevel 1 exit /b 1
-        goto :python312_ready_check
-    )
+    call :install_python312
+    if errorlevel 1 exit /b 1
 )
-:python312_ready_check
 set "PYTHON312_EXE="
 call :resolve_python312_exe
 if not defined PYTHON312_EXE (
@@ -164,15 +130,13 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
         exit /b 1
     )
 
-    if exist "%VENV_DIR%\pyvenv.cfg" (
-        findstr /C:"%VENV_DIR%" "%VENV_DIR%\pyvenv.cfg" >nul 2>nul
-        if errorlevel 1 (
-            echo Existing venv312 appears to have been copied or moved from another path.
-            echo Expected to find this project path in "%VENV_DIR%\pyvenv.cfg":
-            echo   %VENV_DIR%
-            echo Delete venv312 and run setup_update-windows.bat again.
-            exit /b 1
-        )
+    findstr /C:"%VENV_DIR%" "%VENV_DIR%\pyvenv.cfg" >nul 2>nul
+    if errorlevel 1 (
+        echo Existing venv312 appears to have been copied or moved from another path.
+        echo Expected to find this project path in "%VENV_DIR%\pyvenv.cfg":
+        echo   %VENV_DIR%
+        echo Delete venv312 and run setup_update-windows.bat again.
+        exit /b 1
     )
 )
 
@@ -216,63 +180,6 @@ if not errorlevel 1 (
     if errorlevel 1 exit /b 1
 )
 
-python -c "import llama_cpp; assert hasattr(llama_cpp, 'llama_supports_gpu_offload') and llama_cpp.llama_supports_gpu_offload()" >nul 2>nul
-if not errorlevel 1 (
-    echo llama-cpp-python with CUDA already installed, skipping rebuild.
-    goto after_llama_install
-)
-
-echo.
-echo Installing JoyCaption GGUF runtime with CUDA-enabled llama-cpp-python
-set "CMAKE_ARGS=-DGGML_CUDA=on"
-set "FORCE_CMAKE=1"
-python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
-if errorlevel 1 (
-    echo Standard CUDA llama-cpp-python build failed.
-    echo Trying Visual Studio developer shell plus Ninja fallback...
-
-    set "VSDEVCMD="
-    for %%F in (
-        "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
-        "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat"
-        "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
-        "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
-    ) do (
-        if exist "%%~fF" if not defined VSDEVCMD set "VSDEVCMD=%%~fF"
-    )
-
-    where ninja >nul 2>nul
-    if errorlevel 1 (
-        echo Ninja was not found in PATH, so the fallback build cannot run.
-        exit /b 1
-    )
-    if not defined VSDEVCMD (
-        echo Visual Studio developer shell was not found, so the fallback build cannot run.
-        exit /b 1
-    )
-
-    call "%VSDEVCMD%" -arch=x64 -host_arch=x64 >nul
-    if errorlevel 1 (
-        echo Failed to initialize the Visual Studio developer shell.
-        exit /b 1
-    )
-    if not defined VCToolsInstallDir (
-        echo VCToolsInstallDir was not set by the developer shell.
-        exit /b 1
-    )
-
-    set "CC=%VCToolsInstallDir%bin\Hostx64\x64\cl.exe"
-    set "CXX=%CC%"
-    set "CMAKE_ARGS=-G Ninja -DCMAKE_MAKE_PROGRAM=C:/Windows/ninja.exe -DGGML_CUDA=on"
-    python -m pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
-    if errorlevel 1 exit /b 1
-)
-set "CMAKE_ARGS="
-set "FORCE_CMAKE="
-set "CC="
-set "CXX="
-:after_llama_install
-
 python -c "import sys, torch; ok=torch.cuda.is_available(); print(f'CUDA OK: {torch.cuda.get_device_name(0)}' if ok else 'CUDA missing'); sys.exit(0 if ok else 1)"
 if errorlevel 1 (
     echo CUDA is mandatory for this project, but torch.cuda.is_available() is False.
@@ -285,6 +192,22 @@ echo venv312 is ready.
 echo Activate later with:
 echo   venv312\Scripts\activate.bat
 goto :eof
+
+:install_python312
+where winget >nul 2>nul
+if errorlevel 1 (
+    echo winget was not found. Falling back to the official python.org installer...
+    call :install_python312_from_python_org
+    exit /b %errorlevel%
+)
+echo Attempting to install Python 3.12 with winget...
+winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --override "%PYTHON312_INSTALL_ARGS%"
+if errorlevel 1 (
+    echo Automatic Python 3.12 install failed. Falling back to the official python.org installer...
+    call :install_python312_from_python_org
+    exit /b %errorlevel%
+)
+exit /b 0
 
 :install_python312_from_python_org
 set "PYTHON312_INSTALLER=%TEMP%\python-%PYTHON312_VERSION%-amd64.exe"
