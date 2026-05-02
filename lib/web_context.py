@@ -288,7 +288,7 @@ class HybridScorerContext:
         elif action == "prompt-generate":
             self._apply_output_keys(result, ("promptgen_status_md", "generated_prompt_tb", "generated_prompt_detail_slider"))
         elif action == "prompt-insert":
-            self._apply_output_keys(result, ("promptgen_status_md", "pos_prompt_tb", "ir_prompt_tb", "llm_prompt_tb"))
+            self._apply_output_keys(result, ("promptgen_status_md", "pos_prompt_tb", "ir_prompt_tb", "llm_prompt_tb", "tagmatch_tags_tb"))
 
     def _apply_output_keys(self, result, keys):
         if not isinstance(result, (list, tuple)):
@@ -312,6 +312,8 @@ class HybridScorerContext:
                 self.inputs["ir_prompt"] = _merge_update(self.inputs["ir_prompt"], value)
             elif key == "llm_prompt_tb":
                 self.inputs["llm_prompt"] = _merge_update(self.inputs["llm_prompt"], value)
+            elif key == "tagmatch_tags_tb":
+                self.inputs["tagmatch_tags"] = _merge_update(self.inputs["tagmatch_tags"], value)
             elif key == "promptgen_status_md" and _is_update(value) and "value" in value:
                 self.state["generated_prompt_status"] = value["value"]
 

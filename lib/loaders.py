@@ -80,6 +80,14 @@ def _cached_hf_backend(state, key):
     return None
 
 
+def _disable_unused_siglip_pooling_head(model):
+    vision_tower = getattr(getattr(model, "model", None), "vision_tower", None)
+    if vision_tower is not None and hasattr(vision_tower, "use_head"):
+        # LLaVA uses hidden states from vision_feature_layer, not SigLIP's pooled head.
+        # Pre-quantized NF4 SigLIP heads can route packed weights through torch MHA.
+        vision_tower.use_head = False
+
+
 def _load_tagmatch_tags(tags_path):
     import csv as _csv
     tags = []
@@ -209,6 +217,7 @@ def ensure_joycaption_model(state, device):
         trust_remote_code=True,
         cache_dir=get_cache_config()["huggingface_dir"],
     ).to(device)
+    _disable_unused_siglip_pooling_head(model)
     model.eval()
     state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION] = {
         "model": model,
@@ -240,13 +249,15 @@ def ensure_joycaption_nf4_model(state, device):
         ) from exc
 
     local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4) == "disk cache"
-    print(f"[JoyCaption NF4] Loading {JOYCAPTION_NF4_MODEL_ID} …")
+    print(f"[JoyCaption NF4] Loading {JOYCAPTION_NF4_MODEL_ID} from {describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4)} …", flush=True)
+    print("[JoyCaption NF4] Loading processor/tokenizer …", flush=True)
     processor = AutoProcessor.from_pretrained(
         JOYCAPTION_NF4_MODEL_ID,
         local_files_only=local_files_only,
         trust_remote_code=True,
         cache_dir=get_cache_config()["huggingface_dir"],
     )
+    print("[JoyCaption NF4] Loading quantized model weights …", flush=True)
     model = LlavaForConditionalGeneration.from_pretrained(
         JOYCAPTION_NF4_MODEL_ID,
         device_map={"": device},
@@ -254,12 +265,13 @@ def ensure_joycaption_nf4_model(state, device):
         trust_remote_code=True,
         cache_dir=get_cache_config()["huggingface_dir"],
     )
+    _disable_unused_siglip_pooling_head(model)
     model.eval()
     state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION_NF4] = {
         "model": model,
         "processor": processor,
     }
-    print("[JoyCaption NF4] Ready.")
+    print("[JoyCaption NF4] Ready.", flush=True)
     return model, processor
 
 
@@ -387,7 +399,10 @@ def ensure_tagmatch_model(state, device):
     )
 
     providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        [("CUDAExecutionProvider", {
+            "arena_extend_strategy": "kSameAsRequested",
+            "cudnn_conv_algo_search": "HEURISTIC",
+        }), "CPUExecutionProvider"]
         if device == "cuda"
         else ["CPUExecutionProvider"]
     )

@@ -52,11 +52,15 @@ templates/
 
 **TagMatch:** `_prep_tagmatch_batch(paths, proxy_map)` pure helper preps one batch (load + pad + resize + BGR convert). `score_tagmatch_folder` runs a `ThreadPoolExecutor(max_workers=1)` prefetch loop: submits batch N+1 prep while ONNX runs batch N — overlaps I/O+CPU with GPU inference.
 
-**LLM Search:** PromptMatch shortlists → Florence-2/JoyCaption HF/GGUF reranks; non-shortlisted get reject-floor score. HF uses `score_candidates_batch` (batch=4); GGUF sequential.
+**LLM Search:** PromptMatch shortlists → Florence-2/JoyCaption HF/JoyCaption NF4/Huihui Gemma reranks; non-shortlisted get reject-floor score. HF JoyCaption backends use `score_candidates_batch` (batch=4).
 
 **ObjectSearch:** query image set in accordion 3 → `ensure_objectsearch_feature_cache` builds `faiss.IndexFlatIP` + GPU tensor → `score_objectsearch_cached_features` runs `torch.mm` or FAISS fallback → mean best-match-per-patch score. State keys: `os_cached_*`, `dinov2_backend`, `objectsearch_query_fname/source`.
 
 **VRAM:** `release_inactive_gpu_models(target_method)` called before each scoring entry point; frees unneeded models. PromptMatch CLIP never released (always needed for shortlisting).
+
+**JoyCaption NF4:** requires `accelerate` + `bitsandbytes`. Loader uses `device_map={"": device}` and disables SigLIP `vision_tower.use_head`; LLaVA uses hidden states, and the pooled head can crash with pre-quantized NF4 packed weights (`mat1 and mat2 shapes cannot be multiplied`). HF sharded-cache checks must verify every shard in `model.safetensors.index.json`, not just the index file, or partial downloads get misdetected as disk-cache-ready.
+
+**No llama.cpp/GGUF JoyCaption path:** JoyCaption prompt generation and LM Search now use Transformers HF/NF4 backends. Do not add `llama-cpp-python` setup or GGUF runtime assumptions back unless explicitly reintroducing that backend.
 
 **Cache:** Windows → project-local (`models/`, `cache/`); Linux → system (`~/.cache/`). Override: `HYBRIDSCORER_CACHE_MODE=project|system`. Linux proxy thumbnails → `/dev/shm` (tmpfs) with fallback. `get_cache_config()` is `@lru_cache(maxsize=1)`.
 
@@ -89,7 +93,7 @@ templates/
 - Filename-based manual override logic (survives rescoring)
 - Proxy/cache synchronization
 - LLM Search shortlist and rerank flow
-- CPython refcount for GGUF `Llama` objects (no `__del__` until loop vars explicitly `del`-ed)
+- JoyCaption NF4 loader compatibility with Transformers/bitsandbytes/SigLIP internals
 
 ## Smoke Tests
 - Rescore same folder → pinned images stay pinned
@@ -98,6 +102,7 @@ templates/
 - Preview image → run Similarity; face image → run SamePerson
 - LLM Search twice same settings → cache reused
 - Generate prompt → insert into PromptMatch, ImageReward, LLM Search
+- Generate prompt with JoyCaption Beta One NF4 → first load completes, prompt text appears, no WebSocket stall
 - Windows project-mode caches → repo-local; Linux system-mode → system locations
 - PromptMatch per-segment + hover thumb → pills appear on pos_prompt overlay, colors normalized
 - TagMatch score + hover thumb → pills appear on tagmatch_tags overlay

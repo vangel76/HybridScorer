@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import re
 import shutil
@@ -509,9 +510,40 @@ def describe_huggingface_transformers_source(repo_id):
     has_weights = (
         huggingface_file_cached(repo_id, "model.safetensors")
         or huggingface_file_cached(repo_id, "pytorch_model.bin")
-        or huggingface_file_cached(repo_id, "model.safetensors.index.json")
+        or huggingface_index_shards_cached(repo_id, "model.safetensors.index.json")
     )
     return "disk cache" if has_config and has_processor and has_weights else "network download"
+
+
+def huggingface_index_shards_cached(repo_id, index_filename):
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:
+        return False
+    try:
+        index_path = try_to_load_from_cache(
+            repo_id=repo_id,
+            filename=index_filename,
+            cache_dir=get_cache_config()["huggingface_dir"],
+        )
+    except Exception:
+        return False
+    if not isinstance(index_path, (str, bytes, os.PathLike)) or not os.path.isfile(index_path):
+        return False
+    try:
+        with open(index_path, "r", encoding="utf-8") as handle:
+            index_data = json.load(handle)
+    except Exception:
+        return False
+    shard_names = {
+        str(name)
+        for name in (index_data.get("weight_map") or {}).values()
+        if name
+    }
+    return bool(shard_names) and all(
+        huggingface_file_cached(repo_id, shard_name)
+        for shard_name in shard_names
+    )
 
 
 def describe_tagmatch_source():
@@ -1045,30 +1077,34 @@ def get_auto_batch_size(device, backend=None, reference_vram_gb=32, mode=None):
         if total_gb >= 32 and free_gb >= 24:
             base_batch_size = max(base_batch_size, 112)
     elif mode == "tagmatch":
-        # WD ViT-Large 448px: heavier per image than CLIP; conservative VRAM caps
+        # EVA-02-Large 448px: ~250 MB activations/image — heavier than CLIP
         if total_gb < 9:
             base_batch_size = min(base_batch_size, 8)
-            max_batch_size = min(max_batch_size, 16)
+            max_batch_size = min(max_batch_size, 12)
             reference_vram_gb = max(reference_vram_gb, 16)
-            aggression *= 0.85
+            aggression *= 0.8
         elif total_gb < 12:
+            base_batch_size = min(base_batch_size, 10)
+            max_batch_size = min(max_batch_size, 20)
+            reference_vram_gb = max(reference_vram_gb, 14)
+            aggression *= 0.85
+        elif total_gb < 16:
             base_batch_size = min(base_batch_size, 12)
             max_batch_size = min(max_batch_size, 32)
             reference_vram_gb = max(reference_vram_gb, 14)
             aggression *= 0.9
-        elif total_gb < 16:
-            base_batch_size = min(base_batch_size, 16)
+        elif total_gb < 24:
             max_batch_size = min(max_batch_size, 48)
 
         if free_gb >= 20:
-            aggression *= 1.15
+            aggression *= 1.1
         elif free_gb >= 14:
-            aggression *= 1.08
+            aggression *= 1.05
 
         if total_gb >= 16 and free_gb >= 10:
-            base_batch_size = max(base_batch_size, 24)
+            base_batch_size = max(base_batch_size, 16)
         if total_gb >= 24 and free_gb >= 16:
-            base_batch_size = max(base_batch_size, 32)
+            base_batch_size = max(base_batch_size, 24)
 
     if effective_free_gb <= 0:
         return 1 if mode == "imagereward" else max(1, min(8, max_batch_size))

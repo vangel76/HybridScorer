@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 from ..config import (
-    METHOD_PROMPTMATCH, METHOD_LLMSEARCH,
+    METHOD_PROMPTMATCH, METHOD_LLMSEARCH, METHOD_TAGMATCH,
     PROMPT_GENERATOR_FLORENCE, PROMPT_GENERATOR_JOYCAPTION,
     PROMPT_GENERATOR_JOYCAPTION_NF4, PROMPT_GENERATOR_HUIHUI_GEMMA4,
     PROMPT_GENERATOR_WD_TAGS, FLORENCE_MAX_NEW_TOKENS,
@@ -499,11 +499,17 @@ def insert_generated_prompt(state, method, prompt_text):
         target_label = "PromptMatch positive prompt"
     elif method == METHOD_LLMSEARCH:
         target_label = "LM search prompt"
+    elif method == METHOD_TAGMATCH:
+        target_label = "TagMatch tags"
     else:
         target_label = "ImageReward positive prompt"
     state["generated_prompt_status"] = f"Inserted generated prompt into {target_label}."
+    skip = gr.update()
+    status = gr.update(value=state["generated_prompt_status"])
     if method == METHOD_PROMPTMATCH:
-        return gr.update(value=state["generated_prompt_status"]), gr.update(value=prompt_text), gr.update(), gr.update()
+        return status, gr.update(value=prompt_text), skip, skip, skip
     if method == METHOD_LLMSEARCH:
-        return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(), gr.update(value=prompt_text)
-    return gr.update(value=state["generated_prompt_status"]), gr.update(), gr.update(value=prompt_text), gr.update()
+        return status, skip, skip, gr.update(value=prompt_text), skip
+    if method == METHOD_TAGMATCH:
+        return status, skip, skip, skip, gr.update(value=prompt_text)
+    return status, skip, gr.update(value=prompt_text), skip, skip

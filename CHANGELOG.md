@@ -1,5 +1,20 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.9.0 - JoyCaption NF4 & Runtime Cleanup
+
+**Runtime Cleanup**
+- Removed the JoyCaption GGUF / llama.cpp runtime path; prompt generation and LM Search now use the Hugging Face Transformers JoyCaption backends instead
+- Setup no longer needs a CUDA `llama-cpp-python` build for JoyCaption
+
+**JoyCaption NF4**
+- Added the missing `accelerate` dependency required by the Transformers `device_map` load path
+- Fixed JoyCaption Beta One NF4 prompt generation with pre-quantized SigLIP weights by disabling the unused vision pooling head that could crash with `mat1 and mat2 shapes cannot be multiplied`
+- Hugging Face cache detection now verifies all sharded weight files instead of treating a lone `model.safetensors.index.json` as a complete disk cache
+
+**Prompt Generation Jobs**
+- If a job WebSocket opens and then closes early, the browser now falls back to polling so prompt generation progress and errors are still shown
+- JoyCaption NF4 loader logs now show processor and quantized-weight loading stages more clearly
+
 ## Version 2.8.0 - Subfolder Loading, Multi-Drag & TagMatch Speed
 
 **Folder Loading**

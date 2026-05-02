@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import webbrowser
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -235,16 +236,18 @@ if __name__ == "__main__":
         def filter(self, record):
             return '/media/' not in record.getMessage()
 
-    @fastapi_app.on_event("startup")
-    async def _open_browser():
+    @asynccontextmanager
+    async def _lifespan(app):
         logging.getLogger("uvicorn.access").addFilter(_MediaFilter())
-        url = f"http://localhost:{port}"
         await asyncio.sleep(0.1)
-        webbrowser.open(url)
+        webbrowser.open(f"http://localhost:{port}")
+        yield
+
+    fastapi_app.router.lifespan_context = _lifespan
 
     uvicorn.run(
         fastapi_app,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=port,
         log_level="info",
     )

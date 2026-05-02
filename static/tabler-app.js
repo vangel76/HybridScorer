@@ -333,6 +333,7 @@
       bar.style.width = `${Math.max(3, Math.min(100, pct))}%`;
     };
     const finishJob = (msg) => {
+      finished = true;
       if (msg.state) {
         state = msg.state;
         render();
@@ -358,6 +359,7 @@
     let opened = false;
     let seenMessage = false;
     let fallbackStarted = false;
+    let finished = false;
     const startPollingFallback = () => {
       if (fallbackStarted) return;
       fallbackStarted = true;
@@ -383,7 +385,7 @@
       startPollingFallback();
     };
     ws.onclose = () => {
-      if (!opened) startPollingFallback();
+      if (!finished) startPollingFallback();
     };
     setTimeout(() => {
       if (!seenMessage && !fallbackStarted) startPollingFallback();

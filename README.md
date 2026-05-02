@@ -2,7 +2,7 @@
 
 `HybridScorer` is a 100% local app for sorting large folders of images with AI scoring.
 
-Current version: `2.8.0`
+Current version: `2.9.0`
 
 ## What The App Does
 
@@ -65,7 +65,7 @@ What the setup scripts do now:
 - install the main app requirements including `faiss-cpu` for ObjectSearch
 - install `onnxruntime-gpu` for face search (skipped if CUDA provider already present)
 - install `image-reward 1.5` (skipped if already installed)
-- install the JoyCaption GGUF runtime into `venv312` (skipped if CUDA build already present)
+- install JoyCaption HF/NF4 runtime dependencies through `requirements.txt`
 - verify that CUDA is available before finishing
 
 The setup scripts also try a safe `git pull --ff-only` first when the checkout is clean and has an upstream branch.
@@ -98,7 +98,8 @@ The app is designed around local GPU inference:
 - PromptMatch models run on CUDA
 - ImageReward runs on CUDA and includes in-app compatibility shims for newer Transformers 5.x builds
 - SamePerson uses InsightFace with CUDA-enabled ONNX Runtime
-- JoyCaption GGUF expects a CUDA-enabled `llama-cpp-python` build
+- JoyCaption HF/NF4 uses Transformers on CUDA; the NF4 backend requires `accelerate` and `bitsandbytes`
+- JoyCaption no longer uses the GGUF / llama.cpp runtime path
 
 If `torch.cuda.is_available()` is false, the setup scripts fail intentionally.
 
@@ -112,7 +113,7 @@ Current prompt generators:
 
 - `Florence-2`
 - `JoyCaption Beta One`
-- `JoyCaption Beta One GGUF (Q4_K_M)`
+- `JoyCaption Beta One NF4`
 - `Huihui Gemma 4 E4B`
 
 Behavior:
@@ -122,6 +123,7 @@ Behavior:
 - prompt detail has 3 levels
 - backend instances are cached in memory once loaded
 - the dropdown shows cached backends in green and first-download backends in amber
+- JoyCaption NF4 uses the Hugging Face model cache and may need a larger first download before it appears as cached
 - the `Huihui Gemma 4 E4B` option is a less-filtered abliterated model and may produce less-filtered text
 - Huihui Gemma 4 also requires a Transformers build that includes Gemma 4 runtime classes; rerun setup after dependency updates if the backend reports missing Gemma 4 processor/model classes
 
@@ -139,14 +141,14 @@ Current backend options:
 
 - `Florence-2`
 - `JoyCaption Beta One`
-- `JoyCaption Beta One GGUF (Q4_K_M)`
+- `JoyCaption Beta One NF4`
 - `Huihui Gemma 4 E4B`
 
 The LM Search backend dropdown also shows cached backends in green and first-download backends in amber.
 
 Current default LLM Search backend:
 
-- `JoyCaption Beta One GGUF (Q4_K_M)`
+- `JoyCaption Beta One NF4`
 - `Huihui Gemma 4 E4B` is optional only; defaults are unchanged and its outputs may be less filtered
 
 ## Cache Behavior
@@ -181,7 +183,7 @@ Highlights:
 - ObjectSearch model: `facebook/dinov2-base`
 - Florence prompt generation: `florence-community/Florence-2-base`
 - JoyCaption HF: `fancyfeast/llama-joycaption-beta-one-hf-llava`
-- JoyCaption GGUF: `cinnabrad/llama-joycaption-beta-one-hf-llava-mmproj-gguf`
+- JoyCaption NF4: `John6666/llama-joycaption-beta-one-hf-llava-nf4`
 - Huihui Gemma 4: `huihui-ai/Huihui-gemma-4-E4B-it-abliterated`
 
 The downloadable model selectors in the UI show cached items in green and items that still need a first download in amber.
@@ -218,7 +220,6 @@ pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 pip install onnxruntime-gpu
 pip install --no-deps image-reward==1.5
-CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install --upgrade --force-reinstall --no-cache-dir "llama-cpp-python>=0.3.7"
 ```
 
 You also need a CUDA-enabled PyTorch install that matches your system and GPU.
