@@ -1,6 +1,7 @@
 (() => {
   let state = JSON.parse(document.getElementById("initial-state").textContent);
   const $ = (id) => document.getElementById(id);
+  const on = (id, event, handler) => $(id)?.addEventListener(event, handler);
   const inputIds = [
     "method", "folder", "model_label", "pos_prompt", "neg_prompt", "pm_segment_mode",
     "ir_prompt", "ir_negative_prompt", "ir_penalty_weight", "llm_model_label",
@@ -24,6 +25,11 @@
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   };
+  const applyState = (next) => {
+    state = next;
+    render();
+  };
+  const postAndRender = async (url, payload) => applyState(await post(url, payload));
   const fillSelect = (id, choices, value) => {
     const el = $(id);
     const normalized = (choices || []).map((choice) => Array.isArray(choice) ? { label: choice[0], value: choice[1] } : { label: choice, value: choice });
@@ -72,8 +78,8 @@
       fig.title = hoverText(item);
       fig.innerHTML = `<img src="${item.url || ""}" loading="lazy" alt=""><figcaption>${escapeHtml(item.caption || item.filename)}</figcaption>`;
       fig.querySelector("img").addEventListener("error", () => fig.classList.add("image-error"));
-      fig.addEventListener("mouseenter", () => { showHistogramHover(item.filename); renderSegmentPills(item.filename); renderTagPills(item.filename); });
-      fig.addEventListener("mouseleave", () => { clearHistogramHover(); clearSegmentPills(); clearTagPills(); });
+      fig.addEventListener("mouseenter", () => showThumbHover(item.filename));
+      fig.addEventListener("mouseleave", clearThumbHover);
       fig.addEventListener("click", (event) => {
         if (event.shiftKey) {
           selection("mark", item.side, item.index);
@@ -111,6 +117,16 @@
     if (negSeg) parts.push(Object.entries(negSeg).map(([k, v]) => `neg ${k}: ${Number(v).toFixed(4)}`).join("\n"));
     return parts.filter(Boolean).join("\n");
   };
+  const showThumbHover = (filename) => {
+    showHistogramHover(filename);
+    renderSegmentPills(filename);
+    renderTagPills(filename);
+  };
+  const clearThumbHover = () => {
+    clearHistogramHover();
+    clearSegmentPills();
+    clearTagPills();
+  };
   const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
   const openZoom = (item) => {
     $("hy-zoom-img").src = item.url || "";
@@ -129,52 +145,19 @@
     const a = (0.18 + 0.82 * norm).toFixed(2);
     return `hsla(${h}, ${s}%, ${l}%, ${a})`;
   };
-  const renderSegmentPills = (filename) => {
-    const root = $("pm-segment-pills");
-    const ta = $("pos_prompt");
-    if (!root || !ta) return;
-    const seg = state.view?.segment_score_lookup?.[filename];
-    if (!seg || !$("pm_segment_mode")?.checked) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
-    const tags = ta.value.split(",").map((t) => t.trim()).filter(Boolean);
-    if (!tags.length) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
-    const scores = tags.map((tag) => seg[tag] ?? seg[tag.toLowerCase()] ?? null);
-    const valid = scores.filter((s) => s !== null);
-    const lo = valid.length ? Math.min(...valid) : 0;
-    const hi = valid.length ? Math.max(...valid) : 1;
-    const range = hi - lo || 1;
-    root.innerHTML = "";
-    for (let i = 0; i < tags.length; i++) {
-      const span = document.createElement("span");
-      span.className = "hy-seg-pill";
-      span.textContent = tags[i];
-      if (scores[i] !== null) {
-        const norm = (scores[i] - lo) / range;
-        span.style.background = scoreToColor(norm);
-        span.style.color = norm > 0.55 ? "#061208" : "#8ca0a8";
-        span.title = `${(scores[i] * 100).toFixed(1)}%`;
-      } else {
-        span.style.background = "rgba(80,90,110,0.3)";
-        span.style.color = "#6a7888";
-      }
-      root.appendChild(span);
+  const setPillsActive = (root, input, active) => {
+    root?.classList.toggle("active", active);
+    input?.classList.toggle("pills-active", active);
+  };
+  const renderScorePills = (rootId, inputId, lookup, enabled = true) => {
+    const root = $(rootId);
+    const input = $(inputId);
+    if (!root || !input) return;
+    const tags = input.value.split(",").map((t) => t.trim()).filter(Boolean);
+    if (!enabled || !lookup || !tags.length) {
+      setPillsActive(root, input, false);
+      return;
     }
-    root.classList.add("active");
-    ta.classList.add("pills-active");
-  };
-  const clearSegmentPills = () => {
-    const root = $("pm-segment-pills");
-    const ta = $("pos_prompt");
-    if (root) root.classList.remove("active");
-    if (ta) ta.classList.remove("pills-active");
-  };
-  const renderTagPills = (filename) => {
-    const root = $("tm-segment-pills");
-    const ta = $("tagmatch_tags");
-    if (!root || !ta) return;
-    const lookup = state.view?.tag_score_lookup?.[filename];
-    if (!lookup) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
-    const tags = ta.value.split(",").map((t) => t.trim()).filter(Boolean);
-    if (!tags.length) { root.classList.remove("active"); ta.classList.remove("pills-active"); return; }
     const scores = tags.map((tag) => lookup[tag] ?? lookup[tag.toLowerCase()] ?? null);
     const valid = scores.filter((s) => s !== null);
     const lo = valid.length ? Math.min(...valid) : 0;
@@ -197,14 +180,21 @@
       root.appendChild(span);
     }
     root.classList.add("active");
-    ta.classList.add("pills-active");
+    input.classList.add("pills-active");
   };
-  const clearTagPills = () => {
-    const root = $("tm-segment-pills");
-    const ta = $("tagmatch_tags");
-    if (root) root.classList.remove("active");
-    if (ta) ta.classList.remove("pills-active");
-  };
+  const renderSegmentPills = (filename) => renderScorePills(
+    "pm-segment-pills",
+    "pos_prompt",
+    state.view?.segment_score_lookup?.[filename],
+    $("pm_segment_mode")?.checked,
+  );
+  const renderTagPills = (filename) => renderScorePills(
+    "tm-segment-pills",
+    "tagmatch_tags",
+    state.view?.tag_score_lookup?.[filename],
+  );
+  const clearSegmentPills = () => setPillsActive($("pm-segment-pills"), $("pos_prompt"), false);
+  const clearTagPills = () => setPillsActive($("tm-segment-pills"), $("tagmatch_tags"), false);
   const positionHistLine = (line, x, y, h) => {
     const img = $("histogram");
     const geom = state.view?.hist_geom;
@@ -392,57 +382,72 @@
     }, 1200);
   };
   const refreshControls = async () => {
-    state = await post("/api/controls", collect());
-    render();
+    await postAndRender("/api/controls", collect());
   };
   const selection = async (action, side, index, extra = {}) => {
-    state = await post("/api/selection", { ...collect(), action, side, index, ...extra });
-    render();
+    await postAndRender("/api/selection", { ...collect(), action, side, index, ...extra });
   };
   const uploadFile = async (file) => {
     if (!file) return;
     const fd = new FormData();
     fd.append("image", file);
     const res = await fetch("/api/query-image", { method: "POST", body: fd });
-    state = await res.json();
-    render();
+    applyState(await res.json());
+  };
+  const updateThreshold = async () => postAndRender("/api/thresholds", { ...collect(), action: "split" });
+  const clearQuery = async () => {
+    const res = await fetch("/api/query-image", { method: "DELETE" });
+    applyState(await res.json());
   };
 
-  $("method").addEventListener("change", refreshControls);
+  on("method", "change", refreshControls);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeZoom();
   });
-  $("hy-zoom-overlay").addEventListener("click", (event) => {
+  on("hy-zoom-overlay", "click", (event) => {
     if (event.target === $("hy-zoom-overlay") || event.target.classList.contains("hy-zoom-backdrop")) closeZoom();
   });
-  $("tagmatch_tags").addEventListener("input", renderTagSuggestions);
-  $("load-folder").addEventListener("click", () => runJob("/api/folder/load"));
-  $("load-folder-recursive").addEventListener("click", () => runJob("/api/folder/load-recursive"));
-  $("run-score").addEventListener("click", () => runJob("/api/score"));
-  $("find-similar").addEventListener("click", () => runJob("/api/search/similar"));
-  $("find-same").addEventListener("click", () => runJob("/api/search/same-person"));
-  $("find-object").addEventListener("click", () => runJob("/api/search/object"));
-  $("main_threshold").addEventListener("input", updateThresholdLines);
-  $("aux_threshold").addEventListener("input", updateThresholdLines);
-  $("main_threshold").addEventListener("change", async () => { state = await post("/api/thresholds", { ...collect(), action: "split" }); render(); });
-  $("aux_threshold").addEventListener("change", async () => { state = await post("/api/thresholds", { ...collect(), action: "split" }); render(); });
-  $("histogram").addEventListener("click", async (event) => {
+  on("tagmatch_tags", "input", renderTagSuggestions);
+  for (const [id, url] of [
+    ["load-folder", "/api/folder/load"],
+    ["load-folder-recursive", "/api/folder/load-recursive"],
+    ["run-score", "/api/score"],
+    ["find-similar", "/api/search/similar"],
+    ["find-same", "/api/search/same-person"],
+    ["find-object", "/api/search/object"],
+    ["generate-prompt", "/api/prompt/generate"],
+    ["export", "/api/export"],
+  ]) {
+    on(id, "click", () => runJob(url));
+  }
+  for (const id of ["main_threshold", "aux_threshold"]) {
+    on(id, "input", updateThresholdLines);
+    on(id, "change", updateThreshold);
+  }
+  on("histogram", "click", async (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = Math.round((event.clientX - rect.left) * (event.currentTarget.naturalWidth / rect.width));
     const y = Math.round((event.clientY - rect.top) * (event.currentTarget.naturalHeight / rect.height));
-    state = await post("/api/thresholds", { ...collect(), action: "hist", x, y });
-    render();
+    await postAndRender("/api/thresholds", { ...collect(), action: "hist", x, y });
   });
-  $("llm_shortlist_size").addEventListener("input", () => {
+  on("llm_shortlist_size", "input", () => {
     $("llm_shortlist_size_val").textContent = $("llm_shortlist_size").value;
   });
-  $("thumb-size").addEventListener("input", () => {
+  on("thumb-size", "input", () => {
     const v = $("thumb-size").value;
     document.documentElement.style.setProperty("--thumb-size", `${v}px`);
     $("thumb-size-val").textContent = `${v}px`;
   });
-  $("move-left").addEventListener("click", () => selection("move-left", "", -1));
-  $("move-right").addEventListener("click", () => selection("move-right", "", -1));
+  for (const [id, action] of [
+    ["move-left", "move-left"],
+    ["move-right", "move-right"],
+    ["pin", "pin"],
+    ["fit-threshold", "fit-threshold"],
+    ["clear-marked", "clear-marked"],
+    ["clear-all", "clear-all"],
+  ]) {
+    on(id, "click", () => selection(action, "", -1));
+  }
   for (const [galleryId, targetSide] of [["left-gallery", "left"], ["right-gallery", "right"]]) {
     const el = $(galleryId);
     el.addEventListener("dragover", (event) => {
@@ -462,27 +467,21 @@
       await selection("drop", targetSide, src.index, { source_side: src.side, target_side: targetSide, fnames: src.fnames || [src.filename] });
     });
   }
-  $("pin").addEventListener("click", () => selection("pin", "", -1));
-  $("fit-threshold").addEventListener("click", () => selection("fit-threshold", "", -1));
-  $("clear-marked").addEventListener("click", () => selection("clear-marked", "", -1));
-  $("clear-all").addEventListener("click", () => selection("clear-all", "", -1));
-  $("query-file").addEventListener("change", (event) => uploadFile(event.target.files[0]));
-  $("clear-query").addEventListener("click", async () => { const res = await fetch("/api/query-image", { method: "DELETE" }); state = await res.json(); render(); });
-  $("generate-prompt").addEventListener("click", () => runJob("/api/prompt/generate"));
-  $("insert-prompt").addEventListener("click", async () => { state = await post("/api/prompt/insert", collect()); render(); });
-  $("generated_prompt_detail").addEventListener("change", async () => { state = await post("/api/prompt/detail", collect()); render(); });
-  $("export").addEventListener("click", () => runJob("/api/export"));
+  on("query-file", "change", (event) => uploadFile(event.target.files[0]));
+  on("clear-query", "click", clearQuery);
+  on("insert-prompt", "click", () => postAndRender("/api/prompt/insert", collect()));
+  on("generated_prompt_detail", "change", () => postAndRender("/api/prompt/detail", collect()));
   document.addEventListener("paste", (event) => {
     const file = Array.from(event.clipboardData?.items || []).find((i) => i.type.startsWith("image/"))?.getAsFile();
     if (file) uploadFile(file);
   });
-  $("query-drop").addEventListener("dragover", (event) => event.preventDefault());
-  $("query-drop").addEventListener("drop", (event) => {
+  on("query-drop", "dragover", (event) => event.preventDefault());
+  on("query-drop", "drop", (event) => {
     event.preventDefault();
     uploadFile(event.dataTransfer.files[0]);
   });
   for (const id of ["pos_prompt", "neg_prompt"]) {
-    $(id).addEventListener("keydown", (event) => {
+    on(id, "keydown", (event) => {
       if (!(event.ctrlKey || event.metaKey) || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
       const el = event.currentTarget;
