@@ -1,5 +1,10 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.9.1 - Compact Sidebar Polish
+
+**Sidebar**
+- Reduced left sidebar vertical spacing and font size so more setup, scoring, search, and threshold controls fit without scrolling
+
 ## Version 2.9.0 - JoyCaption NF4 & Runtime Cleanup
 
 **Runtime Cleanup**

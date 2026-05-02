@@ -19,7 +19,26 @@ html, body { height: 100%; overflow: hidden; }
 .hy-shell { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 10px; height: calc(100vh - 52px); padding: 8px; }
 .hy-sidebar { display: flex; flex-direction: column; min-height: 0; }
 .hy-sidebar > .accordion { overflow-y: auto; flex: 1; min-height: 0; }
-.hy-sidebar .accordion-button { padding-top: 0.4rem; padding-bottom: 0.4rem; font-size: 1.2rem; }
+.hy-sidebar .accordion-button { padding: 0.3rem 0.75rem; font-size: 0.96rem; }
+.hy-sidebar .accordion-body { padding: 0.55rem 0.75rem; }
+.hy-sidebar .form-label { margin-bottom: 0.15rem; font-size: 0.8rem; }
+.hy-sidebar .form-label.mt-2 { margin-top: 0.4rem !important; }
+.hy-sidebar .form-label.mt-3 { margin-top: 0.6rem !important; }
+.hy-sidebar .form-hint { font-size: 0.72rem; }
+.hy-sidebar .form-hint.mt-2, .hy-sidebar .form-hint.mt-3 { margin-top: 0.25rem !important; }
+.hy-sidebar .form-control, .hy-sidebar .form-select { min-height: 1.85rem; padding-top: 0.18rem; padding-bottom: 0.18rem; font-size: 0.8rem; }
+.hy-sidebar textarea.form-control { line-height: 1.25; }
+.hy-sidebar .form-check { min-height: 1rem; margin-bottom: 0; font-size: 0.8rem; }
+.hy-sidebar .form-check.mt-2 { margin-top: 0.4rem !important; }
+.hy-sidebar .form-check.mt-3 { margin-top: 0.55rem !important; }
+.hy-sidebar .form-check-input { margin-top: 0.18rem; }
+.hy-sidebar .btn { min-height: 1.85rem; padding-top: 0.18rem; padding-bottom: 0.18rem; font-size: 0.8rem; }
+.hy-sidebar .btn.mt-2, .hy-sidebar .btn-list.mt-2 { margin-top: 0.4rem !important; }
+.hy-sidebar .btn.mt-3, .hy-sidebar .btn-list.mt-3 { margin-top: 0.55rem !important; }
+.hy-sidebar .btn-list { gap: 0.25rem; }
+.hy-sidebar .row.g-2 { --tblr-gutter-x: 0.3rem; --tblr-gutter-y: 0.3rem; }
+.hy-sidebar .row.mt-2 { margin-top: 0.4rem !important; }
+.hy-sidebar hr { margin: 0.45rem 0; }
 .hy-main { position: relative; min-width: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .hy-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 42px; }
 .hy-galleries { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0; flex: 1; }
@@ -46,13 +65,14 @@ html, body { height: 100%; overflow: hidden; }
 .hy-seg-pill { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .hy-thumb.overridden::before { content: "PIN"; position: absolute; top: 4px; left: 4px; background: rgba(245,159,0,.85); color: #000; font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; z-index: 2; }
 .hy-thresholds { flex-shrink: 0; z-index: 3; border-top: 1px solid #2a2a2a; }
-.hy-histogram-wrap { position: relative; min-height: 80px; background: #0f0f0f; border-radius: 6px; }
+.hy-thresholds .card-body { padding: 0.55rem 0.75rem; }
+.hy-histogram-wrap { position: relative; min-height: 60px; background: #0f0f0f; border-radius: 6px; }
 .hy-histogram { width: 100%; border-radius: 6px; cursor: crosshair; display: block; }
 .hy-hist-hover-line { position: absolute; display: none; width: 0; border-left: 2px solid rgba(190, 255, 115, .95); pointer-events: none; z-index: 2; filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
 .hy-hist-hover-line-neg { border-left-color: rgba(255, 135, 100, .95); }
 .hy-hist-threshold-line { position: absolute; display: none; width: 0; border-left: 2px dashed rgba(255, 255, 255, .9); pointer-events: none; z-index: 3; filter: drop-shadow(0 0 3px rgba(0, 0, 0, .8)); }
 .hy-hist-threshold-line-neg { border-left-color: rgba(255, 175, 145, .95); }
-.hy-query-drop { height: 190px; border: 1px dashed #888888; border-radius: 10px; display: grid; place-items: center; background: #141414; overflow: hidden; }
+.hy-query-drop { height: 142px; border: 1px dashed #888888; border-radius: 8px; display: grid; place-items: center; background: #141414; overflow: hidden; }
 .hy-query-drop img { max-width: 100%; max-height: 100%; object-fit: contain; display: none; }
 .hy-query-drop.has-image img { display: block; }
 .hy-query-drop.has-image .hy-query-placeholder { display: none; }
