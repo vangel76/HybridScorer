@@ -32,7 +32,21 @@ class ModelBackend:
         self._huggingface_cache_dir = (
             huggingface_cache_dir if huggingface_cache_dir is not None else cache_cfg["huggingface_dir"]
         )
+        # Populated by _load_* methods; used in encode_images_batch
+        self._preprocess_image_fn = None
+        self._encode_image_fn = None
+        # Cached feature-extraction key; set on first successful _extract_feature_tensor call
+        self._image_feature_key = None
+        self._text_feature_key = None
+        # Persistent thread-pool for host-side preprocessing; size resolved after model load
+        self._preprocess_executor = None
         self._load()
+        # Build the executor now that we know the batch worker count hint
+        # We seed with a reasonable default; the actual per-call count may vary but we
+        # cap at a safe upper bound so the pool is always large enough.
+        import os as _os
+        _max_workers = max(1, min(promptmatch_host_worker_count(64), (_os.cpu_count() or 4)))
+        self._preprocess_executor = ThreadPoolExecutor(max_workers=_max_workers)
 
     def _load(self):
         if self.backend == "openai":
@@ -57,6 +71,8 @@ class ModelBackend:
         )
         self._model.eval()
         self._clip_mod = _clip
+        self._preprocess_image_fn = self._preprocess
+        self._encode_image_fn = self._model.encode_image
         print("[OpenAI CLIP] Ready.")
 
     def _load_openclip(self):
@@ -81,6 +97,8 @@ class ModelBackend:
             raise
         self._model.eval()
         self._tokenizer = open_clip.get_tokenizer(self._openclip_model)
+        self._preprocess_image_fn = self._preprocess
+        self._encode_image_fn = self._model.encode_image
         print("[OpenCLIP] Ready.")
 
     def _load_siglip(self):
@@ -101,9 +119,29 @@ class ModelBackend:
         ).to(self.device)
         self._model.eval()
 
+        def _siglip_preprocess(img):
+            return self._processor(images=img, return_tensors="pt")["pixel_values"].squeeze(0)
+
+        def _siglip_encode_image(tensors):
+            feat = self._model.get_image_features(pixel_values=tensors)
+            return self._extract_feature_tensor(feat, kind="image")
+
+        self._preprocess_image_fn = _siglip_preprocess
+        self._encode_image_fn = _siglip_encode_image
+
     def _extract_feature_tensor(self, output, kind="feature"):
         if torch.is_tensor(output):
             return output
+
+        # Use cached key for this kind if already resolved
+        cached_key = self._image_feature_key if kind == "image" else self._text_feature_key
+        if cached_key is not None:
+            getter = output.get if isinstance(output, dict) else lambda k: getattr(output, k, None)
+            value = getter(cached_key)
+            if torch.is_tensor(value):
+                if cached_key == "last_hidden_state" and value.ndim >= 3:
+                    return value[:, 0, :]
+                return value
 
         _keys = (f"{kind}_embeds", "text_embeds", "image_embeds", "pooler_output", "last_hidden_state")
 
@@ -112,8 +150,15 @@ class ModelBackend:
             value = getter(key)
             if torch.is_tensor(value):
                 if key == "last_hidden_state" and value.ndim >= 3:
-                    return value[:, 0, :]
-                return value
+                    result = value[:, 0, :]
+                else:
+                    result = value
+                # Cache the resolved key for future calls
+                if kind == "image":
+                    self._image_feature_key = key
+                else:
+                    self._text_feature_key = key
+                return result
 
         if isinstance(output, (list, tuple)):
             for value in output:
@@ -193,16 +238,11 @@ class ModelBackend:
         with torch.no_grad():
             preprocess_started = time.perf_counter()
             preprocess_workers = promptmatch_host_worker_count(len(pil_images))
-            if self.backend in ("openai", "openclip"):
-                _fn = self._preprocess
-            else:
-                def _fn(img):
-                    return self._processor(images=img, return_tensors="pt")["pixel_values"].squeeze(0)
+            _fn = self._preprocess_image_fn
             if preprocess_workers <= 1:
                 processed = [_fn(img) for img in pil_images]
             else:
-                with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
-                    processed = list(executor.map(_fn, pil_images))
+                processed = list(self._preprocess_executor.map(_fn, pil_images))
             timings["preprocess"] = promptmatch_timing_ms(preprocess_started)
 
             transfer_started = time.perf_counter()
@@ -210,11 +250,7 @@ class ModelBackend:
             timings["host_to_device"] = promptmatch_timing_ms(transfer_started)
 
             gpu_started = time.perf_counter()
-            if self.backend in ("openai", "openclip"):
-                feat = self._model.encode_image(tensors)
-            else:
-                feat = self._model.get_image_features(pixel_values=tensors)
-                feat = self._extract_feature_tensor(feat, kind="image")
+            feat = self._encode_image_fn(tensors)
             if self.device == "cuda":
                 torch.cuda.synchronize()
             timings["gpu_encode"] = promptmatch_timing_ms(gpu_started)

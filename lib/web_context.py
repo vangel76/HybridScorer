@@ -1,4 +1,5 @@
 import base64
+import collections
 import io
 import json
 import mimetypes
@@ -121,6 +122,8 @@ class MediaRegistry:
     def __init__(self):
         self._paths = {}
         self._bytes = {}
+        self._bytes_order = collections.deque()
+        self._bytes_max = 30
         self._lock = threading.Lock()
 
     def register_path(self, path):
@@ -146,6 +149,10 @@ class MediaRegistry:
         media_id = sha256(b"hist:" + data + str(time.time_ns()).encode("ascii")).hexdigest()[:24]
         with self._lock:
             self._bytes[media_id] = data
+            self._bytes_order.append(media_id)
+            while len(self._bytes_order) > self._bytes_max:
+                old_id = self._bytes_order.popleft()
+                self._bytes.pop(old_id, None)
         return f"/media/{media_id}"
 
     def response(self, media_id):
@@ -158,6 +165,19 @@ class MediaRegistry:
             media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
             return FileResponse(path, media_type=media_type)
         return None
+
+
+_OUTPUT_KEY_TO_INPUT = {
+    "main_slider": "main_threshold",
+    "aux_slider": "aux_threshold",
+    "percentile_slider": "percentile",
+    "generated_prompt_tb": "generated_prompt",
+    "generated_prompt_detail_slider": "generated_prompt_detail",
+    "pos_prompt_tb": "pos_prompt",
+    "ir_prompt_tb": "ir_prompt",
+    "llm_prompt_tb": "llm_prompt",
+    "tagmatch_tags_tb": "tagmatch_tags",
+}
 
 
 class HybridScorerContext:
@@ -296,24 +316,9 @@ class HybridScorerContext:
         for key, value in zip(keys, result):
             if value is gr.SKIP:
                 continue
-            if key == "main_slider":
-                self.inputs["main_threshold"] = _merge_update(self.inputs["main_threshold"], value)
-            elif key == "aux_slider":
-                self.inputs["aux_threshold"] = _merge_update(self.inputs["aux_threshold"], value)
-            elif key == "percentile_slider":
-                self.inputs["percentile"] = _merge_update(self.inputs["percentile"], value)
-            elif key == "generated_prompt_tb":
-                self.inputs["generated_prompt"] = _merge_update(self.inputs["generated_prompt"], value)
-            elif key == "generated_prompt_detail_slider":
-                self.inputs["generated_prompt_detail"] = _merge_update(self.inputs["generated_prompt_detail"], value)
-            elif key == "pos_prompt_tb":
-                self.inputs["pos_prompt"] = _merge_update(self.inputs["pos_prompt"], value)
-            elif key == "ir_prompt_tb":
-                self.inputs["ir_prompt"] = _merge_update(self.inputs["ir_prompt"], value)
-            elif key == "llm_prompt_tb":
-                self.inputs["llm_prompt"] = _merge_update(self.inputs["llm_prompt"], value)
-            elif key == "tagmatch_tags_tb":
-                self.inputs["tagmatch_tags"] = _merge_update(self.inputs["tagmatch_tags"], value)
+            input_key = _OUTPUT_KEY_TO_INPUT.get(key)
+            if input_key is not None:
+                self.inputs[input_key] = _merge_update(self.inputs[input_key], value)
             elif key == "promptgen_status_md" and _is_update(value) and "value" in value:
                 self.state["generated_prompt_status"] = value["value"]
 
@@ -546,6 +551,7 @@ class HybridScorerContext:
         query_update = _plain_update(view[8])
         query_path = query_update.get("value")
         controls = self.control_state()
+        media_lookup = mark.get("media_lookup", {})
         return {
             "app": {
                 "name": self.app_name,
@@ -560,11 +566,11 @@ class HybridScorerContext:
                 "selection_info": view[6],
                 "left": {
                     "title": view[0],
-                    "items": self._gallery_items(left_gallery, "left"),
+                    "items": self._gallery_items(left_gallery, "left", media_lookup),
                 },
                 "right": {
                     "title": view[2],
-                    "items": self._gallery_items(right_gallery, "right"),
+                    "items": self._gallery_items(right_gallery, "right", media_lookup),
                 },
                 "histogram_url": hist_url,
                 "hist_geom": self.state.get("hist_geom"),
@@ -579,10 +585,8 @@ class HybridScorerContext:
             "controls": controls,
         }
 
-    def _gallery_items(self, items, side):
-        try:
-            media_lookup = json.loads(_vw.marked_state_json(self.state)).get("media_lookup", {})
-        except Exception:
+    def _gallery_items(self, items, side, media_lookup=None):
+        if media_lookup is None:
             media_lookup = {}
         out = []
         for index, item in enumerate(items or []):

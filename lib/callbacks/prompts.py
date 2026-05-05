@@ -32,6 +32,8 @@ from ..state_helpers import (
 )
 from .. import loaders as _lo
 
+_DETAIL_LEVELS = (1, 2, 3)
+
 
 def run_florence_prompt_variant(state, device, image, task_prompt):
     model, processor = _lo.ensure_florence_model(state, device)
@@ -128,6 +130,20 @@ def prepare_huihui_gemma4_inputs(processor, image, system_prompt, user_prompt):
     raise RuntimeError("Huihui Gemma 4 input preparation failed: " + " / ".join(attempts))
 
 
+def _resolve_generate_params(system_prompt, default_system, normalizer, default_normalizer,
+                              max_new_tokens_override, detail_level, temperature_override,
+                              top_p_override, top_k_override):
+    system_prompt = system_prompt or default_system
+    if normalizer is None:
+        normalizer = default_normalizer
+    max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else joycaption_max_new_tokens(detail_level)
+    temperature = temperature_override if temperature_override is not None else 0.0
+    top_p = top_p_override if top_p_override is not None else 1.0
+    top_k = top_k_override if top_k_override is not None else 0
+    do_sample = bool(temperature and temperature > 0.0)
+    return system_prompt, normalizer, max_new_tokens, temperature, top_p, top_k, do_sample
+
+
 def run_huihui_gemma4_prompt_variant(
     state,
     device,
@@ -142,21 +158,17 @@ def run_huihui_gemma4_prompt_variant(
     top_p_override=None,
     top_k_override=None,
 ):
-    system_prompt = system_prompt or (
-        "You are a helpful multimodal prompt writer. "
-        "Describe only concrete visible content. "
-        "Follow the requested output format exactly and avoid refusals or moralizing."
+    system_prompt, normalizer, max_new_tokens, temperature, top_p, top_k, do_sample = _resolve_generate_params(
+        system_prompt,
+        (
+            "You are a helpful multimodal prompt writer. "
+            "Describe only concrete visible content. "
+            "Follow the requested output format exactly and avoid refusals or moralizing."
+        ),
+        normalizer,
+        lambda text: normalize_generated_prompt(extract_huihui_gemma4_caption(text), keep_prose=(detail_level == 3)),
+        max_new_tokens_override, detail_level, temperature_override, top_p_override, top_k_override,
     )
-    if normalizer is None:
-        normalizer = lambda text: normalize_generated_prompt(
-            extract_huihui_gemma4_caption(text),
-            keep_prose=(detail_level == 3),
-        )
-    max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else joycaption_max_new_tokens(detail_level)
-    temperature = temperature_override if temperature_override is not None else 0.0
-    top_p = top_p_override if top_p_override is not None else 1.0
-    top_k = top_k_override if top_k_override is not None else 0
-    do_sample = bool(temperature and temperature > 0.0)
 
     model, processor = _lo.ensure_huihui_gemma4_model(state, device)
     inputs = prepare_huihui_gemma4_inputs(processor, image, system_prompt, user_prompt)
@@ -183,22 +195,18 @@ def run_huihui_gemma4_prompt_variant(
 
 
 def run_joycaption_prompt_variant(state, device, generator_name, image, user_prompt, detail_level, system_prompt=None, normalizer=None, max_new_tokens_override=None, stop_sequences=None, temperature_override=None, top_p_override=None, top_k_override=None):
-    system_prompt = system_prompt or (
-        "You are a helpful image captioner. "
-        "Describe only concrete visible content and write output that is useful as a text-to-image prompt. "
-        "Follow the requested output style exactly, whether it asks for short tags, a compact prompt line, or natural prose. "
-        "Do not begin with meta phrases like 'This image shows', 'In this image we can see', or 'You are looking at'."
+    system_prompt, normalizer, max_new_tokens, temperature, top_p, top_k, do_sample = _resolve_generate_params(
+        system_prompt,
+        (
+            "You are a helpful image captioner. "
+            "Describe only concrete visible content and write output that is useful as a text-to-image prompt. "
+            "Follow the requested output style exactly, whether it asks for short tags, a compact prompt line, or natural prose. "
+            "Do not begin with meta phrases like 'This image shows', 'In this image we can see', or 'You are looking at'."
+        ),
+        normalizer,
+        lambda text: normalize_generated_prompt(extract_joycaption_caption(text), keep_prose=(detail_level == 3)),
+        max_new_tokens_override, detail_level, temperature_override, top_p_override, top_k_override,
     )
-    if normalizer is None:
-        normalizer = lambda text: normalize_generated_prompt(
-            extract_joycaption_caption(text),
-            keep_prose=(detail_level == 3),
-        )
-    max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else joycaption_max_new_tokens(detail_level)
-    temperature = temperature_override if temperature_override is not None else 0.0
-    top_p = top_p_override if top_p_override is not None else 1.0
-    top_k = top_k_override if top_k_override is not None else 0
-    do_sample = bool(temperature and temperature > 0.0)
 
     if generator_name in (PROMPT_GENERATOR_JOYCAPTION, PROMPT_GENERATOR_JOYCAPTION_NF4):
         if generator_name == PROMPT_GENERATOR_JOYCAPTION_NF4:
@@ -420,7 +428,7 @@ def generate_prompt_from_preview(state, device, generator_name, current_generate
         )
 
     variants = generated_prompt_variants_for(state, query_key, generator_name, create=True)
-    if all(level in variants and variants[level] for level in (1, 2, 3)):
+    if all(level in variants and variants[level] for level in _DETAIL_LEVELS):
         cached_prompt = variants.get(detail_level)
         state["generated_prompt"] = cached_prompt
         state["generated_prompt_source"] = preview_fname
@@ -445,7 +453,7 @@ def generate_prompt_from_preview(state, device, generator_name, current_generate
         with Image.open(image_path) as src_img:
             image = src_img.convert("RGB")
 
-        for idx, level in enumerate((1, 2, 3), start=1):
+        for idx, level in enumerate(_DETAIL_LEVELS, start=1):
             _, loop_label, _ = prompt_generator_detail_config(generator_name, level)
             progress(
                 0.2 + (0.7 * ((idx - 1) / 3.0)),
@@ -475,7 +483,7 @@ def generate_prompt_from_preview(state, device, generator_name, current_generate
     state["generated_prompt"] = prompt_text
     state["generated_prompt_source"] = preview_fname
     state["generated_prompt_backend"] = generator_name
-    ready_count = sum(1 for level in (1, 2, 3) if variants.get(level))
+    ready_count = sum(1 for level in _DETAIL_LEVELS if variants.get(level))
     state["generated_prompt_status"] = (
         f"Generated {ready_count} prompt detail levels for {preview_fname} via {generator_name}. "
         f"Showing {detail_label.lower()} detail."

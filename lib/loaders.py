@@ -13,6 +13,7 @@ from PIL import Image
 from .backend import ModelBackend
 from .config import (
     METHOD_IMAGEREWARD,
+    METHOD_LLMSEARCH,
     METHOD_SAMEPERSON,
     METHOD_TAGMATCH,
     METHOD_OBJECTSEARCH,
@@ -80,6 +81,16 @@ def _cached_hf_backend(state, key):
     return None
 
 
+def _ensure_hf_vlm(state, cache_key, load_fn):
+    cached = _cached_hf_backend(state, cache_key)
+    if cached is not None:
+        return cached
+    hf_dir = get_cache_config()["huggingface_dir"]
+    result = load_fn(hf_dir)
+    state["prompt_backend_cache"][cache_key] = result
+    return result["model"], result["processor"]
+
+
 def _disable_unused_siglip_pooling_head(model):
     vision_tower = getattr(getattr(model, "model", None), "vision_tower", None)
     if vision_tower is not None and hasattr(vision_tower, "use_head"):
@@ -136,7 +147,7 @@ def release_inactive_gpu_models(state, target_method):
         state["os_cached_patch_gpu_tensor"] = None
         released.append("DINOv2")
 
-    if state.get("prompt_backend_cache"):
+    if target_method != METHOD_LLMSEARCH and state.get("prompt_backend_cache"):
         for backend_name, cached in list(state["prompt_backend_cache"].items()):
             if isinstance(cached, dict):
                 _clear_torch_model(cached.get("model"))
@@ -152,204 +163,181 @@ def release_inactive_gpu_models(state, target_method):
 
 
 def ensure_florence_model(state, device):
-    hit = _cached_hf_backend(state, PROMPT_GENERATOR_FLORENCE)
-    if hit:
-        return hit
+    def _load(hf_dir):
+        try:
+            from transformers import AutoProcessor, Florence2ForConditionalGeneration
+        except ImportError as exc:
+            raise RuntimeError(
+                "Florence prompt generation needs a newer transformers build.\n"
+                "Run setup again after updating requirements."
+            ) from exc
 
-    try:
-        from transformers import AutoProcessor, Florence2ForConditionalGeneration
-    except ImportError as exc:
-        raise RuntimeError(
-            "Florence prompt generation needs a newer transformers build.\n"
-            "Run setup again after updating requirements."
-        ) from exc
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        local_files_only = describe_florence_source() == "disk cache"
+        print(f"[Florence] Loading {FLORENCE_MODEL_ID} …")
+        processor = AutoProcessor.from_pretrained(
+            FLORENCE_MODEL_ID,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=hf_dir,
+        )
+        model = Florence2ForConditionalGeneration.from_pretrained(
+            FLORENCE_MODEL_ID,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            cache_dir=hf_dir,
+        ).to(device).eval()
+        print("[Florence] Ready.")
+        return {"model": model, "processor": processor}
 
-    dtype = torch.float16 if device == "cuda" else torch.float32
-    local_files_only = describe_florence_source() == "disk cache"
-    print(f"[Florence] Loading {FLORENCE_MODEL_ID} …")
-    processor = AutoProcessor.from_pretrained(
-        FLORENCE_MODEL_ID,
-        local_files_only=local_files_only,
-        trust_remote_code=True,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    )
-    model = Florence2ForConditionalGeneration.from_pretrained(
-        FLORENCE_MODEL_ID,
-        dtype=dtype,
-        local_files_only=local_files_only,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    ).to(device)
-    model.eval()
-    state["prompt_backend_cache"][PROMPT_GENERATOR_FLORENCE] = {
-        "model": model,
-        "processor": processor,
-    }
-    print("[Florence] Ready.")
-    return model, processor
+    return _ensure_hf_vlm(state, PROMPT_GENERATOR_FLORENCE, _load)
 
 
 def ensure_joycaption_model(state, device):
-    hit = _cached_hf_backend(state, PROMPT_GENERATOR_JOYCAPTION)
-    if hit:
-        return hit
+    def _load(hf_dir):
+        try:
+            from transformers import AutoProcessor, LlavaForConditionalGeneration
+        except ImportError as exc:
+            raise RuntimeError(
+                "JoyCaption prompt generation needs a newer transformers build.\n"
+                "Run setup again after updating requirements."
+            ) from exc
 
-    try:
-        from transformers import AutoProcessor, LlavaForConditionalGeneration
-    except ImportError as exc:
-        raise RuntimeError(
-            "JoyCaption prompt generation needs a newer transformers build.\n"
-            "Run setup again after updating requirements."
-        ) from exc
+        dtype = torch.bfloat16 if cuda_prefers_bfloat16() else torch.float16
+        local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION) == "disk cache"
+        print(f"[JoyCaption] Loading {JOYCAPTION_MODEL_ID} …")
+        processor = AutoProcessor.from_pretrained(
+            JOYCAPTION_MODEL_ID,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=hf_dir,
+        )
+        model = LlavaForConditionalGeneration.from_pretrained(
+            JOYCAPTION_MODEL_ID,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=hf_dir,
+        ).to(device)
+        _disable_unused_siglip_pooling_head(model)
+        model.eval()
+        print("[JoyCaption] Ready.")
+        return {"model": model, "processor": processor}
 
-    dtype = torch.bfloat16 if cuda_prefers_bfloat16() else torch.float16
-    local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION) == "disk cache"
-    print(f"[JoyCaption] Loading {JOYCAPTION_MODEL_ID} …")
-    processor = AutoProcessor.from_pretrained(
-        JOYCAPTION_MODEL_ID,
-        local_files_only=local_files_only,
-        trust_remote_code=True,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    )
-    model = LlavaForConditionalGeneration.from_pretrained(
-        JOYCAPTION_MODEL_ID,
-        dtype=dtype,
-        local_files_only=local_files_only,
-        trust_remote_code=True,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    ).to(device)
-    _disable_unused_siglip_pooling_head(model)
-    model.eval()
-    state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION] = {
-        "model": model,
-        "processor": processor,
-    }
-    print("[JoyCaption] Ready.")
-    return model, processor
+    return _ensure_hf_vlm(state, PROMPT_GENERATOR_JOYCAPTION, _load)
 
 
 def ensure_joycaption_nf4_model(state, device):
-    hit = _cached_hf_backend(state, PROMPT_GENERATOR_JOYCAPTION_NF4)
-    if hit:
-        return hit
+    def _load(hf_dir):
+        try:
+            from transformers import AutoProcessor, LlavaForConditionalGeneration
+        except ImportError as exc:
+            raise RuntimeError(
+                "JoyCaption NF4 prompt generation needs a newer transformers build.\n"
+                "Run setup again after updating requirements."
+            ) from exc
 
-    try:
-        from transformers import AutoProcessor, LlavaForConditionalGeneration
-    except ImportError as exc:
-        raise RuntimeError(
-            "JoyCaption NF4 prompt generation needs a newer transformers build.\n"
-            "Run setup again after updating requirements."
-        ) from exc
+        try:
+            import bitsandbytes  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "JoyCaption NF4 requires bitsandbytes.\n"
+                "Install it: pip install bitsandbytes"
+            ) from exc
 
-    try:
-        import bitsandbytes  # noqa: F401
-    except ImportError as exc:
-        raise RuntimeError(
-            "JoyCaption NF4 requires bitsandbytes.\n"
-            "Install it: pip install bitsandbytes"
-        ) from exc
+        local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4) == "disk cache"
+        print(f"[JoyCaption NF4] Loading {JOYCAPTION_NF4_MODEL_ID} from {describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4)} …", flush=True)
+        print("[JoyCaption NF4] Loading processor/tokenizer …", flush=True)
+        processor = AutoProcessor.from_pretrained(
+            JOYCAPTION_NF4_MODEL_ID,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=hf_dir,
+        )
+        print("[JoyCaption NF4] Loading quantized model weights …", flush=True)
+        model = LlavaForConditionalGeneration.from_pretrained(
+            JOYCAPTION_NF4_MODEL_ID,
+            device_map={"": device},
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=hf_dir,
+        )
+        _disable_unused_siglip_pooling_head(model)
+        model.eval()
+        print("[JoyCaption NF4] Ready.", flush=True)
+        return {"model": model, "processor": processor}
 
-    local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4) == "disk cache"
-    print(f"[JoyCaption NF4] Loading {JOYCAPTION_NF4_MODEL_ID} from {describe_prompt_generator_source(PROMPT_GENERATOR_JOYCAPTION_NF4)} …", flush=True)
-    print("[JoyCaption NF4] Loading processor/tokenizer …", flush=True)
-    processor = AutoProcessor.from_pretrained(
-        JOYCAPTION_NF4_MODEL_ID,
-        local_files_only=local_files_only,
-        trust_remote_code=True,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    )
-    print("[JoyCaption NF4] Loading quantized model weights …", flush=True)
-    model = LlavaForConditionalGeneration.from_pretrained(
-        JOYCAPTION_NF4_MODEL_ID,
-        device_map={"": device},
-        local_files_only=local_files_only,
-        trust_remote_code=True,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    )
-    _disable_unused_siglip_pooling_head(model)
-    model.eval()
-    state["prompt_backend_cache"][PROMPT_GENERATOR_JOYCAPTION_NF4] = {
-        "model": model,
-        "processor": processor,
-    }
-    print("[JoyCaption NF4] Ready.", flush=True)
-    return model, processor
+    return _ensure_hf_vlm(state, PROMPT_GENERATOR_JOYCAPTION_NF4, _load)
 
 
 def ensure_huihui_gemma4_model(state, device):
-    hit = _cached_hf_backend(state, PROMPT_GENERATOR_HUIHUI_GEMMA4)
-    if hit:
-        return hit
+    def _load(hf_dir):
+        try:
+            import transformers
+            from transformers import AutoModelForImageTextToText, AutoProcessor
+        except ImportError as exc:
+            raise RuntimeError(
+                "Huihui Gemma 4 prompt generation needs a newer transformers build with Gemma 4 multimodal support.\n"
+                "Run setup again after updating requirements."
+            ) from exc
 
-    try:
-        import transformers
-        from transformers import AutoModelForImageTextToText, AutoProcessor
-    except ImportError as exc:
-        raise RuntimeError(
-            "Huihui Gemma 4 prompt generation needs a newer transformers build with Gemma 4 multimodal support.\n"
-            "Run setup again after updating requirements."
-        ) from exc
+        if not all(
+            hasattr(transformers, name)
+            for name in ("Gemma4Processor", "Gemma4ImageProcessor", "Gemma4ForConditionalGeneration")
+        ):
+            raise RuntimeError(
+                "The installed transformers build does not include Gemma 4 runtime classes yet.\n"
+                f"Detected transformers=={getattr(transformers, '__version__', 'unknown')}.\n"
+                "This environment has Gemma 3 classes but not Gemma 4, so Huihui Gemma 4 cannot run here.\n"
+                "Update transformers to a Gemma-4-capable release by rerunning setup after refreshing requirements."
+            )
 
-    if not all(
-        hasattr(transformers, name)
-        for name in ("Gemma4Processor", "Gemma4ImageProcessor", "Gemma4ForConditionalGeneration")
-    ):
-        raise RuntimeError(
-            "The installed transformers build does not include Gemma 4 runtime classes yet.\n"
-            f"Detected transformers=={getattr(transformers, '__version__', 'unknown')}.\n"
-            "This environment has Gemma 3 classes but not Gemma 4, so Huihui Gemma 4 cannot run here.\n"
-            "Update transformers to a Gemma-4-capable release by rerunning setup after refreshing requirements."
-        )
-
-    dtype = torch.bfloat16 if cuda_prefers_bfloat16() else torch.float16
-    local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_HUIHUI_GEMMA4) == "disk cache"
-    print(f"[Huihui Gemma 4] Loading {HUIHUI_GEMMA4_MODEL_ID} …")
-    processor_repo_id = HUIHUI_GEMMA4_MODEL_ID
-    processor_load_errors = []
-    try:
-        processor = AutoProcessor.from_pretrained(
-            HUIHUI_GEMMA4_MODEL_ID,
-            padding_side="left",
-            local_files_only=local_files_only,
-            trust_remote_code=True,
-            cache_dir=get_cache_config()["huggingface_dir"],
-        )
-    except Exception as primary_exc:
-        processor_load_errors.append(f"{HUIHUI_GEMMA4_MODEL_ID}: {primary_exc}")
-        processor_repo_id = HUIHUI_GEMMA4_PROCESSOR_MODEL_ID
+        dtype = torch.bfloat16 if cuda_prefers_bfloat16() else torch.float16
+        local_files_only = describe_prompt_generator_source(PROMPT_GENERATOR_HUIHUI_GEMMA4) == "disk cache"
+        print(f"[Huihui Gemma 4] Loading {HUIHUI_GEMMA4_MODEL_ID} …")
+        processor_repo_id = HUIHUI_GEMMA4_MODEL_ID
+        processor_load_errors = []
         try:
             processor = AutoProcessor.from_pretrained(
-                HUIHUI_GEMMA4_PROCESSOR_MODEL_ID,
+                HUIHUI_GEMMA4_MODEL_ID,
                 padding_side="left",
                 local_files_only=local_files_only,
                 trust_remote_code=True,
-                cache_dir=get_cache_config()["huggingface_dir"],
+                cache_dir=hf_dir,
             )
-            print(
-                "[Huihui Gemma 4] Repo processor metadata was incompatible; "
-                f"reusing processor assets from {HUIHUI_GEMMA4_PROCESSOR_MODEL_ID}."
-            )
-        except Exception as fallback_exc:
-            processor_load_errors.append(f"{HUIHUI_GEMMA4_PROCESSOR_MODEL_ID}: {fallback_exc}")
-            raise RuntimeError(
-                "Huihui Gemma 4 processor loading failed.\n"
-                "Tried the finetuned repo processor assets and the base Gemma 4 processor assets.\n"
-                + "\n".join(processor_load_errors)
-            ) from fallback_exc
-    model = AutoModelForImageTextToText.from_pretrained(
-        HUIHUI_GEMMA4_MODEL_ID,
-        dtype=dtype,
-        local_files_only=local_files_only,
-        trust_remote_code=True,
-        cache_dir=get_cache_config()["huggingface_dir"],
-    ).to(device)
-    model.eval()
-    state["prompt_backend_cache"][PROMPT_GENERATOR_HUIHUI_GEMMA4] = {
-        "model": model,
-        "processor": processor,
-        "processor_repo_id": processor_repo_id,
-    }
-    print("[Huihui Gemma 4] Ready.")
-    return model, processor
+        except Exception as primary_exc:
+            processor_load_errors.append(f"{HUIHUI_GEMMA4_MODEL_ID}: {primary_exc}")
+            processor_repo_id = HUIHUI_GEMMA4_PROCESSOR_MODEL_ID
+            try:
+                processor = AutoProcessor.from_pretrained(
+                    HUIHUI_GEMMA4_PROCESSOR_MODEL_ID,
+                    padding_side="left",
+                    local_files_only=local_files_only,
+                    trust_remote_code=True,
+                    cache_dir=hf_dir,
+                )
+                print(
+                    "[Huihui Gemma 4] Repo processor metadata was incompatible; "
+                    f"reusing processor assets from {HUIHUI_GEMMA4_PROCESSOR_MODEL_ID}."
+                )
+            except Exception as fallback_exc:
+                processor_load_errors.append(f"{HUIHUI_GEMMA4_PROCESSOR_MODEL_ID}: {fallback_exc}")
+                raise RuntimeError(
+                    "Huihui Gemma 4 processor loading failed.\n"
+                    "Tried the finetuned repo processor assets and the base Gemma 4 processor assets.\n"
+                    + "\n".join(processor_load_errors)
+                ) from fallback_exc
+        model = AutoModelForImageTextToText.from_pretrained(
+            HUIHUI_GEMMA4_MODEL_ID,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            trust_remote_code=True,
+            cache_dir=hf_dir,
+        ).to(device).eval()
+        print("[Huihui Gemma 4] Ready.")
+        return {"model": model, "processor": processor, "processor_repo_id": processor_repo_id}
+
+    return _ensure_hf_vlm(state, PROMPT_GENERATOR_HUIHUI_GEMMA4, _load)
 
 
 def tagmatch_prepare_image(image):
@@ -421,6 +409,15 @@ def load_tagmatch_vocabulary(state):
     cached = state.get("tagmatch_vocab_tags")
     if cached:
         return cached
+
+    # Reuse tags already loaded by ensure_tagmatch_model if available.
+    tagmatch_backend = state.get("tagmatch_backend")
+    if tagmatch_backend is not None and tagmatch_backend.get("tags"):
+        tags = tagmatch_backend["tags"]
+        state["tagmatch_vocab_tags"] = tags
+        state["tagmatch_vocab_json"] = json.dumps(tags)
+        print(f"[TagMatch] Autocomplete vocabulary ready (reused from loaded model) — {len(tags)} tags loaded.")
+        return tags
 
     try:
         from huggingface_hub import hf_hub_download

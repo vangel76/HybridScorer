@@ -1,5 +1,28 @@
 # HybridScorer User-Friendly Updates
 
+## Version 2.10.0 - Performance & Code Quality
+
+**Speed**
+- ObjectSearch patch-matching inner loop replaced with numpy `maximum.at` — eliminates ~256K Python iterations per query image
+- PromptMatch batch loop (`score_all` / `encode_all_promptmatch_images`) extracted into shared infrastructure; `torch.cuda.empty_cache()` now called every 4 batches instead of every batch, removing a CUDA sync stall per batch
+- ThreadPoolExecutor for image preprocessing is now persistent per `ModelBackend` instance instead of being created and destroyed on every batch
+- VLM backend dispatch (preprocessing and encoding) resolved once at model load time instead of per-batch string comparison
+- LLM Search no longer evicts the loaded VLM from the CUDA cache when rescoring — saves a full model reload on repeated LLM Search runs
+- TagMatch vocabulary is reused from the already-loaded model backend instead of re-downloading and re-parsing the tags CSV independently
+- `to_payload` now parses `view[7]` (marked-state JSON) once and passes `media_lookup` through directly, eliminating a redundant re-encode/re-decode on every UI update
+
+**Simplification**
+- `score_all` and `encode_all_promptmatch_images` deduplicated into a shared `_run_promptmatch_batches` helper (~120 lines removed)
+- Four HF VLM loaders (Florence-2, JoyCaption, JoyCaption NF4, Huihui Gemma 4) collapsed into a single `_ensure_hf_vlm` helper
+- `find_similar_images`, `find_same_person_images`, `find_objectsearch_images` consolidated into a shared `_run_preview_search` skeleton
+- ImageReward base and penalty scoring passes deduplicated into `_run_imagereward_pass`
+- `configure_controls` defaults list eliminates repeated `gr.update(visible=False)` construction per render
+- `Update` class in ui_compat stores kwargs only once (via `__getattr__`) instead of duplicating into both dict and `__dict__`
+- `_apply_output_keys` in web_context replaced 12-branch `elif` chain with a dict dispatch
+- `MediaRegistry` histogram bytes now LRU-capped at 30 entries — prevents unbounded memory growth
+- Histogram single-score drawing path deduplicated by calling shared `draw_chart` directly
+- Various smaller deduplication: `promptmatch_slider_range` single-pass, `estimate_similarity_topn` filter+sort deduplicated, `mode_thresholds` dict comprehension, dead guard removed from `remember_mode_thresholds`, alias callbacks collapsed
+
 ## Version 2.9.1 - Compact Sidebar Polish
 
 **Sidebar**

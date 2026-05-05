@@ -29,12 +29,8 @@ def update_histogram_only(state, main_threshold, aux_threshold):
     return _vw.render_histogram(state, state["method"], state["scores"], main_threshold, aux_threshold)
 
 
-def update_prompt_generator(state, generator_name, detail_level, current_generated_prompt):
-    return select_cached_generated_prompt(state, generator_name, detail_level, current_generated_prompt)
-
-
-def update_generated_prompt_detail(state, generator_name, detail_level, current_generated_prompt):
-    return select_cached_generated_prompt(state, generator_name, detail_level, current_generated_prompt)
+update_prompt_generator = select_cached_generated_prompt
+update_generated_prompt_detail = select_cached_generated_prompt
 
 
 def update_proxy_display(state, use_proxy_display, main_threshold, aux_threshold):

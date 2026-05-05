@@ -102,14 +102,9 @@ def get_state_defaults(source_dir=None, prompt_backend=None):
         "os_cached_model_id": None,
         "objectsearch_query_fname": None,
         "objectsearch_query_source": None,
-        "mode_thresholds": {
-            METHOD_PROMPTMATCH: {"main": None, "aux": None},
-            METHOD_IMAGEREWARD: {"main": None, "aux": None},
-            METHOD_LLMSEARCH: {"main": None, "aux": None},
-            METHOD_SIMILARITY: {"main": None, "aux": None},
-            METHOD_SAMEPERSON: {"main": None, "aux": None},
-            METHOD_TAGMATCH: {"main": None, "aux": None},
-            METHOD_OBJECTSEARCH: {"main": None, "aux": None},
-        },
+        "mode_thresholds": {m: {"main": None, "aux": None} for m in (
+            METHOD_PROMPTMATCH, METHOD_IMAGEREWARD, METHOD_SIMILARITY,
+            METHOD_SAMEPERSON, METHOD_LLMSEARCH, METHOD_TAGMATCH, METHOD_OBJECTSEARCH,
+        )},
         "zoom_columns": 5,
     }

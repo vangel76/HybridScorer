@@ -206,6 +206,47 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
                 tx = x
             draw.text((int(tx), y), text, fill="#667755")
 
+    def _bins(vals, n=32):
+        if not vals:
+            return [], 0.0, 1.0
+        lo, hi = min(vals), max(vals)
+        if lo == hi:
+            lo -= 0.005
+            hi += 0.005
+        width = (hi - lo) / n
+        counts = [0] * n
+        for val in vals:
+            counts[min(int((val - lo) / width), n - 1)] += 1
+        return counts, lo, hi
+
+    def draw_chart(draw, W, CH, PAD_L, PAD_R, y0, counts, lo, hi, threshold, bar_rgb, line_rgb, label, left_tint=None, right_tint=None, flip=False):
+        cW = W - PAD_L - PAD_R
+        max_c = max(counts) if counts else 1
+        bw = cW / len(counts)
+        draw.rectangle([PAD_L, y0, W - PAD_R, y0 + CH], fill="#0f0f16")
+        if flip:
+            tx = W - PAD_R - int(((threshold - lo) / (hi - lo)) * cW)
+        else:
+            tx = PAD_L + int(((threshold - lo) / (hi - lo)) * cW)
+        tx = max(PAD_L, min(W - PAD_R, tx))
+        if left_tint and tx > PAD_L:
+            draw.rectangle([PAD_L, y0, tx, y0 + CH], fill=left_tint)
+        if right_tint and tx < (W - PAD_R):
+            draw.rectangle([tx, y0, W - PAD_R, y0 + CH], fill=right_tint)
+        draw_counts = list(reversed(counts)) if flip else counts
+        for i, count in enumerate(draw_counts):
+            if count == 0:
+                continue
+            bh = max(1, int((count / max_c) * (CH - 2)))
+            x0 = PAD_L + int(i * bw) + 1
+            x1 = PAD_L + int((i + 1) * bw) - 1
+            draw.rectangle([x0, y0 + CH - bh, x1, y0 + CH], fill=bar_rgb)
+        for yy in range(y0, y0 + CH, 6):
+            draw.line([(tx, yy), (tx, min(yy + 3, y0 + CH))], fill=line_rgb, width=2)
+        axis_lo, axis_hi = (hi, lo) if flip else (lo, hi)
+        draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, y0 + CH + 4, axis_lo, axis_hi)
+        draw.text((PAD_L, y0 - 14), f"{label} threshold: {threshold:.3f}", fill="#99bb88")
+
     if uses_pos_similarity_scores(method):
         if not all("pos" in item for item in scores.values()):
             state["hist_geom"] = None
@@ -216,19 +257,6 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         if not pos_vals:
             state["hist_geom"] = None
             return None
-
-        def _bins(vals, n=32):
-            if not vals:
-                return [], 0.0, 1.0
-            lo, hi = min(vals), max(vals)
-            if lo == hi:
-                lo -= 0.005
-                hi += 0.005
-            width = (hi - lo) / n
-            counts = [0] * n
-            for val in vals:
-                counts[min(int((val - lo) / width), n - 1)] += 1
-            return counts, lo, hi
 
         pos_counts, pos_lo, pos_hi = _bins(pos_vals)
         neg_counts, neg_lo, neg_hi = _bins(neg_vals)
@@ -241,35 +269,8 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         img = Image.new("RGB", (W, H), "#0d0d11")
         draw = ImageDraw.Draw(img)
 
-        def draw_chart(y0, counts, lo, hi, threshold, bar_rgb, line_rgb, label, left_tint=None, right_tint=None, flip=False):
-            cW = W - PAD_L - PAD_R
-            max_c = max(counts) if counts else 1
-            bw = cW / len(counts)
-            draw.rectangle([PAD_L, y0, W - PAD_R, y0 + CH], fill="#0f0f16")
-            if flip:
-                tx = W - PAD_R - int(((threshold - lo) / (hi - lo)) * cW)
-            else:
-                tx = PAD_L + int(((threshold - lo) / (hi - lo)) * cW)
-            tx = max(PAD_L, min(W - PAD_R, tx))
-            if left_tint and tx > PAD_L:
-                draw.rectangle([PAD_L, y0, tx, y0 + CH], fill=left_tint)
-            if right_tint and tx < (W - PAD_R):
-                draw.rectangle([tx, y0, W - PAD_R, y0 + CH], fill=right_tint)
-            draw_counts = list(reversed(counts)) if flip else counts
-            for i, count in enumerate(draw_counts):
-                if count == 0:
-                    continue
-                bh = max(1, int((count / max_c) * (CH - 2)))
-                x0 = PAD_L + int(i * bw) + 1
-                x1 = PAD_L + int((i + 1) * bw) - 1
-                draw.rectangle([x0, y0 + CH - bh, x1, y0 + CH], fill=bar_rgb)
-            for yy in range(y0, y0 + CH, 6):
-                draw.line([(tx, yy), (tx, min(yy + 3, y0 + CH))], fill=line_rgb, width=2)
-            axis_lo, axis_hi = (hi, lo) if flip else (lo, hi)
-            draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, y0 + CH + 4, axis_lo, axis_hi)
-            draw.text((PAD_L, y0 - 14), f"{label} threshold: {threshold:.3f}", fill="#99bb88")
-
         draw_chart(
+            draw, W, CH, PAD_L, PAD_R,
             PAD_TOP,
             pos_counts,
             pos_lo,
@@ -284,6 +285,7 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         )
         if has_neg:
             draw_chart(
+                draw, W, CH, PAD_L, PAD_R,
                 PAD_TOP + CH + GAP,
                 neg_counts,
                 neg_lo,
@@ -326,36 +328,32 @@ def render_histogram(state, method, scores, main_threshold, aux_threshold):
         lo -= 0.05
         hi += 0.05
     bins = 32
-    width = (hi - lo) / bins
+    bin_width = (hi - lo) / bins
     counts = [0] * bins
     for val in vals:
-        counts[min(int((val - lo) / width), bins - 1)] += 1
-    W, H = hist_width, max(70, int(130 * HIST_HEIGHT_SCALE))
+        counts[min(int((val - lo) / bin_width), bins - 1)] += 1
+    W = hist_width
+    H = max(70, int(130 * HIST_HEIGHT_SCALE))
     PAD_L, PAD_R = 12, 12
     PAD_TOP, PAD_BOT = max(10, int(18 * HIST_HEIGHT_SCALE)), max(14, int(22 * HIST_HEIGHT_SCALE))
-    cW = W - PAD_L - PAD_R
+    CH = H - PAD_TOP - PAD_BOT
     img = Image.new("RGB", (W, H), "#0d0d11")
     draw = ImageDraw.Draw(img)
-    draw.rectangle([PAD_L, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#0f0f16")
-    tx = W - PAD_R - int(((main_threshold - lo) / (hi - lo)) * cW)
-    tx = max(PAD_L, min(W - PAD_R, tx))
-    if tx > PAD_L:
-        draw.rectangle([PAD_L, PAD_TOP, tx, PAD_TOP + H - PAD_BOT], fill="#142418")
-    if tx < (W - PAD_R):
-        draw.rectangle([tx, PAD_TOP, W - PAD_R, PAD_TOP + H - PAD_BOT], fill="#241416")
-    max_c = max(counts) if counts else 1
-    bw = cW / bins
-    for i, count in enumerate(list(reversed(counts))):
-        if count == 0:
-            continue
-        bh = max(1, int((count / max_c) * (H - PAD_BOT - PAD_TOP - 2)))
-        x0 = PAD_L + int(i * bw) + 1
-        x1 = PAD_L + int((i + 1) * bw) - 1
-        draw.rectangle([x0, PAD_TOP + (H - PAD_BOT - bh), x1, PAD_TOP + H - PAD_BOT], fill="#3a7a3a")
-    for yy in range(PAD_TOP, PAD_TOP + H - PAD_BOT, 6):
-        draw.line([(tx, yy), (tx, min(yy + 3, PAD_TOP + H - PAD_BOT))], fill="#aadd66", width=2)
-    draw_axis_labels(draw, PAD_L, PAD_L + (cW / 2), W - PAD_R, PAD_TOP + H - PAD_BOT + 4, hi, lo)
-    draw.text((PAD_L, PAD_TOP - 14), f"{main_hist_label}: {main_threshold:.3f}", fill="#99bb88")
+    draw_chart(
+        draw, W, CH, PAD_L, PAD_R,
+        PAD_TOP,
+        counts,
+        lo,
+        hi,
+        main_threshold,
+        "#3a7a3a",
+        "#aadd66",
+        main_hist_label,
+        left_tint="#142418",
+        right_tint="#241416",
+        flip=True,
+    )
+    cW = W - PAD_L - PAD_R
     state["hist_geom"] = {
         "method": method,
         "W": W,
@@ -438,99 +436,77 @@ def current_view(state, main_threshold, aux_threshold):
     )
 
 
+def _controls_defaults():
+    return [gr.update(visible=False)] * 12
+
+
 def configure_controls(state, method):
     main_label, aux_label, _, _ = threshold_labels(method)
     if method == METHOD_PROMPTMATCH:
-        return (
-            gr.update(visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-            gr.update(label=aux_label, visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-            gr.update(visible=True),
-            gr.update(visible=True),
-            gr.update(visible=False),
-            percentile_slider_update(method),
-            percentile_reset_button_update(method),
-            gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported."),
-        )
+        out = _controls_defaults()
+        out[0] = gr.update(visible=True)
+        out[4] = gr.update(label=main_label, value=0.14, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX)
+        out[5] = gr.update(label=aux_label, visible=True, value=NEGATIVE_THRESHOLD, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX)
+        out[6] = gr.update(visible=True)
+        out[7] = gr.update(visible=True)
+        out[9] = percentile_slider_update(method)
+        out[10] = percentile_reset_button_update(method)
+        out[11] = gr.update(value="PromptMatch sorts by text-image similarity. Use a positive prompt and optional negative prompt. Fragment weights like (blonde:1.2) are supported.")
+        return tuple(out)
     if method == METHOD_LLMSEARCH:
         llm_numeric = llmsearch_uses_numeric_scores(state.get("llmsearch_backend"))
-        return (
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=True),
-            gr.update(visible=False),
-            gr.update(
-                label=main_label,
-                value=50.0 if llm_numeric else 0.14,
-                minimum=0.0 if llm_numeric else PROMPTMATCH_SLIDER_MIN,
-                maximum=100.0 if llm_numeric else PROMPTMATCH_SLIDER_MAX,
-            ),
-            gr.update(
-                visible=False,
-                value=50.0 if llm_numeric else NEGATIVE_THRESHOLD,
-                label=aux_label,
-                minimum=0.0 if llm_numeric else PROMPTMATCH_SLIDER_MIN,
-                maximum=100.0 if llm_numeric else PROMPTMATCH_SLIDER_MAX,
-            ),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            percentile_slider_update(method),
-            percentile_reset_button_update(method),
-            gr.update(value="LM Search uses PromptMatch to shortlist likely matches, then reranks the top candidates with a local vision-language model."),
+        out = _controls_defaults()
+        out[2] = gr.update(visible=True)
+        out[4] = gr.update(
+            label=main_label,
+            value=50.0 if llm_numeric else 0.14,
+            minimum=0.0 if llm_numeric else PROMPTMATCH_SLIDER_MIN,
+            maximum=100.0 if llm_numeric else PROMPTMATCH_SLIDER_MAX,
         )
+        out[5] = gr.update(
+            visible=False,
+            value=50.0 if llm_numeric else NEGATIVE_THRESHOLD,
+            label=aux_label,
+            minimum=0.0 if llm_numeric else PROMPTMATCH_SLIDER_MIN,
+            maximum=100.0 if llm_numeric else PROMPTMATCH_SLIDER_MAX,
+        )
+        out[9] = percentile_slider_update(method)
+        out[10] = percentile_reset_button_update(method)
+        out[11] = gr.update(value="LM Search uses PromptMatch to shortlist likely matches, then reranks the top candidates with a local vision-language model.")
+        return tuple(out)
     if method in (METHOD_SIMILARITY, METHOD_SAMEPERSON):
         desc = (
             "Similarity search ranks the current folder by image-image similarity using the active PromptMatch model."
             if method == METHOD_SIMILARITY
             else f"Same-person search ranks the current folder by face identity similarity using {FACE_MODEL_LABEL}."
         )
-        return (
-            gr.update(visible=True),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-            gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            percentile_slider_update(method),
-            percentile_reset_button_update(method),
-            gr.update(value=desc),
-        )
+        out = _controls_defaults()
+        out[0] = gr.update(visible=True)
+        out[4] = gr.update(label=main_label, value=0.5, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX)
+        out[5] = gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=PROMPTMATCH_SLIDER_MIN, maximum=PROMPTMATCH_SLIDER_MAX)
+        out[9] = percentile_slider_update(method)
+        out[10] = percentile_reset_button_update(method)
+        out[11] = gr.update(value=desc)
+        return tuple(out)
     if method == METHOD_TAGMATCH:
-        return (
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=True),
-            gr.update(label=main_label, value=TAGMATCH_DEFAULT_THRESHOLD, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX),
-            gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-            percentile_slider_update(method),
-            percentile_reset_button_update(method),
-            gr.update(value="TagMatch scores images by WD tagger confidence for the specified tags. Use comma-separated booru-style tags from https://aibooru.online/wiki_pages"),
-        )
-    return (
-        gr.update(visible=False),
-        gr.update(visible=True),
-        gr.update(visible=False),
-        gr.update(visible=False),
-        gr.update(label=main_label, value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX),
-        gr.update(visible=False, value=NEGATIVE_THRESHOLD),
-        gr.update(visible=False),
-        gr.update(visible=False),
-        gr.update(visible=True),
-        percentile_slider_update(method),
-        percentile_reset_button_update(method),
-        gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score."),
-    )
+        out = _controls_defaults()
+        out[3] = gr.update(visible=True)
+        out[4] = gr.update(label=main_label, value=TAGMATCH_DEFAULT_THRESHOLD, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX)
+        out[5] = gr.update(visible=False, value=NEGATIVE_THRESHOLD, label=aux_label, minimum=TAGMATCH_SLIDER_PREPROCESS_MIN, maximum=TAGMATCH_SLIDER_MAX)
+        out[9] = percentile_slider_update(method)
+        out[10] = percentile_reset_button_update(method)
+        out[11] = gr.update(value="TagMatch scores images by WD tagger confidence for the specified tags. Use comma-separated booru-style tags from https://aibooru.online/wiki_pages")
+        return tuple(out)
+    # ImageReward (default)
+    out = _controls_defaults()
+    out[1] = gr.update(visible=True)
+    out[4] = gr.update(label=main_label, value=IMAGEREWARD_THRESHOLD, minimum=IMAGEREWARD_SLIDER_MIN, maximum=IMAGEREWARD_SLIDER_MAX)
+    out[5] = gr.update(visible=False, value=NEGATIVE_THRESHOLD)
+    out[8] = gr.update(visible=True)
+    out[9] = percentile_slider_update(method)
+    out[10] = percentile_reset_button_update(method)
+    out[11] = gr.update(value="ImageReward sorts by aesthetic preference. Optional penalty prompt subtracts a second style score.")
+    return tuple(out)
 
 
 def build_scored_callback_result(state, view_outputs, main_upd, aux_upd, percentile_upd, percentile_mid_upd):

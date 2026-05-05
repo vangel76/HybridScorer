@@ -225,15 +225,16 @@ def invalidate_folder_level_caches(state):
 
 def preserve_overrides_for_image_paths(state, image_paths):
     folder = state.get("source_dir")
-    previous_folder_key = normalize_folder_identity(folder) if folder else None
+    folder_key = normalize_folder_identity(folder) if folder else None
     available_names = {os.path.basename(path) for path in image_paths}
-    return preserve_overrides_for_folder_key(state, previous_folder_key, available_names)
+    return preserve_overrides_for_folder_key(state, folder_key, available_names, _current_key=folder_key)
 
 
-def preserve_overrides_for_folder_key(state, folder_key, available_names):
-    previous_folder = state.get("source_dir")
-    previous_folder_key = normalize_folder_identity(previous_folder) if previous_folder else None
-    if previous_folder_key != folder_key:
+def preserve_overrides_for_folder_key(state, folder_key, available_names, _current_key=None):
+    if _current_key is None:
+        previous_folder = state.get("source_dir")
+        _current_key = normalize_folder_identity(previous_folder) if previous_folder else None
+    if _current_key != folder_key:
         return {}
     return {
         fname: side
@@ -276,8 +277,6 @@ def can_reuse_proxy_map(state, image_paths, image_signature):
 
 
 def remember_mode_thresholds(state, method, main_threshold, aux_threshold):
-    if method not in state["mode_thresholds"]:
-        state["mode_thresholds"][method] = {}
     state["mode_thresholds"][method]["main"] = float(main_threshold)
     state["mode_thresholds"][method]["aux"] = float(aux_threshold)
 

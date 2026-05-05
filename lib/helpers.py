@@ -105,8 +105,9 @@ def promptmatch_model_status_json():
     return json.dumps(promptmatch_model_status_map())
 
 
-def promptmatch_model_dropdown_choices():
-    status_map = promptmatch_model_status_map()
+def promptmatch_model_dropdown_choices(status_map=None):
+    if status_map is None:
+        status_map = promptmatch_model_status_map()
     choices = []
     for label in MODEL_LABELS:
         entry = status_map.get(label) or {}
@@ -115,8 +116,9 @@ def promptmatch_model_dropdown_choices():
     return choices
 
 
-def prompt_backend_dropdown_choices(labels):
-    status_map = promptmatch_model_status_map()
+def prompt_backend_dropdown_choices(labels, status_map=None):
+    if status_map is None:
+        status_map = promptmatch_model_status_map()
     choices = []
     for label in labels:
         entry = status_map.get(label) or {}
@@ -251,8 +253,13 @@ def threshold_labels(method):
 
 
 def promptmatch_slider_range(scores):
-    pos_vals = [v["pos"] for v in scores.values() if not v.get("failed", False)]
-    neg_vals = [v["neg"] for v in scores.values() if not v.get("failed", False) and v.get("neg") is not None]
+    pos_vals, neg_vals = [], []
+    for v in scores.values():
+        if v.get("failed", False):
+            continue
+        pos_vals.append(v["pos"])
+        if v.get("neg") is not None:
+            neg_vals.append(v["neg"])
     pos_min = round(min(pos_vals) - 0.01, 3) if pos_vals else -1.0
     pos_max = round(max(pos_vals) + 0.01, 3) if pos_vals else 1.0
     pos_mid = round((pos_min + pos_max) / 2.0, 3)
@@ -341,16 +348,26 @@ def percentile_slider_label(method):
     return "Or keep top N%"
 
 
-def estimate_similarity_topn(scores=None):
+def _sorted_similarity_scores(scores):
+    """Return (sorted valid_items, query_offset) for similarity/topn calculations."""
     valid_items = [
         item for item in (scores or {}).values()
         if not item.get("failed", False) and item.get("pos") is not None
     ]
+    valid_items.sort(key=lambda item: -float(item["pos"]))
+    query_offset = 1 if valid_items and valid_items[0].get("query") else 0
+    return valid_items, query_offset
+
+
+def estimate_similarity_topn(scores=None, _sorted_items=None):
+    if _sorted_items is not None:
+        valid_items, query_offset = _sorted_items
+    else:
+        valid_items, query_offset = _sorted_similarity_scores(scores)
+
     if not valid_items:
         return 1
 
-    valid_items.sort(key=lambda item: -float(item["pos"]))
-    query_offset = 1 if valid_items and valid_items[0].get("query") else 0
     ranked_scores = [float(item["pos"]) for item in valid_items[query_offset:query_offset + SIMILARITY_AUTO_TOPN_SCAN_LIMIT]]
 
     if len(ranked_scores) < 2:
@@ -385,19 +402,15 @@ def estimate_similarity_topn(scores=None):
 
 
 def similarity_topn_defaults(scores=None):
-    valid_items = [
-        item for item in (scores or {}).values()
-        if not item.get("failed", False) and item.get("pos") is not None
-    ]
+    sorted_data = _sorted_similarity_scores(scores)
+    valid_items, query_offset = sorted_data
     if not valid_items:
         return 1, SIMILARITY_TOPN_DEFAULT
-    valid_items.sort(key=lambda item: -float(item["pos"]))
-    query_offset = 1 if valid_items and valid_items[0].get("query") else 0
     similar_count = len(valid_items) - query_offset
     if similar_count <= 0:
         return 1, 1
     slider_max = min(SIMILARITY_TOPN_SLIDER_MAX, similar_count)
-    auto_default = estimate_similarity_topn(scores)
+    auto_default = estimate_similarity_topn(_sorted_items=sorted_data)
     return slider_max, min(auto_default, slider_max)
 
 
@@ -608,7 +621,7 @@ def wd_tags_detail_config(detail_level):
 
 
 def joycaption_max_new_tokens(detail_level):
-    detail_level = max(1, min(3, int(detail_level)))
+    detail_level = _clamp_detail_level(detail_level)
     mapping = {
         1: 24,
         2: 56,

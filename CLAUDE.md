@@ -19,17 +19,17 @@ lib/
   config.py        # constants, method labels, model IDs
   utils.py         # pure utilities
   backend.py       # ModelBackend class
-  scoring.py       # score_all, encode_all_promptmatch_images
+  scoring.py       # _run_promptmatch_batches (shared loop), score_all, encode_all_promptmatch_images
   helpers.py       # UI text, score, prompt helpers
   state.py         # get_state_defaults(), init_state()
   state_helpers.py # state-management helpers
-  loaders.py       # ensure_*_model, ensure_*_backend, feature caches
-  view.py          # gallery, histogram, current_view, render_view_with_controls
-  web_context.py   # FastAPI-facing context, DTO rendering, WebSocket jobs, media registry
-  ui_compat.py     # small gr.update/gr.skip compatibility shim, no Gradio runtime
+  loaders.py       # _ensure_hf_vlm (shared), ensure_*_model, ensure_*_backend, feature caches
+  view.py          # gallery, histogram (shared draw_chart), current_view, render_view_with_controls
+  web_context.py   # FastAPI-facing context, DTO rendering, WebSocket jobs, media registry (LRU)
+  ui_compat.py     # gr.update/gr.skip shim; Update uses __getattr__ — no double __dict__ storage
   callbacks/
-    scoring.py     # score_folder, find_similar_images, find_same_person_images
-    prompts.py     # generate_prompt_from_preview, run_*_prompt_variant
+    scoring.py     # score_folder, _run_preview_search (shared), find_similar/same_person/objectsearch
+    prompts.py     # generate_prompt_from_preview, run_*_prompt_variant, _resolve_generate_params
     ui.py          # handle_thumb_action, export_files, threshold callbacks
 static/
   tabler-app.css / tabler-app.js / vendor/tabler/
@@ -52,11 +52,11 @@ templates/
 
 **TagMatch:** `_prep_tagmatch_batch(paths, proxy_map)` pure helper preps one batch (load + pad + resize + BGR convert). `score_tagmatch_folder` runs a `ThreadPoolExecutor(max_workers=1)` prefetch loop: submits batch N+1 prep while ONNX runs batch N — overlaps I/O+CPU with GPU inference.
 
-**LLM Search:** PromptMatch shortlists → Florence-2/JoyCaption HF/JoyCaption NF4/Huihui Gemma reranks; non-shortlisted get reject-floor score. HF JoyCaption backends use `score_candidates_batch` (batch=4).
+**LLM Search:** PromptMatch shortlists → Florence-2/JoyCaption HF/JoyCaption NF4/Huihui Gemma reranks; non-shortlisted get reject-floor score. HF JoyCaption backends use `score_candidates_batch` (batch=4). All four HF VLM loaders share `_ensure_hf_vlm(state, cache_key, load_fn)` — do not duplicate the 6-step load pattern.
 
-**ObjectSearch:** query image set in accordion 3 → `ensure_objectsearch_feature_cache` builds `faiss.IndexFlatIP` + GPU tensor → `score_objectsearch_cached_features` runs `torch.mm` or FAISS fallback → mean best-match-per-patch score. State keys: `os_cached_*`, `dinov2_backend`, `objectsearch_query_fname/source`.
+**ObjectSearch:** query image set in accordion 3 → `ensure_objectsearch_feature_cache` builds `faiss.IndexFlatIP` + GPU tensor → `score_objectsearch_cached_features` runs `torch.mm` or FAISS fallback → mean best-match-per-patch score. Inner patch-matching loop uses `np.maximum.at` (vectorized) — do not revert to pure-Python inner loop. State keys: `os_cached_*`, `dinov2_backend`, `objectsearch_query_fname/source`.
 
-**VRAM:** `release_inactive_gpu_models(target_method)` called before each scoring entry point; frees unneeded models. PromptMatch CLIP never released (always needed for shortlisting).
+**VRAM:** `release_inactive_gpu_models(target_method)` called before each scoring entry point; frees unneeded models. PromptMatch CLIP never released (always needed for shortlisting). VLM backend (`prompt_backend_cache`) is NOT wiped when `target_method == METHOD_LLMSEARCH` — the loaded VLM must stay resident for rerank.
 
 **JoyCaption NF4:** requires `accelerate` + `bitsandbytes`. Loader uses `device_map={"": device}` and disables SigLIP `vision_tower.use_head`; LLaVA uses hidden states, and the pooled head can crash with pre-quantized NF4 packed weights (`mat1 and mat2 shapes cannot be multiplied`). HF sharded-cache checks must verify every shard in `model.safetensors.index.json`, not just the index file, or partial downloads get misdetected as disk-cache-ready.
 

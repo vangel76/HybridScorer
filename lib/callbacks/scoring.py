@@ -350,30 +350,31 @@ def score_llmsearch_candidates(state, device, candidate_paths, query_text, backe
         elif isinstance(cached_value, str):
             caption_text = cached_value
 
-        if score_value is None and not caption_text and backend.uses_direct_numeric_score():
+        if (score_value is None and not caption_text and backend.uses_direct_numeric_score()) or (not caption_text and not backend.uses_direct_numeric_score()):
             display_path = state.get("proxy_map", {}).get(original_path, original_path)
             try:
                 with Image.open(display_path) as src_img:
                     image = src_img.convert("RGB")
-                score_value, caption_text = backend.score_candidate(image, query_text)
-                caption_cache[original_path] = {
-                    "score": float(score_value),
-                    "text": caption_text,
-                }
             except Exception as exc:
                 failed_reason = str(exc) or "LLM rerank backend failed."
-                score_value = 0.0
+                score_value = 0.0 if backend.uses_direct_numeric_score() else -1.0
                 caption_text = ""
-        elif not caption_text:
-            display_path = state.get("proxy_map", {}).get(original_path, original_path)
-            try:
-                with Image.open(display_path) as src_img:
-                    image = src_img.convert("RGB")
-                caption_text = backend.candidate_text(image, query_text)
-                caption_cache[original_path] = caption_text
-            except Exception as exc:
-                failed_reason = str(exc) or "LLM rerank backend failed."
-                caption_text = ""
+                image = None
+            if image is not None:
+                try:
+                    if backend.uses_direct_numeric_score():
+                        score_value, caption_text = backend.score_candidate(image, query_text)
+                        caption_cache[original_path] = {
+                            "score": float(score_value),
+                            "text": caption_text,
+                        }
+                    else:
+                        caption_text = backend.candidate_text(image, query_text)
+                        caption_cache[original_path] = caption_text
+                except Exception as exc:
+                    failed_reason = str(exc) or "LLM rerank backend failed."
+                    score_value = 0.0 if backend.uses_direct_numeric_score() else None
+                    caption_text = ""
         if failed_reason:
             score_value = 0.0 if backend.uses_direct_numeric_score() else -1.0
         elif score_value is None:
@@ -394,6 +395,18 @@ def score_llmsearch_candidates(state, device, candidate_paths, query_text, backe
         progress(index / max(total, 1), desc=f"LLM reranking {index}/{total} via {backend_id}")
 
     return results
+
+
+def _run_imagereward_pass(scoring_paths, folder_paths, model, device, prompt, progress, oom_desc_prefix, progress_desc_prefix):
+    scores = {}
+    for event in iter_imagereward_scores(scoring_paths, model, device, prompt, source_paths=folder_paths):
+        frac = PROMPTMATCH_PROXY_PROGRESS_SHARE + (1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))
+        if event["type"] == "oom":
+            progress(frac, desc=f"{oom_desc_prefix} OOM, retrying autobatch {event['batch_size']}")
+            continue
+        progress(frac, desc=f"{progress_desc_prefix} {event['done']}/{event['total']} (autobatch {event['batch_size']})")
+        scores = event["scores"]
+    return scores
 
 
 def score_imagereward(state, device, folder_paths, positive_prompt, negative_prompt, penalty_weight, progress):
@@ -441,20 +454,11 @@ def score_imagereward(state, device, folder_paths, positive_prompt, negative_pro
         progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached ImageReward positive pass for {len(folder_paths)} images")
     else:
         progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Scoring {len(folder_paths)} images with ImageReward...")
-        for event in iter_imagereward_scores(scoring_paths, model, device, positive_prompt, source_paths=folder_paths):
-            if event["type"] == "oom":
-                progress(
-                    PROMPTMATCH_PROXY_PROGRESS_SHARE
-                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                    desc=f"ImageReward OOM, retrying autobatch {event['batch_size']}",
-                )
-                continue
-            progress(
-                PROMPTMATCH_PROXY_PROGRESS_SHARE
-                + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                desc=f"ImageReward {event['done']}/{event['total']} (autobatch {event['batch_size']})",
-            )
-            base_scores = event["scores"]
+        base_scores = _run_imagereward_pass(
+            scoring_paths, folder_paths, model, device, positive_prompt, progress,
+            oom_desc_prefix="ImageReward",
+            progress_desc_prefix="ImageReward",
+        )
         state["ir_cached_signature"] = image_signature
         state["ir_cached_positive_prompt"] = positive_prompt
         state["ir_cached_base_scores"] = dict(base_scores)
@@ -471,20 +475,11 @@ def score_imagereward(state, device, folder_paths, positive_prompt, negative_pro
             progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Reusing cached penalty pass for {len(folder_paths)} images")
         else:
             progress(PROMPTMATCH_PROXY_PROGRESS_SHARE, desc=f"Applying penalty prompt to {len(folder_paths)} images...")
-            for event in iter_imagereward_scores(scoring_paths, model, device, negative_prompt, source_paths=folder_paths):
-                if event["type"] == "oom":
-                    progress(
-                        PROMPTMATCH_PROXY_PROGRESS_SHARE
-                        + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                        desc=f"Penalty OOM, retrying autobatch {event['batch_size']}",
-                    )
-                    continue
-                progress(
-                    PROMPTMATCH_PROXY_PROGRESS_SHARE
-                    + ((1.0 - PROMPTMATCH_PROXY_PROGRESS_SHARE) * (event["done"] / max(event["total"], 1))),
-                    desc=f"Penalty prompt {event['done']}/{event['total']} (autobatch {event['batch_size']})",
-                )
-                penalty_scores = event["scores"]
+            penalty_scores = _run_imagereward_pass(
+                scoring_paths, folder_paths, model, device, negative_prompt, progress,
+                oom_desc_prefix="Penalty",
+                progress_desc_prefix="Penalty prompt",
+            )
             state["ir_cached_signature"] = image_signature
             state["ir_cached_negative_prompt"] = negative_prompt
             state["ir_cached_penalty_scores"] = dict(penalty_scores)
@@ -1075,27 +1070,89 @@ def score_folder(state, device, method, folder, model_label, pos_prompt, neg_pro
     )
 
 
-def find_similar_images(state, device, folder, model_label, main_threshold, aux_threshold, progress=gr.Progress()):
-    recalled_main, _, has_recalled = recalled_mode_thresholds(state, METHOD_SIMILARITY, main_threshold, aux_threshold)
+def _run_preview_search(state, device, method, folder, main_threshold, aux_threshold,
+                        missing_message, not_in_folder_template, error_prefix,
+                        release_target, compute_fn, progress):
+    """Shared skeleton for Similarity / SamePerson / ObjectSearch.
+
+    compute_fn(state, device, request_ctx, progress) must either:
+      - return (scores, extra_state_updates, status_text)   on success
+      - raise an exception                                   on failure
+    extra_state_updates is a plain dict written to state after the common keys.
+    """
+    recalled_main, _, has_recalled = recalled_mode_thresholds(state, method, main_threshold, aux_threshold)
     request_ctx, request_error = normalize_preview_search_request(
-        state,
-        folder,
-        "Select, drop, paste, or upload a query image first, then find similar images.",
-        "{preview_fname} is not part of the current folder, so similarity search cannot run.",
+        state, folder, missing_message, not_in_folder_template,
     )
     if request_error:
-        return _vw.build_preview_search_result(request_error, _vw.status_with_current_view(state, request_error, main_threshold, aux_threshold))
+        return _vw.build_preview_search_result(
+            request_error,
+            _vw.status_with_current_view(state, request_error, main_threshold, aux_threshold),
+        )
     folder = request_ctx["folder"]
-    image_paths = request_ctx["image_paths"]
-    query_path = request_ctx["query_path"]
-    query_label = request_ctx["query_label"]
-    query_source = request_ctx["query_source"] or "gallery preview"
-    query_in_folder = request_ctx["query_in_folder"]
     preserved_overrides = request_ctx["preserved_overrides"]
+    query_in_folder = request_ctx["query_in_folder"]
 
-    _lo.release_inactive_gpu_models(state, METHOD_SIMILARITY)
+    _lo.release_inactive_gpu_models(state, release_target)
     try:
         sync_promptmatch_proxy_cache(state, folder)
+        scores, extra_state_updates, status_text = compute_fn(state, device, request_ctx, progress)
+    except Exception as exc:
+        message = f"{error_prefix}: {exc}"
+        return _vw.build_preview_search_result(
+            message,
+            _vw.status_with_current_view(state, message, main_threshold, aux_threshold),
+        )
+
+    state["method"] = method
+    set_scored_mode(state)
+    state["source_dir"] = folder
+    state["scores"] = scores
+    state["overrides"] = preserved_overrides
+    reset_selection_state(state)
+    if query_in_folder:
+        state["preview_fname"] = request_ctx["preview_fname"]
+    clear_preview_search_context(state)
+    state.update(extra_state_updates)
+
+    pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
+    _, default_top_n = similarity_topn_defaults(state["scores"])
+    default_main = threshold_for_percentile(method, state["scores"], default_top_n)
+    next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
+    safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
+    safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
+    score_outputs = render_scored_mode_result(
+        state,
+        method,
+        next_main,
+        NEGATIVE_THRESHOLD,
+        gr.update(
+            minimum=safe_pos_min,
+            maximum=safe_pos_max,
+            value=next_main,
+            label=threshold_labels(method)[0],
+        ),
+        gr.update(
+            minimum=safe_neg_min,
+            maximum=safe_neg_max,
+            value=NEGATIVE_THRESHOLD,
+            visible=False,
+            interactive=False,
+            label=threshold_labels(method)[1],
+        ),
+        percentile_slider_update(method, state["scores"]),
+        percentile_reset_button_update(method, state["scores"]),
+    )
+    return _vw.build_preview_search_result(status_text, score_outputs)
+
+
+def find_similar_images(state, device, folder, model_label, main_threshold, aux_threshold, progress=gr.Progress()):
+    def _compute(state, device, request_ctx, progress):
+        image_paths = request_ctx["image_paths"]
+        query_path = request_ctx["query_path"]
+        query_label = request_ctx["query_label"]
+        query_source = request_ctx["query_source"] or "gallery preview"
+        query_in_folder = request_ctx["query_in_folder"]
         _lo.ensure_promptmatch_backend_loaded(state, device, model_label, progress)
         _, feature_paths, image_features, failed_paths = _lo.ensure_promptmatch_feature_cache(
             state, device, image_paths,
@@ -1105,144 +1162,64 @@ def find_similar_images(state, device, folder, model_label, main_threshold, aux_
             encode_desc="Encoding similarity embeddings for {count} images...",
             progress_label="Similarity",
         )
-        similarity_scores = score_similarity_cached_features(
+        scores = score_similarity_cached_features(
             feature_paths,
             image_features,
             failed_paths,
             query_path,
             query_feature=None if query_in_folder else _lo.encode_single_promptmatch_image(state, query_path),
         )
-    except Exception as exc:
-        message = f"Similarity search failed: {exc}"
-        return _vw.build_preview_search_result(
-            message,
-            _vw.status_with_current_view(state, message, main_threshold, aux_threshold),
-        )
+        extra = {
+            "similarity_query_fname": query_label,
+            "similarity_query_source": query_source,
+            "similarity_model_label": model_label,
+        }
+        status_text = f"Similarity search using {model_label} from {query_source} ({query_label})."
+        return scores, extra, status_text
 
-    state["method"] = METHOD_SIMILARITY
-    set_scored_mode(state)
-    state["source_dir"] = folder
-    state["scores"] = similarity_scores
-    state["overrides"] = preserved_overrides
-    reset_selection_state(state)
-    if query_in_folder:
-        state["preview_fname"] = request_ctx["preview_fname"]
-    clear_preview_search_context(state)
-    state["similarity_query_fname"] = query_label
-    state["similarity_query_source"] = query_source
-    state["similarity_model_label"] = model_label
-
-    pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
-    _, default_top_n = similarity_topn_defaults(state["scores"])
-    default_main = threshold_for_percentile(METHOD_SIMILARITY, state["scores"], default_top_n)
-    next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
-    safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
-    safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
-    status_text = f"Similarity search using {model_label} from {query_source} ({query_label})."
-    score_outputs = render_scored_mode_result(
-        state,
-        METHOD_SIMILARITY,
-        next_main,
-        NEGATIVE_THRESHOLD,
-        gr.update(
-            minimum=safe_pos_min,
-            maximum=safe_pos_max,
-            value=next_main,
-            label=threshold_labels(METHOD_SIMILARITY)[0],
-        ),
-        gr.update(
-            minimum=safe_neg_min,
-            maximum=safe_neg_max,
-            value=NEGATIVE_THRESHOLD,
-            visible=False,
-            interactive=False,
-            label=threshold_labels(METHOD_SIMILARITY)[1],
-        ),
-        percentile_slider_update(METHOD_SIMILARITY, state["scores"]),
-        percentile_reset_button_update(METHOD_SIMILARITY, state["scores"]),
+    return _run_preview_search(
+        state, device, METHOD_SIMILARITY, folder, main_threshold, aux_threshold,
+        missing_message="Select, drop, paste, or upload a query image first, then find similar images.",
+        not_in_folder_template="{preview_fname} is not part of the current folder, so similarity search cannot run.",
+        error_prefix="Similarity search failed",
+        release_target=METHOD_SIMILARITY,
+        compute_fn=_compute,
+        progress=progress,
     )
-    return _vw.build_preview_search_result(status_text, score_outputs)
 
 
 def find_same_person_images(state, folder, main_threshold, aux_threshold, progress=gr.Progress()):
-    recalled_main, _, has_recalled = recalled_mode_thresholds(state, METHOD_SAMEPERSON, main_threshold, aux_threshold)
-    request_ctx, request_error = normalize_preview_search_request(
-        state,
-        folder,
-        "Select, drop, paste, or upload a query image first, then find the same person.",
-        "{preview_fname} is not part of the current folder, so same-person search cannot run.",
-    )
-    if request_error:
-        return _vw.build_preview_search_result(request_error, _vw.status_with_current_view(state, request_error, main_threshold, aux_threshold))
-    folder = request_ctx["folder"]
-    image_paths = request_ctx["image_paths"]
-    query_path = request_ctx["query_path"]
-    query_label = request_ctx["query_label"]
-    query_source = request_ctx["query_source"] or "gallery preview"
-    query_in_folder = request_ctx["query_in_folder"]
-    preserved_overrides = request_ctx["preserved_overrides"]
-
-    _lo.release_inactive_gpu_models(state, METHOD_SAMEPERSON)
-    try:
-        sync_promptmatch_proxy_cache(state, folder)
+    def _compute(state, device, request_ctx, progress):
+        image_paths = request_ctx["image_paths"]
+        query_path = request_ctx["query_path"]
+        query_label = request_ctx["query_label"]
+        query_source = request_ctx["query_source"] or "gallery preview"
+        query_in_folder = request_ctx["query_in_folder"]
         _, feature_paths, face_embeddings, failures = _lo.ensure_face_feature_cache(state, image_paths, progress)
-        sameperson_scores = score_sameperson_cached_features(
+        scores = score_sameperson_cached_features(
             feature_paths,
             face_embeddings,
             failures,
             query_path,
             query_embedding=None if query_in_folder else _lo.encode_single_face_embedding(state, query_path, progress),
         )
-    except Exception as exc:
-        message = f"Same-person search failed: {exc}"
-        return _vw.build_preview_search_result(
-            message,
-            _vw.status_with_current_view(state, message, main_threshold, aux_threshold),
-        )
+        extra = {
+            "sameperson_query_fname": query_label,
+            "sameperson_query_source": query_source,
+            "sameperson_model_label": FACE_MODEL_LABEL,
+        }
+        status_text = f"Same-person search using {FACE_MODEL_LABEL} from {query_source} ({query_label})."
+        return scores, extra, status_text
 
-    state["method"] = METHOD_SAMEPERSON
-    set_scored_mode(state)
-    state["source_dir"] = folder
-    state["scores"] = sameperson_scores
-    state["overrides"] = preserved_overrides
-    reset_selection_state(state)
-    if query_in_folder:
-        state["preview_fname"] = request_ctx["preview_fname"]
-    clear_preview_search_context(state)
-    state["sameperson_query_fname"] = query_label
-    state["sameperson_query_source"] = query_source
-    state["sameperson_model_label"] = FACE_MODEL_LABEL
-
-    pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
-    _, default_top_n = similarity_topn_defaults(state["scores"])
-    default_main = threshold_for_percentile(METHOD_SAMEPERSON, state["scores"], default_top_n)
-    next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
-    safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
-    safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
-    status_text = f"Same-person search using {FACE_MODEL_LABEL} from {query_source} ({query_label})."
-    score_outputs = render_scored_mode_result(
-        state,
-        METHOD_SAMEPERSON,
-        next_main,
-        NEGATIVE_THRESHOLD,
-        gr.update(
-            minimum=safe_pos_min,
-            maximum=safe_pos_max,
-            value=next_main,
-            label=threshold_labels(METHOD_SAMEPERSON)[0],
-        ),
-        gr.update(
-            minimum=safe_neg_min,
-            maximum=safe_neg_max,
-            value=NEGATIVE_THRESHOLD,
-            visible=False,
-            interactive=False,
-            label=threshold_labels(METHOD_SAMEPERSON)[1],
-        ),
-        percentile_slider_update(METHOD_SAMEPERSON, state["scores"]),
-        percentile_reset_button_update(METHOD_SAMEPERSON, state["scores"]),
+    return _run_preview_search(
+        state, None, METHOD_SAMEPERSON, folder, main_threshold, aux_threshold,
+        missing_message="Select, drop, paste, or upload a query image first, then find the same person.",
+        not_in_folder_template="{preview_fname} is not part of the current folder, so same-person search cannot run.",
+        error_prefix="Same-person search failed",
+        release_target=METHOD_SAMEPERSON,
+        compute_fn=_compute,
+        progress=progress,
     )
-    return _vw.build_preview_search_result(status_text, score_outputs)
 
 
 def score_objectsearch_cached_features(feature_paths, faiss_index, patch_image_idx, query_patches, failed_paths, patch_gpu_tensor=None):
@@ -1263,14 +1240,14 @@ def score_objectsearch_cached_features(feature_paths, faiss_index, patch_image_i
 
     best_per_query = np.full((len(query_patches), n_images), -1.0, dtype=np.float64)
     for q_idx in range(len(query_patches)):
-        for k_idx in range(scores_matrix.shape[1]):
-            patch_flat_idx = int(indices_matrix[q_idx, k_idx])
-            if patch_flat_idx < 0 or patch_flat_idx >= len(patch_image_idx):
-                continue
-            img_idx = int(patch_image_idx[patch_flat_idx])
-            sim = float(scores_matrix[q_idx, k_idx])
-            if sim > best_per_query[q_idx, img_idx]:
-                best_per_query[q_idx, img_idx] = sim
+        k_indices = indices_matrix[q_idx]
+        valid_mask = (k_indices >= 0) & (k_indices < len(patch_image_idx))
+        valid_k = np.where(valid_mask)[0]
+        if len(valid_k) == 0:
+            continue
+        img_idxs = patch_image_idx[k_indices[valid_k]]
+        sims_q = scores_matrix[q_idx, valid_k]
+        np.maximum.at(best_per_query[q_idx], img_idxs, sims_q)
 
     image_scores = best_per_query.mean(axis=0).tolist()
 
@@ -1298,32 +1275,17 @@ def score_objectsearch_cached_features(feature_paths, faiss_index, patch_image_i
 
 
 def find_objectsearch_images(state, device, folder, main_threshold, aux_threshold, progress=gr.Progress()):
-    recalled_main, _, has_recalled = recalled_mode_thresholds(state, METHOD_OBJECTSEARCH, main_threshold, aux_threshold)
-    request_ctx, request_error = normalize_preview_search_request(
-        state,
-        folder,
-        "Select, drop, paste, or upload a query image first, then find object matches.",
-        "{preview_fname} is not part of the current folder, so object search cannot run.",
-    )
-    if request_error:
-        return _vw.build_preview_search_result(request_error, _vw.status_with_current_view(state, request_error, main_threshold, aux_threshold))
-    folder = request_ctx["folder"]
-    image_paths = request_ctx["image_paths"]
-    query_path = request_ctx["query_path"]
-    query_label = request_ctx["query_label"]
-    query_source = request_ctx["query_source"] or "gallery preview"
-    query_in_folder = request_ctx["query_in_folder"]
-    preserved_overrides = request_ctx["preserved_overrides"]
-
-    _lo.release_inactive_gpu_models(state, METHOD_OBJECTSEARCH)
-    try:
-        sync_promptmatch_proxy_cache(state, folder)
+    def _compute(state, device, request_ctx, progress):
+        image_paths = request_ctx["image_paths"]
+        query_path = request_ctx["query_path"]
+        query_label = request_ctx["query_label"]
+        query_source = request_ctx["query_source"] or "gallery preview"
         _, feature_paths, _flat_patches, patch_image_idx, faiss_index, failures = _lo.ensure_objectsearch_feature_cache(
             state, device, image_paths, progress
         )
         patch_gpu_tensor = state.get("os_cached_patch_gpu_tensor")
         query_patches = _lo.encode_single_objectsearch_query(state, device, query_path, progress)
-        objectsearch_scores = score_objectsearch_cached_features(
+        scores = score_objectsearch_cached_features(
             feature_paths,
             faiss_index,
             patch_image_idx,
@@ -1331,55 +1293,22 @@ def find_objectsearch_images(state, device, folder, main_threshold, aux_threshol
             failures,
             patch_gpu_tensor=patch_gpu_tensor,
         )
-    except Exception as exc:
-        message = f"Object search failed: {exc}"
-        return _vw.build_preview_search_result(
-            message,
-            _vw.status_with_current_view(state, message, main_threshold, aux_threshold),
-        )
+        extra = {
+            "objectsearch_query_fname": query_label,
+            "objectsearch_query_source": query_source,
+        }
+        status_text = f"Object search using {DINOV2_MODEL_ID} from {query_source} ({query_label})."
+        return scores, extra, status_text
 
-    state["method"] = METHOD_OBJECTSEARCH
-    set_scored_mode(state)
-    state["source_dir"] = folder
-    state["scores"] = objectsearch_scores
-    state["overrides"] = preserved_overrides
-    reset_selection_state(state)
-    if query_in_folder:
-        state["preview_fname"] = request_ctx["preview_fname"]
-    clear_preview_search_context(state)
-    state["objectsearch_query_fname"] = query_label
-    state["objectsearch_query_source"] = query_source
-
-    pos_min, pos_max, _, neg_min, neg_max, _, _ = promptmatch_slider_range(state["scores"])
-    _, default_top_n = similarity_topn_defaults(state["scores"])
-    default_main = threshold_for_percentile(METHOD_OBJECTSEARCH, state["scores"], default_top_n)
-    next_main = clamp_threshold(recalled_main, pos_min, pos_max) if has_recalled else default_main
-    safe_pos_min, safe_pos_max = expand_slider_bounds(pos_min, pos_max, next_main)
-    safe_neg_min, safe_neg_max = expand_slider_bounds(neg_min, neg_max, NEGATIVE_THRESHOLD)
-    status_text = f"Object search using {DINOV2_MODEL_ID} from {query_source} ({query_label})."
-    score_outputs = render_scored_mode_result(
-        state,
-        METHOD_OBJECTSEARCH,
-        next_main,
-        NEGATIVE_THRESHOLD,
-        gr.update(
-            minimum=safe_pos_min,
-            maximum=safe_pos_max,
-            value=next_main,
-            label=threshold_labels(METHOD_OBJECTSEARCH)[0],
-        ),
-        gr.update(
-            minimum=safe_neg_min,
-            maximum=safe_neg_max,
-            value=NEGATIVE_THRESHOLD,
-            visible=False,
-            interactive=False,
-            label=threshold_labels(METHOD_OBJECTSEARCH)[1],
-        ),
-        percentile_slider_update(METHOD_OBJECTSEARCH, state["scores"]),
-        percentile_reset_button_update(METHOD_OBJECTSEARCH, state["scores"]),
+    return _run_preview_search(
+        state, device, METHOD_OBJECTSEARCH, folder, main_threshold, aux_threshold,
+        missing_message="Select, drop, paste, or upload a query image first, then find object matches.",
+        not_in_folder_template="{preview_fname} is not part of the current folder, so object search cannot run.",
+        error_prefix="Object search failed",
+        release_target=METHOD_OBJECTSEARCH,
+        compute_fn=_compute,
+        progress=progress,
     )
-    return _vw.build_preview_search_result(status_text, score_outputs)
 
 
 def handle_shortcut_action(state, device, action, method, folder, model_label, pos_prompt, neg_prompt, pm_segment_mode, ir_prompt, ir_negative_prompt, ir_penalty_weight, llm_model_label, llm_prompt, llm_backend_id, llm_shortlist_size, tagmatch_tags, main_threshold, aux_threshold, keep_pm_thresholds, keep_ir_thresholds, progress=gr.Progress()):
